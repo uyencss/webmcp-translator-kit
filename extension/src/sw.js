@@ -88,18 +88,22 @@ function _setTestPermission(origin, granted) {
 }
 
 function _setTestRateLimits(limits) {
+  if (!_testMode) return;
   _testRateLimits = limits;
 }
 
 function _setTestRateWindowSeconds(sec) {
+  if (!_testMode) return;
   _testRateWindowSeconds = typeof sec === 'number' ? sec : null;
 }
 
 function _setTestMaxQueue(n) {
+  if (!_testMode) return;
   _testMaxQueue = typeof n === 'number' ? n : null;
 }
 
 async function _resetRateStateForTest() {
+  if (!_testMode) return;
   for (const queue of tabQueues.values()) {
     for (const entry of queue) {
       if (entry.timer) clearTimeout(entry.timer);
@@ -513,8 +517,9 @@ async function reconcilePermissions() {
       // Check permissions for all stored sites
       const grantedOrigins = new Set();
       for (const orig of Object.keys(sites)) {
-        if (await permissionContains(orig)) {
-          grantedOrigins.add(orig);
+        const norm = normalizeOrigin(orig);
+        if (norm && (await permissionContains(norm))) {
+          grantedOrigins.add(norm);
         }
       }
 
@@ -869,6 +874,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               }]);
             } catch (err) {
               console.error('Failed to register content script:', err);
+              await reconcilePermissions();
+              return createTypedError('PERMISSION_REQUIRED', 'Failed to register dynamic content script: ' + (err?.message || String(err)), false, {
+                origin: normOrigin,
+                permissionType: 'host',
+                reason: err?.message || String(err)
+              });
             }
           }
 
@@ -1018,6 +1029,16 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             permissionType: 'host'
           });
         }
+        if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.get === 'function') {
+          try {
+            await chrome.tabs.get(tabId);
+          } catch {
+            return createTypedError('INVALID_SCHEMA', `Tab ${tabId} does not exist`, false, {
+              tabId,
+              reason: 'Tab not found'
+            });
+          }
+        }
         const val = message.value;
         if (val !== 'on' && val !== 'off' && val !== null && val !== undefined) {
           return createTypedError('CONSENT_STATE_UNAVAILABLE', `Invalid tab override value: ${String(val)}`, false, {
@@ -1134,6 +1155,14 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for site origin', false, {
             origin,
             permissionType: 'host'
+          });
+        }
+
+        // Validate batch items before admission / cache lookup (zero rate/slot cost)
+        const rawItems = message.payload?.items;
+        if (!Array.isArray(rawItems) || rawItems.length === 0) {
+          return createTypedError('INVALID_SCHEMA', 'Batch items must be a non-empty array', false, {
+            schemaErrors: ['items must be a non-empty array']
           });
         }
 

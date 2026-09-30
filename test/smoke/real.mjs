@@ -130,7 +130,7 @@ class CdpConnection {
 }
 
 // Simple static HTTP server for fixture.html
-function createFixtureServer(port = 8091) {
+function createFixtureServer(port = parseInt(process.env.FIXTURE_PORT || '8091', 10)) {
   const fixtureContent = fs.readFileSync(FIXTURE_PATH, 'utf8');
   const server = http.createServer((req, res) => {
     if (req.url === '/fixture.html' || req.url === '/') {
@@ -144,7 +144,16 @@ function createFixtureServer(port = 8091) {
 
   return {
     server,
-    start: () => new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server.address()))),
+    start: () => new Promise((resolve, reject) => {
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`[EADDRINUSE] Port ${port} is already in use. Please run with FIXTURE_PORT=<available_port> (e.g. FIXTURE_PORT=8095).`);
+          process.exit(1);
+        }
+        reject(err);
+      });
+      server.listen(port, '127.0.0.1', () => resolve(server.address()));
+    }),
     stop: () => new Promise((resolve) => server.close(resolve))
   };
 }
@@ -158,7 +167,7 @@ async function main() {
     process.exit(0);
   }
 
-  const FIXTURE_PORT = 8091;
+  const FIXTURE_PORT = parseInt(process.env.FIXTURE_PORT || '8091', 10);
   const fixtureServer = createFixtureServer(FIXTURE_PORT);
   await fixtureServer.start();
   console.log(`[1/5] Fixture server running at http://127.0.0.1:${FIXTURE_PORT}`);

@@ -249,3 +249,21 @@ test('resilience: invalid, corrupt, or undefined state handled gracefully', () =
   assert.deepEqual(pruned.events, []);
 });
 
+test('evaluate: does not mutate state object or its events array (B3-F1)', () => {
+  const limits = { maxBatches: 2, maxSourceCodePoints: 1000, windowSeconds: 60 };
+  const now = 100000;
+  const state = {
+    events: [
+      { t: now - 70000, codePoints: 100 }, // Expired outside 60s
+      { t: now - 10000, codePoints: 200 }  // Active
+    ]
+  };
+  const snapshotJson = JSON.stringify(state);
+
+  const res = evaluate(state, { batches: 1, codePoints: 50 }, limits, now);
+  assert.equal(res.allowed, true);
+  assert.equal(JSON.stringify(state), snapshotJson, 'evaluate() must not mutate input state');
+  assert.equal(state.events.length, 2, 'expired event must not be removed from input state by evaluate()');
+});
+
+

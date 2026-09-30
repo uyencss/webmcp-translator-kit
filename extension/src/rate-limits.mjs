@@ -60,24 +60,24 @@ export function prune(state, now, windowSeconds = 60) {
  * @returns {{ allowed: boolean, retryAfterMs: number, used: { batches: number, codePoints: number }, exceeded: null|'batches'|'codePoints' }}
  */
 export function evaluate(state, cost, limits, now, windowSeconds = 60) {
-  if (!state || !Array.isArray(state.events)) {
-    state = createLimitState();
-  }
   const winSec = (limits && typeof limits.windowSeconds === 'number' && limits.windowSeconds > 0)
     ? limits.windowSeconds
     : (typeof windowSeconds === 'number' && windowSeconds > 0 ? windowSeconds : 60);
 
-  prune(state, now, winSec);
+  const cutoff = now - winSec * 1000;
+  const events = (state && Array.isArray(state.events))
+    ? state.events.filter((e) => e && typeof e.t === 'number' && e.t > cutoff)
+    : [];
 
   const maxBatches = limits?.maxBatches ?? 4;
   const maxCodePoints = limits?.maxSourceCodePoints ?? 12000;
   const reqBatches = cost?.batches ?? 1;
   const reqCodePoints = cost?.codePoints ?? 0;
 
-  let usedBatches = state.events.length;
+  let usedBatches = events.length;
   let usedCodePoints = 0;
-  for (let i = 0; i < state.events.length; i++) {
-    usedCodePoints += state.events[i].codePoints || 0;
+  for (let i = 0; i < events.length; i++) {
+    usedCodePoints += events[i].codePoints || 0;
   }
 
   const batchesExceeded = (usedBatches + reqBatches) > maxBatches;
@@ -97,8 +97,8 @@ export function evaluate(state, cost, limits, now, windowSeconds = 60) {
   if (batchesExceeded) {
     const k = usedBatches + reqBatches - maxBatches;
     // We need the oldest k events to expire
-    if (k > 0 && k <= state.events.length) {
-      const targetEvent = state.events[k - 1];
+    if (k > 0 && k <= events.length) {
+      const targetEvent = events[k - 1];
       waitBatchesMs = Math.max(0, targetEvent.t + winSec * 1000 - now);
     } else {
       waitBatchesMs = winSec * 1000;
@@ -111,8 +111,8 @@ export function evaluate(state, cost, limits, now, windowSeconds = 60) {
     const needToFree = usedCodePoints + reqCodePoints - maxCodePoints;
     let freed = 0;
     let targetIndex = -1;
-    for (let i = 0; i < state.events.length; i++) {
-      freed += state.events[i].codePoints || 0;
+    for (let i = 0; i < events.length; i++) {
+      freed += events[i].codePoints || 0;
       if (freed >= needToFree) {
         targetIndex = i;
         break;
@@ -120,7 +120,7 @@ export function evaluate(state, cost, limits, now, windowSeconds = 60) {
     }
 
     if (targetIndex >= 0) {
-      waitCodePointsMs = Math.max(0, state.events[targetIndex].t + winSec * 1000 - now);
+      waitCodePointsMs = Math.max(0, events[targetIndex].t + winSec * 1000 - now);
     } else {
       waitCodePointsMs = winSec * 1000;
     }

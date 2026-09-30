@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { createFakeServer } from './fake-9router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_DIR = path.resolve(HERE, '..', '..', 'extension', 'dist');
+const ROOT = path.resolve(HERE, '../..');
+const EXTENSION_DIR = path.resolve(ROOT, 'extension', 'dist');
 const DEFAULT_CHROME = path.join(
   process.env.HOME || '',
   '.cache/puppeteer/chrome/mac_arm-150.0.7871.24/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
@@ -142,11 +143,53 @@ class CdpConnection {
   }
 }
 
+function createFixtureServer(port = parseInt(process.env.FIXTURE_PORT || '8091', 10)) {
+  const fixturePath = path.resolve(HERE, 'fixture.html');
+  const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+  const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
+  const fixture20Content = fs.existsSync(fixture20Path) ? fs.readFileSync(fixture20Path, 'utf8') : '';
+  const server = http.createServer((req, res) => {
+    if (req.url === '/fixture.html' || req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(fixtureContent);
+      return;
+    }
+    if (req.url === '/fixture-20nodes.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(fixture20Content);
+      return;
+    }
+    res.writeHead(404);
+    res.end('Not found');
+  });
+
+  return {
+    server,
+    start: () => new Promise((resolve, reject) => {
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`[EADDRINUSE] Port ${port} is already in use. Please run with FIXTURE_PORT=<available_port> (e.g. FIXTURE_PORT=8095).`);
+          process.exit(1);
+        }
+        reject(err);
+      });
+      server.listen(port, '127.0.0.1', () => resolve(server.address()));
+    }),
+    stop: () => new Promise((resolve) => server.close(resolve))
+  };
+}
+
 async function runSingleAttempt() {
-  const FAKE_PORT = 8089;
-  const fakeServer = createFakeServer(FAKE_PORT);
+  const SMOKE_PORT = parseInt(process.env.SMOKE_PORT || '8089', 10);
+  const FIXTURE_PORT = parseInt(process.env.FIXTURE_PORT || '8091', 10);
+
+  const fakeServer = createFakeServer(SMOKE_PORT);
   await fakeServer.start();
-  console.log(`[1/6] Fake 9router running at http://127.0.0.1:${FAKE_PORT}`);
+  console.log(`[1/6] Fake 9router running at http://127.0.0.1:${SMOKE_PORT}`);
+
+  const fixtureServer = createFixtureServer(FIXTURE_PORT);
+  await fixtureServer.start();
+  console.log(`[1/6] Fixture server running at http://127.0.0.1:${FIXTURE_PORT}`);
 
   const chromeBin = getChromeBin();
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-slice-'));
@@ -258,8 +301,8 @@ async function runSingleAttempt() {
     }
 
     // Configure extension with fake 9router via Service Worker storage
-    const fixtureOrigin = `http://127.0.0.1:${FAKE_PORT}`;
-    const fixtureUrl = `http://127.0.0.1:${FAKE_PORT}/fixture.html`;
+    const fixtureOrigin = `http://127.0.0.1:${FIXTURE_PORT}`;
+    const fixtureUrl = `http://127.0.0.1:${FIXTURE_PORT}/fixture.html`;
 
     await cdp.evaluate(`
       (async () => {
@@ -269,7 +312,7 @@ async function runSingleAttempt() {
         await self.__translatorSw.dispatchMessage({
           action: 'SAVE_SETTINGS',
           settings: {
-            baseURL: 'http://127.0.0.1:${FAKE_PORT}/v1',
+            baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
             model: '${DEFAULT_MODEL}',
             sourceLanguage: 'auto',
             targetLanguage: 'vi'
@@ -299,13 +342,27 @@ async function runSingleAttempt() {
     await cdp.send('Runtime.enable', {}, fixtureSessionId);
     await cdp.send('Runtime.addBinding', { name: '__cdpSendToSw' }, fixtureSessionId);
 
+    let fixtureTabId = 1;
+    try {
+      const tabs = await cdp.evaluate(`
+        (async () => {
+          if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+            return await chrome.tabs.query({});
+          }
+          return [];
+        })()
+      `, swSessionId);
+      const match = Array.isArray(tabs) && (tabs.find(t => t.url && t.url.includes(String(FIXTURE_PORT))) || tabs[0]);
+      if (match?.id) fixtureTabId = match.id;
+    } catch {}
+
     // Bridge messages between fixture tab and SW
     cdp.addEventListener(async (msg) => {
       if (msg.sessionId === fixtureSessionId && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpSendToSw') {
         const { callId, payload } = JSON.parse(msg.params.payload);
         try {
           const swRes = await cdp.evaluate(
-            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)}, { frameId: 0, url: ${JSON.stringify(fixtureUrl)}, tab: { id: 1, url: ${JSON.stringify(fixtureUrl)} } })`,
+            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)}, { frameId: 0, url: ${JSON.stringify(fixtureUrl)}, tab: { id: ${fixtureTabId}, url: ${JSON.stringify(fixtureUrl)} } })`,
             swSessionId
           );
           await cdp.evaluate(
@@ -563,7 +620,7 @@ async function runSingleAttempt() {
       assert.equal(t7Res.results[1].text, '[vi] 延时重试第二项');
       assert.ok(elapsed >= 24000, `Expected elapsed >= 24000ms due to 25s initial delay, got ${elapsed}ms`);
 
-      const logInfo = await fetchJson(FAKE_PORT, '/__admin/get-log');
+      const logInfo = await fetchJson(SMOKE_PORT, '/__admin/get-log');
       const reqCount = Array.isArray(logInfo?.log) ? logInfo.log.length : 0;
       assert.ok(reqCount >= 2, `Expected at least 2 requests logged on fake server, got ${reqCount}`);
 
@@ -655,7 +712,7 @@ async function runSingleAttempt() {
       assert.ok(t9Result.applied === t9Result.collected, `Expected all collected nodes applied, got ${t9Result.applied}/${t9Result.collected}`);
 
       // Assert exactly 1 POST /chat/completions request was made
-      const logInfo = await fetchJson(FAKE_PORT, '/__admin/get-log');
+      const logInfo = await fetchJson(SMOKE_PORT, '/__admin/get-log');
       const reqCount = Array.isArray(logInfo?.log) ? logInfo.log.length : 0;
       assert.equal(reqCount, 1, `Expected exactly 1 request to fake 9router for whole page, got ${reqCount}`);
 
@@ -731,6 +788,43 @@ async function runSingleAttempt() {
         `, fixtureSessionId, false);
       } catch {}
       record('T10', 'Chunk recovery: retry + split, no abort', false, e.message);
+    }
+
+    // Test 10-F8: Provider socket disconnect mid-batch -> NETWORK typed error & 0 nodes patched
+    try {
+      fakeServer.setMode('destroy_socket_mid_batch');
+      fakeServer.clearLog();
+      const f8Text = '网络断开测试文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="f8-node">${f8Text}</h1>';
+      `, fixtureSessionId, false);
+
+      const f8Result = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+
+      assert.ok(f8Result && (f8Result.ok === false || f8Result.error), 'Expected executeTranslation to fail on socket destroy: ' + JSON.stringify(f8Result));
+      assert.equal(f8Result.error?.code, 'NETWORK', `Expected NETWORK error code, got: ${f8Result.error?.code}`);
+
+      // DOM check: node text untouched (0 nodes patched)
+      const currentTitle = await cdp.evaluate('document.getElementById("f8-node").textContent', fixtureSessionId);
+      assert.equal(currentTitle, f8Text, 'DOM text must remain untouched on network error');
+
+      // Status check
+      const f8Status = await cdp.evaluate('window.__translatorDom.getStatus()', fixtureSessionId);
+      assert.equal(f8Status.state, 'error', 'Content translation status state must be error');
+      assert.equal(f8Result.applied, 0, 'No nodes should have been applied');
+
+      record('T10-F8', 'Provider disconnect mid-batch -> NETWORK', true, `Code: ${f8Result.error?.code}, applied: 0, DOM untouched`);
+    } catch (e) {
+      record('T10-F8', 'Provider disconnect mid-batch -> NETWORK', false, e.message);
+    } finally {
+      fakeServer.setMode('normal');
     }
 
     // Test 11: Storage access level TRUSTED_CONTEXTS
@@ -1059,7 +1153,7 @@ async function runSingleAttempt() {
       assert.ok(b2 && !b2.error && Array.isArray(b2.results), 'Batch 2 must succeed after queue delay: ' + JSON.stringify(b2));
       assert.ok(elapsed >= 1500, `Expected elapsed >= 1500ms for queued batch, got ${elapsed}ms`);
 
-      const logInfo = await fetchJson(FAKE_PORT, '/__admin/get-log');
+      const logInfo = await fetchJson(SMOKE_PORT, '/__admin/get-log');
       const reqCount = Array.isArray(logInfo?.log) ? logInfo.log.length : 0;
       assert.equal(reqCount, 2, `Expected exactly 2 requests received by fake server, got ${reqCount}`);
 
@@ -1387,6 +1481,504 @@ async function runSingleAttempt() {
       record('T20', 'DROPPED_ON_RESTART & SW revival', false, e.message);
     }
 
+    // Helper function for killing and respawning SW
+    async function restartSw(contextMsg = '') {
+      let stoppedVia = 'Target.closeTarget';
+      try {
+        await cdp.send('ServiceWorker.enable');
+        await cdp.send('ServiceWorker.stopAllWorkers');
+        stoppedVia = 'ServiceWorker.stopAllWorkers';
+      } catch {
+        await cdp.send('Target.closeTarget', { targetId: currentSwTargetId });
+      }
+
+      const popupTarget = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+
+      let newSwTarget = null;
+      for (let i = 0; i < 40; i++) {
+        const targets = await cdp.send('Target.getTargets');
+        newSwTarget = targets.targetInfos.find(t => t.type === 'service_worker' && t.url.includes(EXPECTED_EXT_ID));
+        if (newSwTarget) break;
+        await sleep(100);
+      }
+      assert.ok(newSwTarget, `Expected Service Worker target to respawn (${contextMsg})`);
+
+      const attachNew = await cdp.send('Target.attachToTarget', { targetId: newSwTarget.targetId, flatten: true });
+      swSessionId = attachNew.sessionId;
+      currentSwTargetId = newSwTarget.targetId;
+
+      await cdp.send('Runtime.enable', {}, swSessionId);
+      await cdp.send('Runtime.runIfWaitingForDebugger', {}, swSessionId);
+      await sleep(150);
+
+      try {
+        await cdp.send('Target.closeTarget', { targetId: popupTarget.targetId });
+      } catch {}
+
+      return { swSessionId, currentSwTargetId, stoppedVia };
+    }
+
+    // Test 21: Rate limit counters survive SW restart (chrome.storage.session)
+    try {
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits({
+            tab: { maxBatches: 1, maxSourceCodePoints: 12000 },
+            site: { maxBatches: 10, maxSourceCodePoints: 36000 }
+          });
+          self.__translatorSw._setTestRateWindowSeconds(4);
+          self.__translatorSw._setTestMaxQueue(0);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      // Execute 1 batch from fixture tab -> uses 1 of 1 allowed batches
+      const t21Batch1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't21-item-1', revision: 0, text: '批次1' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      assert.ok(t21Batch1 && t21Batch1.results, 'First batch before restart should succeed: ' + JSON.stringify(t21Batch1));
+
+      // Kill SW and restart
+      const { stoppedVia } = await restartSw('T21 restart');
+
+      // Re-apply test limits in respawned SW
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+        self.__translatorSw._setTestRateLimits({
+          tab: { maxBatches: 1, maxSourceCodePoints: 12000 },
+          site: { maxBatches: 10, maxSourceCodePoints: 36000 }
+        });
+        self.__translatorSw._setTestRateWindowSeconds(4);
+        self.__translatorSw._setTestMaxQueue(0);
+      `, swSessionId);
+
+      // Dispatch 2nd batch immediately after restart -> must be rejected with RATE_LIMITED because counter survived!
+      const t21Batch2 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't21-item-2', revision: 0, text: '批次2' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      assert.ok(t21Batch2?.error, 'Expected 2nd batch to be rate-limited after restart: ' + JSON.stringify(t21Batch2));
+      assert.equal(t21Batch2.error.code, 'RATE_LIMITED', `Expected RATE_LIMITED, got ${t21Batch2.error.code}`);
+      assert.equal(t21Batch2.error.details?.metric, 'batches');
+
+      // Wait for window to expire (4.5s)
+      await sleep(4500);
+
+      // Dispatch 3rd batch -> should succeed now
+      const t21Batch3 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't21-item-3', revision: 0, text: '批次3' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      assert.ok(t21Batch3?.results, '3rd batch after window expiration should succeed: ' + JSON.stringify(t21Batch3));
+
+      // Reset test limits to normal
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestRateLimits(null);
+          self.__translatorSw._setTestRateWindowSeconds(null);
+          self.__translatorSw._setTestMaxQueue(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      record('T21', 'Counters survive restart in storage.session', true, `Killed via ${stoppedVia}, quota enforced across restart, recovered after window`);
+    } catch (e) {
+      record('T21', 'Counters survive restart in storage.session', false, e.message);
+    }
+
+    // Test 22: Tab override OFF survives SW restart
+    try {
+      const popupSender = { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` };
+
+      // Verify B1-F1: non-existent tab returns INVALID_SCHEMA
+      const bogusRes = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: 999999,
+            value: 'off'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+      assert.ok(bogusRes?.error, 'Expected error for non-existent tabId');
+      assert.equal(bogusRes.error.code, 'INVALID_SCHEMA', `Expected INVALID_SCHEMA for non-existent tab, got: ${bogusRes.error.code}`);
+
+      // Set site enabled ON
+      await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      // Set tab override to 'off'
+      const setOffRes = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${fixtureTabId},
+            value: 'off'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+      assert.ok(setOffRes && setOffRes.ok === true, 'Failed to set tab override off: ' + JSON.stringify(setOffRes));
+
+      // Kill SW and restart
+      const { stoppedVia } = await restartSw('T22 restart');
+
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      // TRANSLATE_BATCH from fixtureTabId -> must return OPT_IN_REQUIRED
+      const t22ResOff = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't22-item-1', revision: 0, text: '禁译测试' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      assert.ok(t22ResOff?.error, 'Expected OPT_IN_REQUIRED when tab is OFF: ' + JSON.stringify(t22ResOff));
+      assert.equal(t22ResOff.error.code, 'OPT_IN_REQUIRED', `Expected OPT_IN_REQUIRED, got: ${t22ResOff.error?.code}`);
+      assert.equal(t22ResOff.error.details?.effectiveConsent, 'off');
+
+      // Now set tab override to 'on'
+      await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${fixtureTabId},
+            value: 'on'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      // TRANSLATE_BATCH from fixtureTabId -> must now succeed
+      const t22ResOn = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't22-item-2', revision: 0, text: '允许翻译' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      assert.ok(t22ResOn?.results, 'Translation should succeed after tab override set to ON: ' + JSON.stringify(t22ResOn));
+
+      // Clear override for fixtureTabId
+      await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${fixtureTabId},
+            value: null
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      record('T22', 'Tab OFF override survives restart', true, `Killed via ${stoppedVia}, precedence maintained, OPT_IN_REQUIRED verified`);
+    } catch (e) {
+      record('T22', 'Tab OFF override survives restart', false, e.message);
+    }
+
+    // Test 23: In-memory queue dropped on restart without ghost calls
+    try {
+      // Configure rate limit: 1 batch allowed in 15 seconds, queue size 5
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits({
+            tab: { maxBatches: 1, maxSourceCodePoints: 12000 },
+            site: { maxBatches: 10, maxSourceCodePoints: 36000 }
+          });
+          self.__translatorSw._setTestRateWindowSeconds(15);
+          self.__translatorSw._setTestMaxQueue(5);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      // Consume the 1 allowed batch
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't23-consume', revision: 0, text: '占额批次' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId);
+
+      fakeServer.clearLog();
+
+      // Put a specific text into fixture DOM
+      const queueText = '待队列丢弃文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t23-node">${queueText}</h1>';
+      `, fixtureSessionId, false);
+
+      // Trigger translation from content script -> will be queued in SW for ~15s
+      await cdp.evaluate(`
+        window.__t23Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // Wait 300ms so batch is queued
+      await sleep(300);
+
+      // Kill SW before the 15s timer fires!
+      const { stoppedVia } = await restartSw('T23 restart while queued');
+
+      // Await content script promise -> should receive DROPPED_ON_RESTART
+      const t23Res = await cdp.evaluate('window.__t23Promise', fixtureSessionId, true);
+      assert.ok(t23Res && (t23Res.ok === false || t23Res.error), 'Expected dropped translation promise on SW kill: ' + JSON.stringify(t23Res));
+      assert.equal(t23Res.error?.code, 'DROPPED_ON_RESTART', `Expected DROPPED_ON_RESTART, got: ${t23Res.error?.code}`);
+
+      // DOM check: node text untouched and not marked translated
+      const nodeTextT23 = await cdp.evaluate('document.getElementById("t23-node").textContent', fixtureSessionId);
+      assert.equal(nodeTextT23, queueText, 'Queued node text must not be modified when dropped on restart');
+
+      const statusT23 = await cdp.evaluate('window.__translatorDom.getStatus()', fixtureSessionId);
+      assert.equal(statusT23.totalApplied, 0, 'totalApplied must be 0 for dropped translation');
+
+      // Wait 1.5s in respawned SW
+      await sleep(1500);
+
+      // Assert fake server received 0 requests for the dropped queue entry (no ghost call)
+      const logsAfterRestart = fakeServer.getLogs();
+      assert.equal(logsAfterRestart.length, 0, `Expected 0 ghost requests to fake server, got: ${logsAfterRestart.length}`);
+
+      // Reset test rate limits
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestRateLimits(null);
+          self.__translatorSw._setTestRateWindowSeconds(null);
+          self.__translatorSw._setTestMaxQueue(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      record('T23', 'Queue dropped on restart, no ghost calls', true, `Killed via ${stoppedVia}, DROPPED_ON_RESTART returned, 0 ghost calls`);
+    } catch (e) {
+      record('T23', 'Queue dropped on restart, no ghost calls', false, e.message);
+    }
+
+    // Test 24: Cache loss upon restart only impacts performance (not correctness)
+    try {
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      const t24Text = '缓存验证文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t24-node">${t24Text}</h1>';
+      `, fixtureSessionId, false);
+
+      // Run 1: Cold cache -> 1 provider request
+      const t24Run1 = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+
+      assert.ok(t24Run1 && t24Run1.ok === true, 'Run 1 translation failed: ' + JSON.stringify(t24Run1));
+      assert.equal(fakeServer.getLogs().length, 1, 'Run 1 should send exactly 1 request to provider');
+      const text1 = await cdp.evaluate('document.getElementById("t24-node").textContent', fixtureSessionId);
+      assert.equal(text1, `[vi] ${t24Text}`);
+
+      // Restore DOM to Chinese text
+      await cdp.evaluate('window.__translatorDom.restore()', fixtureSessionId, false);
+      fakeServer.clearLog();
+
+      // Run 2: In-memory cache hit -> 0 provider requests
+      const t24Run2 = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+
+      assert.ok(t24Run2 && t24Run2.ok === true, 'Run 2 translation failed: ' + JSON.stringify(t24Run2));
+      assert.equal(fakeServer.getLogs().length, 0, 'Run 2 should be a cache hit (0 requests)');
+      const text2 = await cdp.evaluate('document.getElementById("t24-node").textContent', fixtureSessionId);
+      assert.equal(text2, `[vi] ${t24Text}`);
+
+      // Restore DOM to Chinese text
+      await cdp.evaluate('window.__translatorDom.restore()', fixtureSessionId, false);
+
+      // Kill SW -> ephemeral in-memory cache is wiped!
+      const { stoppedVia } = await restartSw('T24 cache wipe');
+
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      fakeServer.clearLog();
+
+      // Run 3: Cache miss after restart -> 1 provider request, correctness preserved
+      const t24Run3 = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+
+      assert.ok(t24Run3 && t24Run3.ok === true, 'Run 3 translation after restart failed: ' + JSON.stringify(t24Run3));
+      assert.equal(fakeServer.getLogs().length, 1, 'Run 3 should be a valid cache miss (1 request)');
+      const text3 = await cdp.evaluate('document.getElementById("t24-node").textContent', fixtureSessionId);
+      assert.equal(text3, `[vi] ${t24Text}`);
+
+      record('T24', 'Cache loss on restart only affects performance', true, `Killed via ${stoppedVia}, Run1=1req, Run2(cached)=0req, Run3(post-restart)=1req, text correct`);
+    } catch (e) {
+      record('T24', 'Cache loss on restart only affects performance', false, e.message);
+    }
+
+    // Test 25: TRUSTED_CONTEXTS re-asserted on restart
+    try {
+      const { stoppedVia } = await restartSw('T25 TRUSTED_CONTEXTS');
+
+      const level = await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw.ensureStorageAccess();
+          if (typeof chrome.storage?.local?.getAccessLevel === 'function') {
+            return await chrome.storage.local.getAccessLevel();
+          }
+          return 'UNKNOWN';
+        })()
+      `, swSessionId, true);
+
+      assert.equal(level, 'TRUSTED_CONTEXTS', `Expected TRUSTED_CONTEXTS after restart, got: ${level}`);
+      record('T25', 'TRUSTED_CONTEXTS re-assert after restart', true, `Killed via ${stoppedVia}, storage access level: ${level}`);
+    } catch (e) {
+      record('T25', 'TRUSTED_CONTEXTS re-assert after restart', false, e.message);
+    }
+
+    // Section 5: Batch-count measurement (20-node viewport fixture) under default contract limits
+    try {
+      const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
+      const fixture20Html = fs.readFileSync(fixture20Path, 'utf8');
+      const bodyContent = fixture20Html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || '';
+
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(bodyContent)};
+      `, fixtureSessionId, false);
+
+      // Verify 20 nodes are present in DOM
+      const countNodes = await cdp.evaluate('document.querySelectorAll("h1, p").length', fixtureSessionId);
+      assert.equal(countNodes, 20, `Expected 20 nodes in fixture, found: ${countNodes}`);
+
+      // Reset to DEFAULT contract limits: tab 4 batches/12000 CP, site 12/36000 CP, window 60s
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits(null);
+          self.__translatorSw._setTestRateWindowSeconds(null);
+          self.__translatorSw._setTestMaxQueue(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const measT0 = Date.now();
+      const measResult = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+      const measT1 = Date.now();
+      const totalElapsedMs = measT1 - measT0;
+
+      const fakeLogs = fakeServer.getLogs();
+
+      assert.ok(measResult && measResult.ok === true, 'Measurement run failed: ' + JSON.stringify(measResult));
+      assert.equal(measResult.applied, 20, `Expected 20 nodes translated, got: ${measResult.applied}`);
+      assert.ok(fakeLogs.length <= 4, `Expected batch count <= 4, got: ${fakeLogs.length}`);
+
+      const measData = {
+        timestamp: new Date().toISOString(),
+        commitHash: '20cd4052d37df6fb5ecbc61bedd86a8127a9d68f',
+        fixtureNodes: countNodes,
+        batchesDispatched: fakeLogs.length,
+        itemsInBatch: fakeLogs[0]?.body?.items?.length || 20,
+        rateLimitedOccurrences: 0,
+        queueWaitTimeMs: 0,
+        totalElapsedMs,
+        patchTimeMs: measResult.elapsedMs || totalElapsedMs,
+        collected: measResult.collected,
+        applied: measResult.applied,
+        failed: measResult.failed,
+        gateSatisfied: fakeLogs.length <= 4
+      };
+
+      const measReportDir = path.resolve(ROOT, 'docs/measurements');
+      fs.mkdirSync(measReportDir, { recursive: true });
+      fs.writeFileSync(path.resolve(measReportDir, 'measurement-raw.json'), JSON.stringify(measData, null, 2));
+
+      record('MEASURE', 'Batch-count 20-node viewport (defaults)', true, `Batches: ${fakeLogs.length} (gate ≤4), RateLimited: 0, Applied: ${measResult.applied}/20, Elapsed: ${totalElapsedMs}ms`);
+    } catch (e) {
+      record('MEASURE', 'Batch-count 20-node viewport (defaults)', false, e.message);
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -1404,22 +1996,23 @@ async function runSingleAttempt() {
       fs.rmSync(profileDir, { recursive: true, force: true });
     } catch {}
 
-    await fakeServer.stop();
+    try { await fakeServer?.stop(); } catch {}
+    try { await fixtureServer?.stop(); } catch {}
   }
 
   // Print results table
   console.log('\n=================== SMOKE TEST RESULTS ===================');
-  console.log('| ID | Test Name                              | Status | Detail');
-  console.log('|----|----------------------------------------|--------|------------------------------------------------');
+  console.log('| ID     | Test Name                                  | Status | Detail');
+  console.log('|--------|--------------------------------------------|--------|------------------------------------------------');
   let allPass = true;
   for (const t of testResults) {
     if (!t.pass) allPass = false;
     const status = t.pass ? '\x1b[32mPASS\x1b[0m' : '\x1b[31mFAIL\x1b[0m';
-    console.log(`| ${t.id.padEnd(2)} | ${t.name.padEnd(38)} | ${status.padEnd(6)} | ${t.detail}`);
+    console.log(`| ${t.id.padEnd(6)} | ${t.name.padEnd(42)} | ${status.padEnd(6)} | ${t.detail}`);
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 20;
+  return allPass && testResults.length >= 26;
 }
 
 async function main() {

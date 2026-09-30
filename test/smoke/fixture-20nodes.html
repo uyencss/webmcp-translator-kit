@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Viewport 20 Nodes Fixture</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 24px; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 24px; margin-bottom: 16px; color: #1a1a1a; }
+    p { margin-bottom: 12px; color: #333; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1 id="title">文章标题：WebMCP 架构演进与翻译系统</h1>
+    <p class="node-01">第 01 段：在现代浏览器扩展开发中，Manifest V3 规范引入了事件驱动的服务工作线程生命周期。</p>
+    <p class="node-02">第 02 段：传统的内存常驻背景页面被按需启动的 Service Worker 取代，空闲 30 秒后将被自动终止。</p>
+    <p class="node-03">第 03 段：为了确保用户授权和配额计数器不因生命周期重启而丢失，我们采用会话存储进行状态持久化。</p>
+    <p class="node-04">第 04 段：内容脚本运行在隔离的 DOM 环境中，通过原生双向消息通道与后台工作线程保持通信。</p>
+    <p class="node-05">第 05 段：滑动窗口限流器精准追踪过去 60 秒内消耗的批次数以及 Unicode 码点数。</p>
+    <p class="node-06">第 06 段：在分发批量请求之前，系统执行双上限瓶颈检查并计算毫秒级重试等待时间。</p>
+    <p class="node-07">第 07 段：多层降级策略确保当接口出现限流或临时网络中断时能够自动指数退避重试。</p>
+    <p class="node-08">第 08 段：内存中的双约束缓存机制能够有效识别重复请求，实现瞬时命中与零网络开销。</p>
+    <p class="node-09">第 09 段：严格的发送方安全校验排除了所有非受信上下文以及恶意构造的伪造请求。</p>
+    <p class="node-10">第 10 段：敏感的 API 密钥被严格保护在仅受信上下文可访问的本地存储区域中。</p>
+    <p class="node-11">第 11 段：文本节点收集算法精准遍历 DOM 树，自动跳过代码块、预格式化文本与交互输入框。</p>
+    <p class="node-12">第 12 段：微任务节流调度器将已翻译内容平滑打补丁回页面，避免大规模 DOM 重排与卡顿。</p>
+    <p class="node-13">第 13 段：页面上的复杂 SVG 矢量图形与原有的事件监听器在补丁应用过程中得到完整保留。</p>
+    <p class="node-14">第 14 段：当用户发起一键还原时，所有被翻译节点的原始文本与属性能够在数毫秒内完美还原。</p>
+    <p class="node-15">第 15 段：动态权限协调器持续比对用户授予的主机权限与已注册的内容脚本，确保一致性。</p>
+    <p class="node-16">第 16 段：如果在批次请求在途时服务工作线程被浏览器终止，内容脚本将收到重启丢弃通知。</p>
+    <p class="node-17">第 17 段：端到端单射映射验证确保了大语言模型返回的每个翻译条目与原始标识一一对应。</p>
+    <p class="node-18">第 18 段：网络中断异常处理经过精细测试，确保连接断开时不会向 DOM 应用残缺内容。</p>
+    <p class="node-19">第 19 段：完备的工程规约与自动化回归套件为现代浏览器智能扩展奠定了坚实的基础。</p>
+  </main>
+</body>
+</html>

@@ -2,8 +2,8 @@
 import http from 'node:http';
 import fs from 'node:fs';
 
-export function createFakeServer(port = 8089) {
-  let mode = 'normal'; // 'normal' | 'rate_limit_429' | 'timeout'
+export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089', 10)) {
+  let mode = 'normal'; // 'normal' | 'rate_limit_429' | 'timeout' | 'destroy_socket_mid_batch'
   let requestLog = [];
 
   const server = http.createServer(async (req, res) => {
@@ -85,6 +85,13 @@ export function createFakeServer(port = 8089) {
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', () => {
         requestLog.push({ time: Date.now(), mode, length: body.length });
+
+        if (mode === 'destroy_socket_mid_batch') {
+          res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+          res.write('{"choices":[{"message":{"content":"{\\"results\\":[');
+          req.socket.destroy();
+          return;
+        }
 
         if (mode === 'rate_limit_429') {
           res.writeHead(429, {
@@ -181,7 +188,16 @@ export function createFakeServer(port = 8089) {
 
   return {
     server,
-    start: () => new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server.address()))),
+    start: () => new Promise((resolve, reject) => {
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`[EADDRINUSE] Port ${port} is already in use. Please run with SMOKE_PORT=<available_port> (e.g. SMOKE_PORT=8099).`);
+          process.exit(1);
+        }
+        reject(err);
+      });
+      server.listen(port, '127.0.0.1', () => resolve(server.address()));
+    }),
     stop: () => new Promise((resolve) => server.close(resolve)),
     setMode: (m) => { mode = m; },
     getMode: () => mode,
@@ -192,7 +208,7 @@ export function createFakeServer(port = 8089) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('fake-9router.mjs')) {
-  const port = parseInt(process.env.PORT || '8089', 10);
+  const port = parseInt(process.env.SMOKE_PORT || process.env.PORT || '8089', 10);
   const fake = createFakeServer(port);
   fake.start().then((addr) => {
     console.log(`Fake 9router listening on http://127.0.0.1:${addr.port}`);
