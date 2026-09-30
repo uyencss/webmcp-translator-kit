@@ -603,3 +603,26 @@ test('H1 (c): translateBatch times out when stream stalls mid-body after initial
   assert.ok(elapsed <= 300, `Expected elapsed <= 300ms, got ${elapsed}ms`);
 });
 
+test('N5: router.listModels accepts per-call baseURL and apiKey parameters', async () => {
+  const fake = createFakeProvider();
+  const { baseURL } = await fake.start();
+
+  try {
+    const router = createDirect9Router({
+      baseURL: 'http://invalid-initial-host.example.com',
+      apiKey: 'invalid-initial-key',
+      ...fastOptions
+    });
+
+    const res = await router.listModels({
+      baseURL,
+      apiKey: 'per-call-key'
+    });
+
+    assert.ok(Array.isArray(res.models), 'Models list should be returned');
+    assert.equal(fake.getLog().length, 1, 'Fake provider should receive exactly 1 request');
+  } finally {
+    await fake.stop();
+  }
+});
+

@@ -178,7 +178,30 @@ test('fallback: resolveFallbackChain (b) uses custom baseURL and distinct fallba
   });
 });
 
-test('fallback: resolveFallbackChain (c) uses custom baseURL but inherits primary key when fallback key is not set', () => {
+test('fallback: resolveFallbackChain (c) uses custom baseURL but inherits primary key when fallback key is not set (same-origin only)', () => {
+  const settings = {
+    baseURL: 'https://primary.example.com/v1',
+    model: 'primary-model',
+    fallbacks: [
+      { id: 'fb1', baseURL: 'https://primary.example.com/v2', model: 'fb-model-1' }
+    ]
+  };
+  const primaryKey = 'sk-primary-key';
+  const fbKeys = {}; // No key for fb1
+
+  const chain = resolveFallbackChain(settings, fbKeys, primaryKey);
+
+  assert.equal(chain.length, 2);
+  assert.deepEqual(chain[1], {
+    id: 'fb1',
+    baseURL: 'https://primary.example.com/v2',
+    apiKey: 'sk-primary-key', // Inherited from primary because same origin
+    model: 'fb-model-1'
+  });
+  assert.deepEqual(chain.skippedFallbacks, []);
+});
+
+test('fallback: resolveFallbackChain (d) skips fallback with different origin when fallback key is not set', () => {
   const settings = {
     baseURL: 'https://primary.example.com/v1',
     model: 'primary-model',
@@ -191,13 +214,16 @@ test('fallback: resolveFallbackChain (c) uses custom baseURL but inherits primar
 
   const chain = resolveFallbackChain(settings, fbKeys, primaryKey);
 
-  assert.equal(chain.length, 2);
-  assert.deepEqual(chain[1], {
-    id: 'fb1',
-    baseURL: 'https://custom-fallback.example.com/v1',
-    apiKey: 'sk-primary-key', // Inherited from primary
-    model: 'fb-model-1'
+  assert.equal(chain.length, 1); // fb1 skipped!
+  assert.deepEqual(chain[0], {
+    id: 'primary',
+    baseURL: 'https://primary.example.com/v1',
+    apiKey: 'sk-primary-key',
+    model: 'primary-model'
   });
+  assert.deepEqual(chain.skippedFallbacks, [
+    { id: 'fb1', reason: 'missing_key_for_origin' }
+  ]);
 });
 
 test('fallback: resolveFallbackPlan works seamlessly with object chain configs', () => {

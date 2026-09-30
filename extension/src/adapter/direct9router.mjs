@@ -95,8 +95,8 @@ export function createDirect9Router(config = {}) {
 
   async function listModels(options = {}) {
     const forceRefresh = Boolean(options && options.forceRefresh);
-    const baseURL = getBaseURL();
-    const apiKey = getApiKey();
+    const baseURL = normalizeBaseURL(options.baseURL !== undefined ? options.baseURL : getBaseURL());
+    const apiKey = options.apiKey !== undefined ? String(options.apiKey) : getApiKey();
 
     const missing = [];
     if (!baseURL) missing.push('baseURL');

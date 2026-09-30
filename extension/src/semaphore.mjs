@@ -15,7 +15,13 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
   let activeCount = 0;
   const queue = [];
 
-  function acquire(customTimeoutMs) {
+  function acquire(customTimeoutMs, signal) {
+    if (signal?.aborted) {
+      const err = new Error(signal.reason ? String(signal.reason) : 'Semaphore acquisition aborted');
+      err.name = 'AbortError';
+      err.code = 'ABORTED';
+      return Promise.reject(err);
+    }
     if (activeCount < maxConcurrency) {
       activeCount++;
       return Promise.resolve(true);
@@ -27,14 +33,34 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
       const waiter = {
         resolve,
         reject,
-        timer: null
+        timer: null,
+        signal,
+        onAbort: null
       };
+
+      if (signal) {
+        waiter.onAbort = () => {
+          const idx = queue.indexOf(waiter);
+          if (idx !== -1) {
+            queue.splice(idx, 1);
+            if (waiter.timer) clearTimeout(waiter.timer);
+            const err = new Error(signal.reason ? String(signal.reason) : 'Semaphore acquisition aborted');
+            err.name = 'AbortError';
+            err.code = 'ABORTED';
+            reject(err);
+          }
+        };
+        signal.addEventListener('abort', waiter.onAbort, { once: true });
+      }
 
       if (waitTimeoutMs > 0 && Number.isFinite(waitTimeoutMs)) {
         waiter.timer = setTimeout(() => {
           const idx = queue.indexOf(waiter);
           if (idx !== -1) {
             queue.splice(idx, 1);
+            if (waiter.onAbort && signal) {
+              signal.removeEventListener('abort', waiter.onAbort);
+            }
             reject(new SemaphoreTimeoutError(`Semaphore acquisition timed out after ${waitTimeoutMs}ms`));
           }
         }, waitTimeoutMs);
@@ -50,14 +76,17 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
       if (next.timer) {
         clearTimeout(next.timer);
       }
+      if (next.onAbort && next.signal) {
+        next.signal.removeEventListener('abort', next.onAbort);
+      }
       next.resolve(true);
     } else {
       activeCount = Math.max(0, activeCount - 1);
     }
   }
 
-  async function withPermit(fn, customTimeoutMs) {
-    await acquire(customTimeoutMs);
+  async function withPermit(fn, customTimeoutMs, signal) {
+    await acquire(customTimeoutMs, signal);
     try {
       return await fn();
     } finally {

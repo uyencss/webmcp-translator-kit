@@ -193,23 +193,44 @@ export function resolveFallbackChain(settings = {}, fallbackApiKeys = {}, primar
     model: primaryModel
   };
 
+  const primaryOrigin = primaryConfig.baseURL ? normalizeOrigin(primaryConfig.baseURL) : null;
   const configuredFallbacks = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
   const fallbackConfigs = [];
+  const skippedFallbacks = [];
+
   for (const fb of configuredFallbacks) {
     if (fb && typeof fb === 'object' && fb.model) {
       const fbId = typeof fb.id === 'string' && fb.id.trim() ? fb.id.trim() : 'fb1';
       const fbBaseURL = (typeof fb.baseURL === 'string' && fb.baseURL.trim()) ? fb.baseURL.trim() : primaryConfig.baseURL;
-      const fbApiKey = (fbId && fallbackApiKeys && fallbackApiKeys[fbId]) ? fallbackApiKeys[fbId] : primaryKey;
-      fallbackConfigs.push({
-        id: fbId,
-        baseURL: fbBaseURL,
-        apiKey: fbApiKey,
-        model: fb.model.trim()
-      });
+      const fbOrigin = fbBaseURL ? normalizeOrigin(fbBaseURL) : primaryOrigin;
+      const hasDedicatedKey = Boolean(fbId && fallbackApiKeys && fallbackApiKeys[fbId]);
+
+      if (hasDedicatedKey) {
+        fallbackConfigs.push({
+          id: fbId,
+          baseURL: fbBaseURL,
+          apiKey: fallbackApiKeys[fbId],
+          model: fb.model.trim()
+        });
+      } else if (fbOrigin && primaryOrigin && fbOrigin === primaryOrigin) {
+        fallbackConfigs.push({
+          id: fbId,
+          baseURL: fbBaseURL,
+          apiKey: primaryKey || '',
+          model: fb.model.trim()
+        });
+      } else {
+        skippedFallbacks.push({
+          id: fbId,
+          reason: 'missing_key_for_origin'
+        });
+      }
     }
   }
 
-  return [primaryConfig, ...fallbackConfigs].slice(0, 3);
+  const chain = [primaryConfig, ...fallbackConfigs].slice(0, 3);
+  chain.skippedFallbacks = skippedFallbacks;
+  return chain;
 }
 
 // Utility to compare arrays of strings
@@ -255,6 +276,7 @@ function _setTestMode(enabled) {
   _testMode = Boolean(enabled);
   if (!_testMode) {
     _testPermissionOverrides.clear();
+    testTabRegistry.clear();
     _testRateLimits = null;
     _testRateWindowSeconds = null;
     _testMaxQueue = null;
@@ -285,6 +307,12 @@ function _registerTestTab(tabId, url) {
   const id = Number(tabId);
   if (!Number.isFinite(id)) return;
   testTabRegistry.set(id, String(url));
+}
+
+/** TEST-ONLY: check registry (lets the harness verify re-register after restart). */
+function _testRegistryHas(tabId) {
+  if (!_testMode) return false;
+  return testTabRegistry.has(Number(tabId));
 }
 
 function _setTestRateLimits(limits) {
@@ -596,6 +624,11 @@ async function checkAdmission(tabId, origin, cost) {
  * (harness); ids unknown to both sources are treated as closed.
  */
 async function resolveTabPolicy(tabId) {
+  const idNum = Number(tabId);
+  if (_testMode && testTabRegistry.has(idNum)) {
+    const testUrl = testTabRegistry.get(idNum);
+    return { exists: true, url: (typeof testUrl === 'string' && testUrl) ? testUrl : null };
+  }
   let real = null;
   try {
     if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.get === 'function') {
@@ -604,9 +637,8 @@ async function resolveTabPolicy(tabId) {
   } catch {
     real = null;
   }
-  const testUrl = _testMode && testTabRegistry.has(Number(tabId)) ? testTabRegistry.get(Number(tabId)) : null;
-  if (!real && testUrl === null) return null;
-  const url = (real && typeof real.url === 'string' && real.url) || testUrl || null;
+  if (!real) return null;
+  const url = (typeof real.url === 'string' && real.url) || null;
   return { exists: true, url };
 }
 
@@ -639,26 +671,25 @@ function scheduleQueueEntry(entry, delayMs) {
         return;
       }
 
-      if (entry.tabUrl && tabInfo.url && tabInfo.url !== entry.tabUrl) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'ABORTED',
-          'Tab navigated while translation was queued',
-          false,
-          { reason: 'navigation', originalUrl: entry.tabUrl, currentUrl: tabInfo.url }
-        ));
-        return;
-      }
-
-      // Fail closed when the current tab URL cannot be verified (e.g. tab
-      // exists but url is unreadable): never dispatch blindly on a stale origin.
-      if (tabInfo.url === null || tabInfo.url === undefined || tabInfo.url === '') {
+      const curOrigin = tabInfo.url ? normalizeOrigin(tabInfo.url) : null;
+      if (!curOrigin) {
         removeEntryFromQueue(entry);
         entry.resolve(createTypedError(
           'ABORTED',
           'Tab URL could not be verified before dispatch',
           false,
           { reason: 'tab_url_unverifiable', tabId: entry.tabId }
+        ));
+        return;
+      }
+
+      if (curOrigin !== entry.origin) {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'ABORTED',
+          'Tab navigated while translation was queued',
+          false,
+          { reason: 'navigation', originalOrigin: entry.origin, currentOrigin: curOrigin }
         ));
         return;
       }
@@ -788,6 +819,149 @@ async function handleTabRemoved(tabId) {
 
 if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'function') {
   chrome.tabs.onRemoved.addListener(handleTabRemoved);
+}
+
+// Clean active batch controllers and rate queues when tab navigates (status === 'loading')
+async function handleTabUpdated(tabId, changeInfo, tab) {
+  try {
+    if (changeInfo && changeInfo.status === 'loading') {
+      const idNum = Number(tabId);
+      for (const [reqId, active] of activeBatchControllers.entries()) {
+        if (active.tabId === idNum || active.tabId === tabId) {
+          try { active.controller.abort('navigation'); } catch {}
+          activeBatchControllers.delete(reqId);
+        }
+      }
+      const currentEpoch = tabEpochs.get(idNum) || tabEpochs.get(tabId) || 0;
+      tabEpochs.set(idNum, currentEpoch + 1);
+      const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
+      if (queue && queue.length > 0) {
+        for (const entry of queue) {
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.resolve(createTypedError(
+            'ABORTED',
+            'Tab navigated while translation was queued',
+            false,
+            { reason: 'navigation', tabId }
+          ));
+        }
+        tabQueues.delete(idNum);
+        tabQueues.delete(tabId);
+      }
+    }
+  } catch {
+    // Ignore navigation cleanup error
+  }
+}
+
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onUpdated && typeof chrome.tabs.onUpdated.addListener === 'function') {
+  chrome.tabs.onUpdated.addListener(handleTabUpdated);
+}
+
+/**
+ * Unified pre-dispatch / post-semaphore verification.
+ * Re-validates config revision, tab epoch, tab existence, origin match,
+ * current consent (tab override & site enabled, covering N4 race), and host permission.
+ */
+async function verifyTabDispatchPolicy({ tabId, origin, epoch, expectedConfigRevision }) {
+  if (expectedConfigRevision !== undefined && expectedConfigRevision !== configRevision) {
+    return {
+      ...createTypedError(
+        'ABORTED',
+        'Translation batch discarded due to configuration change',
+        false,
+        { batchConfigRevision: expectedConfigRevision, currentConfigRevision: configRevision }
+      ),
+      configRevision: expectedConfigRevision,
+      currentConfigRevision: configRevision
+    };
+  }
+
+  if (typeof tabId === 'number') {
+    if (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId)) {
+      return createTypedError(
+        'ABORTED',
+        'Pending translation cancelled by new epoch',
+        false,
+        { reason: 'epoch_changed', tabId }
+      );
+    }
+
+    const tabInfo = await resolveTabPolicy(tabId);
+    if (!tabInfo) {
+      return createTypedError(
+        'ABORTED',
+        'Tab was closed before dispatch',
+        false,
+        { reason: 'tab_closed' }
+      );
+    }
+
+    const curOrigin = tabInfo.url ? normalizeOrigin(tabInfo.url) : null;
+    if (!curOrigin) {
+      return createTypedError(
+        'ABORTED',
+        'Tab URL could not be verified before dispatch',
+        false,
+        { reason: 'tab_url_unverifiable', tabId }
+      );
+    }
+
+    if (origin && curOrigin !== origin) {
+      return createTypedError(
+        'ABORTED',
+        'Tab navigated before dispatch',
+        false,
+        { reason: 'navigation', originalOrigin: origin, currentOrigin: curOrigin }
+      );
+    }
+
+    // Consent check: tab override > site enabled > default OFF (covers N4 race)
+    let sites, tabOverrides;
+    try {
+      sites = await getStoredSites();
+      tabOverrides = await getStoredTabOverrides();
+    } catch (err) {
+      return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
+        tabId,
+        reason: err?.message || 'Storage read error'
+      });
+    }
+
+    const siteEnabled = Boolean(sites[origin || curOrigin]);
+    const tabOverride = tabOverrides[String(tabId)] || null;
+    const effective = getEffectivePolicy({ tabOverride, siteEnabled });
+
+    if (effective !== 'on') {
+      return createTypedError(
+        'OPT_IN_REQUIRED',
+        'Translation is disabled (tab explicit OFF, site OFF, or default OFF)',
+        false,
+        {
+          tabId,
+          origin: origin || curOrigin,
+          scope: tabOverride ? 'tab' : 'site',
+          effectiveConsent: 'off'
+        }
+      );
+    }
+
+    // Permission check
+    const hasPerm = await permissionContains(origin || curOrigin);
+    if (!hasPerm) {
+      return createTypedError(
+        'PERMISSION_REQUIRED',
+        'Host permission not granted for site origin',
+        false,
+        {
+          origin: origin || curOrigin,
+          permissionType: 'host'
+        }
+      );
+    }
+  }
+
+  return { valid: true };
 }
 
 // Reconcile dynamic content scripts with active permissions and storage
@@ -996,15 +1170,11 @@ async function listModels(options = {}) {
   const forceRefresh = Boolean(options && options.forceRefresh);
   await ensureStorageAccess();
   const settings = await getStoredSettings();
-  const apiKey = await getStoredApiKey();
-
-  const baseURL = settings.baseURL || '';
-  routerConfig.baseURL = baseURL;
-  routerConfig.apiKey = apiKey;
-  routerConfig.model = settings.model || DEFAULT_MODEL;
+  const apiKey = (options && options.apiKey) || (await getStoredApiKey());
+  const baseURL = (options && options.baseURL) || settings.baseURL || '';
 
   if (!baseURL || !apiKey) {
-    return await router.listModels({ forceRefresh });
+    return await router.listModels({ forceRefresh, baseURL, apiKey });
   }
 
   const fingerprint = await computeKeyFingerprint(apiKey, baseURL);
@@ -1029,7 +1199,7 @@ async function listModels(options = {}) {
 
   // 1. Force refresh: bypass L1 and L2
   if (forceRefresh) {
-    const fetchRes = await router.listModels({ forceRefresh: true });
+    const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
     if (fetchRes && Array.isArray(fetchRes.models)) {
       const fetchedAt = Date.now();
       await chrome.storage.local.set({
@@ -1068,7 +1238,7 @@ async function listModels(options = {}) {
     if (!_revalidateModelsPromise) {
       _revalidateModelsPromise = (async () => {
         try {
-          const fetchRes = await router.listModels({ forceRefresh: true });
+          const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
           if (fetchRes && Array.isArray(fetchRes.models)) {
             const fetchedAt = Date.now();
             await chrome.storage.local.set({
@@ -1096,7 +1266,7 @@ async function listModels(options = {}) {
   }
 
   // 4. Missing, fingerprint changed, or > 7 days: blocking fetch
-  const fetchRes = await router.listModels({ forceRefresh: true });
+  const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
   if (fetchRes && Array.isArray(fetchRes.models)) {
     const fetchedAt = Date.now();
     await chrome.storage.local.set({
@@ -1120,9 +1290,6 @@ async function translateBatch(input = {}) {
   const baseURL = input.baseURL || settings.baseURL;
   const key = input.apiKey !== undefined ? input.apiKey : apiKey;
   const model = input.model || settings.model || DEFAULT_MODEL;
-  routerConfig.baseURL = baseURL;
-  routerConfig.apiKey = key;
-  routerConfig.model = model;
   return await router.translateBatch({
     ...input,
     baseURL,
@@ -1157,7 +1324,7 @@ async function executeBatchTranslation({
   const signal = controller ? controller.signal : payload.signal;
 
   try {
-    await providerSemaphore.acquire();
+    await providerSemaphore.acquire(undefined, signal);
   } catch (err) {
     if (controller) {
       activeBatchControllers.delete(requestId);
@@ -1165,6 +1332,11 @@ async function executeBatchTranslation({
     if (err?.code === 'TIMEOUT') {
       return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
         maxConcurrentRequests: providerSemaphore.getMaxConcurrency()
+      });
+    }
+    if (err?.code === 'ABORTED' || err?.name === 'AbortError') {
+      return createTypedError('ABORTED', 'Operation aborted before acquiring provider slot', false, {
+        reason: signal?.reason ? String(signal.reason) : 'aborted'
       });
     }
     throw err;
@@ -1181,25 +1353,19 @@ async function executeBatchTranslation({
     });
   }
 
-  // Pre-dispatch guard: verify configuration revision and tab epoch
-  if (
-    batchConfigRevision !== configRevision ||
-    (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId))
-  ) {
+  // Pre-dispatch guard: verify configuration revision, tab existence, origin match, consent, and tab epoch
+  const guardCheck = await verifyTabDispatchPolicy({
+    tabId,
+    origin,
+    epoch,
+    expectedConfigRevision: batchConfigRevision
+  });
+  if (guardCheck && guardCheck.error) {
     providerSemaphore.release();
     if (controller) {
       activeBatchControllers.delete(requestId);
     }
-    return {
-      ...createTypedError(
-        'ABORTED',
-        'Translation batch discarded due to configuration change',
-        false,
-        { batchConfigRevision, currentConfigRevision: configRevision }
-      ),
-      configRevision: batchConfigRevision,
-      currentConfigRevision: configRevision
-    };
+    return guardCheck;
   }
 
   const storedSettings = await getStoredSettings();
@@ -1227,26 +1393,20 @@ async function executeBatchTranslation({
       const currentBaseURL = currentConfig.baseURL;
       const currentApiKey = currentConfig.apiKey;
 
-      // Re-verify signal and config revision before each attempt
+      // Re-verify signal and policy guard before each attempt
       if (signal?.aborted) {
         return createTypedError('ABORTED', 'Operation aborted during attempt', false, {
           reason: signal.reason ? String(signal.reason) : 'aborted'
         });
       }
-      if (
-        batchConfigRevision !== configRevision ||
-        (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId))
-      ) {
-        return {
-          ...createTypedError(
-            'ABORTED',
-            'Translation batch discarded due to configuration change',
-            false,
-            { batchConfigRevision, currentConfigRevision: configRevision }
-          ),
-          configRevision: batchConfigRevision,
-          currentConfigRevision: configRevision
-        };
+      const guardCheckAttempt = await verifyTabDispatchPolicy({
+        tabId,
+        origin,
+        epoch,
+        expectedConfigRevision: batchConfigRevision
+      });
+      if (guardCheckAttempt && guardCheckAttempt.error) {
+        return guardCheckAttempt;
       }
 
       // Check cache for this specific attempt
@@ -1360,6 +1520,12 @@ async function executeBatchTranslation({
   }
 
   if (finalProviderRes && finalProviderRes.error) {
+    if (chain.skippedFallbacks && chain.skippedFallbacks.length > 0) {
+      finalProviderRes.error.details = {
+        ...(finalProviderRes.error.details || {}),
+        skippedFallbacks: chain.skippedFallbacks
+      };
+    }
     return finalProviderRes;
   }
 
@@ -1457,14 +1623,21 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           storedFbKeys = res.fallback_api_keys || {};
         } catch {}
         const fallbackKeyPresence = {};
+        const fallbackWarnings = [];
+        const primaryOrigin = settings.baseURL ? normalizeOrigin(settings.baseURL) : null;
         if (Array.isArray(settings.fallbacks)) {
           for (const fb of settings.fallbacks) {
             if (fb && fb.id) {
-              fallbackKeyPresence[fb.id] = Boolean(storedFbKeys[fb.id]);
+              const hasFbKey = Boolean(storedFbKeys[fb.id]);
+              fallbackKeyPresence[fb.id] = hasFbKey;
+              const fbOrigin = fb.baseURL ? normalizeOrigin(fb.baseURL) : primaryOrigin;
+              if (!hasFbKey && fbOrigin && primaryOrigin && fbOrigin !== primaryOrigin) {
+                fallbackWarnings.push({ id: fb.id, warning: 'missing_key_for_origin' });
+              }
             }
           }
         }
-        return { settings, hasKey, fallbackKeyPresence, configRevision };
+        return { settings, hasKey, fallbackKeyPresence, fallbackWarnings, configRevision };
       }
 
       case 'SAVE_SETTINGS': {
@@ -1563,8 +1736,6 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         } catch {}
 
         await chrome.storage.local.set({ settings: migrated });
-        if (migrated.baseURL) routerConfig.baseURL = migrated.baseURL;
-        if (migrated.model) routerConfig.model = migrated.model;
 
         // Push WIDGET_STATE_CHANGED if mode or widgetVisible changed
         if (oldSettings.translationMode !== migrated.translationMode || oldSettings.widgetVisible !== migrated.widgetVisible) {
@@ -1627,7 +1798,6 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await chrome.storage.local.remove(['modelListCache']);
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
-          routerConfig.apiKey = message.key;
         }
         return { ok: true, configRevision };
       }
@@ -1749,7 +1919,6 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         tabQueues.clear();
         // Invalidate model list cache on key removal, and remove all fallback keys
         await chrome.storage.local.remove(['modelListCache', 'api_key', 'fallback_api_keys']);
-        routerConfig.apiKey = '';
         return { ok: true, configRevision };
       }
 
@@ -2575,12 +2744,14 @@ globalScope.__translatorSw = {
   _setTestMode,
   _setTestPermission,
   _registerTestTab,
+  _testRegistryHas,
   _setTestRateLimits,
   _setTestRateWindowSeconds,
   _setTestMaxQueue,
   _setTestMaxRetries,
   _resetRateStateForTest,
   _handleTabRemovedForTest: (tabId) => handleTabRemoved(tabId),
+  _handleTabUpdatedForTest: (tabId, changeInfo, tab) => handleTabUpdated(tabId, changeInfo, tab),
   reconcilePermissions,
   permissionContains,
   translateBatch,

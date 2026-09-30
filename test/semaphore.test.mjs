@@ -148,3 +148,44 @@ test('semaphore: withPermit wrapper executes and releases cleanly', async () => 
   );
   assert.equal(sem.active(), 0);
 });
+
+test('semaphore: pre-aborted signal rejects immediately without occupying slot', async () => {
+  const sem = createSemaphore({ maxConcurrency: 1 });
+  const controller = new AbortController();
+  controller.abort('pre_aborted');
+
+  await assert.rejects(
+    () => sem.acquire(undefined, controller.signal),
+    (err) => err.code === 'ABORTED' && err.name === 'AbortError'
+  );
+  assert.equal(sem.active(), 0);
+  assert.equal(sem.waiting(), 0);
+});
+
+test('semaphore: in-queue abort removes waiter and rejects immediately', async () => {
+  const sem = createSemaphore({ maxConcurrency: 1 });
+  await sem.acquire(); // slot 1 taken
+  assert.equal(sem.active(), 1);
+
+  const controller = new AbortController();
+  const acquirePromise = sem.acquire(5000, controller.signal);
+  assert.equal(sem.waiting(), 1);
+
+  // Abort while waiting
+  controller.abort('navigation');
+
+  await assert.rejects(
+    acquirePromise,
+    (err) => err.code === 'ABORTED' && err.name === 'AbortError'
+  );
+  assert.equal(sem.waiting(), 0);
+  assert.equal(sem.active(), 1);
+
+  // Releasing the slot allows subsequent acquire
+  sem.release();
+  assert.equal(sem.active(), 0);
+  await sem.acquire();
+  assert.equal(sem.active(), 1);
+  sem.release();
+});
+
