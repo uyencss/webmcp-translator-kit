@@ -4011,7 +4011,7 @@ async function runSingleAttempt() {
     }
 
     // =========================================================================
-    // Test 47: Popup e2e (light: tablist, cache, favorite, mode radio)
+    // Test 47: Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)
     // =========================================================================
     let pTarget1 = null;
     let pTarget2 = null;
@@ -4028,24 +4028,24 @@ async function runSingleAttempt() {
       assert.ok(hasTablist, 'Popup must render [role="tablist"]');
 
       const tabs = await cdp.evaluate('Array.from(document.querySelectorAll(".tab-btn[role=\\"tab\\"]")).map(el => el.id)', pSession1);
-      assert.deepEqual(tabs, ['tab-models', 'tab-general'], 'Popup must have 2 tabs: tab-models and tab-general');
+      assert.deepEqual(tabs, ['tab-translate', 'tab-connect'], 'Popup must have 2 tabs: tab-translate and tab-connect');
 
-      // Check initial panel visibility (models visible, general hidden)
-      const isGeneralHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-general")?.classList.contains("hidden")', pSession1);
-      const isModelsHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-models")?.classList.contains("hidden")', pSession1);
-      assert.ok(isGeneralHiddenInit, 'tabpanel-general must be hidden initially');
-      assert.ok(!isModelsHiddenInit, 'tabpanel-models must be visible initially');
+      // Check initial panel visibility (translate visible, connect hidden)
+      const isConnectHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
+      const isTranslateHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
+      assert.ok(isConnectHiddenInit, 'tabpanel-connect must be hidden initially');
+      assert.ok(!isTranslateHiddenInit, 'tabpanel-translate must be visible initially');
 
-      // Click tab-general -> panel visibility flips
-      await cdp.evaluate('document.getElementById("tab-general")?.click()', pSession1);
+      // Click tab-connect -> panel visibility flips
+      await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession1);
       await sleep(100);
-      const isGeneralHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-general")?.classList.contains("hidden")', pSession1);
-      const isModelsHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-models")?.classList.contains("hidden")', pSession1);
-      assert.ok(!isGeneralHiddenAfter, 'tabpanel-general must be visible after click');
-      assert.ok(isModelsHiddenAfter, 'tabpanel-models must be hidden after switching');
+      const isConnectHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
+      const isTranslateHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
+      assert.ok(!isConnectHiddenAfter, 'tabpanel-connect must be visible after click');
+      assert.ok(isTranslateHiddenAfter, 'tabpanel-translate must be hidden after switching');
 
-      // Switch back to tab-models
-      await cdp.evaluate('document.getElementById("tab-models")?.click()', pSession1);
+      // Switch back to tab-translate
+      await cdp.evaluate('document.getElementById("tab-translate")?.click()', pSession1);
       await sleep(100);
 
       // (b) Model list: cache-first (second popup open does NOT request /models)
@@ -4063,12 +4063,16 @@ async function runSingleAttempt() {
       const modelsCountAfter = fakeServer.getModelsFetchCount();
       assert.equal(modelsCountAfter, modelsCountBefore, 'Re-opening popup must use L2 cache and NOT send /models request');
 
+      // Switch to tab-connect for model and fallback operations
+      await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession2);
+      await sleep(200);
+
       // (c) Favorite: click star button for selected model -> sends SAVE_SETTINGS partial -> favoriteModels updated -> UI selection not reset
       const curSelectedModel = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
       assert.ok(curSelectedModel, 'select-model must have a selected value');
 
       // Ensure popup listeners are ready, then toggle star with polling/retry
-      await sleep(800);
+      await sleep(500);
       let favList = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         await cdp.evaluate('document.getElementById("btn-toggle-favorite")?.click()', pSession2);
@@ -4083,36 +4087,59 @@ async function runSingleAttempt() {
         if (favList.includes(curSelectedModel)) break;
         await sleep(300);
       }
-      if (!(Array.isArray(favList) && favList.includes(curSelectedModel))) {
-        const diag = await cdp.evaluate(`(async () => {
-          const btn = document.getElementById('btn-toggle-favorite');
-          const out = { btnDisabled: btn ? btn.disabled : null, btnText: btn ? btn.textContent : null, selectValue: document.getElementById('select-model') ? document.getElementById('select-model').value : null };
-          try {
-            const resp = await chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModels: ['diag-probe-model'] } });
-            out.directSave = resp;
-          } catch (e) { out.directSaveThrew = String(e); }
-          out.lastError = chrome.runtime.lastError ? String(chrome.runtime.lastError.message) : null;
-          const cfg = document.getElementById('config-message') || document.getElementById('config-msg') || document.querySelector('.config-message, #status-message');
-          out.configMsg = cfg ? cfg.textContent : null;
-          return out;
-        })()`, pSession2, true).catch((e) => ({ diagError: String(e) }));
-        const afterProbe = await cdp.evaluate(`
-          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
-        `, swSessionId);
-        const probeFavs = afterProbe?.settings?.favoriteModels || [];
-        assert.ok(false, `favoriteModels in settings must contain ${curSelectedModel}, got: ${JSON.stringify(favList)}, diag=${JSON.stringify(diag)}, probePersisted=${probeFavs.includes('diag-probe-model')}`);
-      }
+      assert.ok(Array.isArray(favList) && favList.includes(curSelectedModel), `favoriteModels in settings must contain ${curSelectedModel}`);
 
       // Check UI selection is preserved
       const modelValAfterFav = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
       assert.equal(modelValAfterFav, curSelectedModel, 'UI model selection must NOT be reset when toggling favorite');
 
-      // (d) Mode radio: switch to tab-general -> change mode -> click Save -> translationMode updated in settings
-      await cdp.evaluate('document.getElementById("tab-general")?.click()', pSession2);
+      // (d) Fallback v2 row + key: remove any pre-existing rows -> add row -> enter key & model -> save -> SET_FALLBACK_KEY called & fallbackKeyPresence[fb1]=true
+      while (await cdp.evaluate('Boolean(document.getElementById("btn-remove-fallback-0"))', pSession2)) {
+        await cdp.evaluate('document.getElementById("btn-remove-fallback-0")?.click()', pSession2);
+        await sleep(50);
+      }
+
+      await cdp.evaluate('document.getElementById("btn-add-fallback")?.click()', pSession2);
+      await sleep(150);
+
+      const hasFallbackInput = await cdp.evaluate('Boolean(document.getElementById("input-fallback-key-0"))', pSession2);
+      assert.ok(hasFallbackInput, 'Fallback row 0 key input must be present after clicking btn-add-fallback');
+
+      await cdp.evaluate(`
+        const keyInput = document.getElementById("input-fallback-key-0");
+        if (keyInput) keyInput.value = "test-fallback-secret-key-1";
+        const sel = document.getElementById("select-fallback-0");
+        if (sel && sel.options.length > 0) sel.value = sel.options[0].value;
+      `, pSession2);
+
+      await cdp.evaluate('document.getElementById("btn-save-connect")?.click()', pSession2);
+      await sleep(400);
+
+      let swSettingsAfterFb = null;
+      for (let w = 0; w < 20; w++) {
+        swSettingsAfterFb = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+        if (swSettingsAfterFb?.fallbackKeyPresence?.['fb1'] === true) break;
+        await sleep(100);
+      }
+
+      if (swSettingsAfterFb?.fallbackKeyPresence?.['fb1'] !== true) {
+        const popupMsg = await cdp.evaluate('document.getElementById("config-message-connect")?.textContent', pSession2);
+        assert.ok(false, `fallbackKeyPresence[fb1] must be true after saving key, got presence: ${JSON.stringify(swSettingsAfterFb?.fallbackKeyPresence)}, settings.fallbacks: ${JSON.stringify(swSettingsAfterFb?.settings?.fallbacks)}, popupMsg: ${popupMsg}`);
+      }
+
+      assert.ok(Array.isArray(swSettingsAfterFb?.settings?.fallbacks), 'settings.fallbacks must be an array');
+      assert.equal(swSettingsAfterFb.settings.fallbacks.length, 1, 'settings.fallbacks must have 1 item');
+      assert.equal(swSettingsAfterFb.settings.fallbacks[0].id, 'fb1', 'settings.fallbacks[0].id must be fb1');
+      assert.equal(swSettingsAfterFb?.fallbackKeyPresence?.['fb1'], true, 'fallbackKeyPresence[fb1] must be true after saving key');
+
+      // (e) Mode radio: switch to tab-translate -> change mode -> click Save -> translationMode updated in settings
+      await cdp.evaluate('document.getElementById("tab-translate")?.click()', pSession2);
       await sleep(100);
 
       await cdp.evaluate('document.getElementById("mode-full")?.click()', pSession2);
-      await cdp.evaluate('document.getElementById("btn-save-general")?.click()', pSession2);
+      await cdp.evaluate('(document.getElementById("btn-save-translate") || document.getElementById("btn-save-general"))?.click()', pSession2);
       await sleep(300);
 
       const swSettingsAfterMode = await cdp.evaluate(`
@@ -4121,9 +4148,9 @@ async function runSingleAttempt() {
       const savedMode = swSettingsAfterMode?.settings?.translationMode || swSettingsAfterMode?.translationMode;
       assert.equal(savedMode, 'full', 'translationMode in settings must be updated to full');
 
-      record('T47', 'Popup e2e (light)', true, `tablist rendered & tabs toggled, 0 extra /models requests on reopen (cache hit), favorite toggled & selection kept, mode radio saved to full`);
+      record('T47', 'Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)', true, `tablist rendered & tabs toggled, 0 extra /models requests on reopen (cache hit), favorite toggled & selection kept, fallback row + key saved (fb1=true), mode radio saved to full`);
     } catch (e) {
-      record('T47', 'Popup e2e (light)', false, e.message);
+      record('T47', 'Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)', false, e.message);
     } finally {
       if (pTarget1) {
         try { await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId }); } catch {}

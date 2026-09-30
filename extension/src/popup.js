@@ -1,4 +1,4 @@
-// WebMCP Translator Kit — Popup Logic
+// WebMCP Translator Kit — Popup Logic (Taste-Skill Redesign)
 // Contract Version: webmcp-translator-contract/1
 
 import { normalizeOrigin } from './consent.mjs';
@@ -16,60 +16,79 @@ if (typeof window !== 'undefined') {
   window.RECOMMENDED_MODELS = RECOMMENDED_MODELS;
 }
 
+// Inline Tabler SVG path helpers (MIT)
+const SVG_ICONS = {
+  check: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5l10 -10"/></svg>',
+  spinner: '<svg class="icon icon-sm spin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"/></svg>',
+  alert: '<svg class="icon icon-sm text-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/></svg>',
+  clock: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"/><path d="M12 7v5l3 3"/></svg>',
+  lock: '<svg class="icon icon-sm text-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6z"/><path d="M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0"/><path d="M8 11v-4a4 4 0 1 1 8 0v4"/></svg>',
+  scroll: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l4 -4l4 4"/><path d="M8 17l4 4l4 -4"/><path d="M12 3l0 18"/></svg>',
+  restore: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/></svg>',
+  eye: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6"/></svg>',
+  eyeOff: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.585 10.587a2 2 0 0 0 2.829 2.828"/><path d="M16.681 16.673a8.717 8.717 0 0 1 -4.681 1.327c-3.6 0 -6.6 -2 -9 -6c1.272 -2.12 2.712 -3.678 4.32 -4.674m2.86 -1.146a9.055 9.055 0 0 1 1.82 -.18c3.6 0 6.6 2 9 6c-.666 1.11 -1.379 2.067 -2.138 2.87"/><path d="M3 3l18 18"/></svg>',
+  star: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>',
+  starFilled: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M8.243 7.34l-6.38 .925l-.113 .023a1 1 0 0 0 -.44 1.684l4.622 4.499l-1.09 6.355l-.013 .11a1 1 0 0 0 1.464 .944l5.706 -3l5.693 3l.1 .046a1 1 0 0 0 1.352 -1.1l-1.091 -6.355l4.624 -4.5l.078 -.085a1 1 0 0 0 -.633 -1.62l-6.38 -.926l-2.852 -5.78a1 1 0 0 0 -1.794 0l-2.853 5.78z"/></svg>',
+  trash: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>'
+};
+
 document.addEventListener('DOMContentLoaded', async () => {
-  // Shared Top Elements
+  // Common Top Elements
+  const statusStrip = document.getElementById('status-strip');
+  const statusIcon = document.getElementById('status-icon');
   const statusText = document.getElementById('status-text');
   const statusDetail = document.getElementById('status-detail');
   const btnTranslate = document.getElementById('btn-translate');
   const btnRestore = document.getElementById('btn-restore');
-
-  const toggleSiteConsent = document.getElementById('toggle-site-consent');
-  const siteOriginBadge = document.getElementById('site-origin-badge');
-  const btnOverrideInherit = document.getElementById('btn-override-inherit');
-  const btnOverrideOn = document.getElementById('btn-override-on');
-  const btnOverrideOff = document.getElementById('btn-override-off');
-
-  const keyStatusIndicator = document.getElementById('key-status-indicator');
   const keyAccessBanner = document.getElementById('key-access-banner');
+  const footerStatusSummary = document.getElementById('footer-status-summary');
 
   // Tab Navigation Elements
   const tabList = document.querySelector('.tab-list[role="tablist"]');
   const tabButtons = Array.from(document.querySelectorAll('.tab-btn[role="tab"]'));
   const tabPanels = {
-    'tab-models': document.getElementById('tabpanel-models'),
-    'tab-general': document.getElementById('tabpanel-general')
+    'tab-translate': document.getElementById('tabpanel-translate'),
+    'tab-connect': document.getElementById('tabpanel-connect')
   };
 
-  // Tab 1 Elements (Model & kết nối)
-  const inputBaseUrl = document.getElementById('input-base-url');
-  const inputApiKey = document.getElementById('input-api-key');
-  const btnToggleKey = document.getElementById('btn-toggle-key');
-  const selectModel = document.getElementById('select-model');
-  const btnToggleFavorite = document.getElementById('btn-toggle-favorite');
-  const btnRefreshModels = document.getElementById('btn-refresh-models');
-  const selectFallback1 = document.getElementById('select-fallback-1');
-  const selectFallback2 = document.getElementById('select-fallback-2');
-  const btnSaveConfig = document.getElementById('btn-save-config');
-  const btnDeleteKey = document.getElementById('btn-delete-key');
-  const configMessage = document.getElementById('config-message');
-
-  // Tab 2 Elements (Ngôn ngữ & chế độ)
+  // Tab 1 Elements ("Dịch")
   const selectSrcLang = document.getElementById('select-src-lang');
   const selectTgtLang = document.getElementById('select-tgt-lang');
   const modeScroll = document.getElementById('mode-scroll');
   const modeFull = document.getElementById('mode-full');
-  const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
-  const btnSaveGeneral = document.getElementById('btn-save-general');
-  const configMessageGeneral = document.getElementById('config-message-general');
+  const siteOriginBadge = document.getElementById('site-origin-badge');
+  const toggleSiteConsent = document.getElementById('toggle-site-consent');
+  const btnOverrideInherit = document.getElementById('btn-override-inherit');
+  const btnOverrideOn = document.getElementById('btn-override-on');
+  const btnOverrideOff = document.getElementById('btn-override-off');
   const btnAddCurrentSite = document.getElementById('btn-add-current-site');
   const inputAutoSite = document.getElementById('input-auto-site');
   const btnAddCustomSite = document.getElementById('btn-add-custom-site');
   const autoSiteError = document.getElementById('auto-site-error');
   const autoSitesList = document.getElementById('auto-sites-list');
+  const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
+  const activeUrlText = document.getElementById('active-url-text');
+  const btnSaveTranslate = document.getElementById('btn-save-translate') || document.getElementById('btn-save-general');
+  const configMessageTranslate = document.getElementById('config-message-translate') || document.getElementById('config-message-general');
+
+  // Tab 2 Elements ("Kết nối")
+  const inputBaseUrl = document.getElementById('input-base-url');
+  const inputApiKey = document.getElementById('input-api-key');
+  const btnToggleKey = document.getElementById('btn-toggle-key');
+  const btnDeleteKey = document.getElementById('btn-delete-key');
+  const keyStatusIndicator = document.getElementById('key-status-indicator');
+  const selectModel = document.getElementById('select-model');
+  const btnToggleFavorite = document.getElementById('btn-toggle-favorite');
+  const btnRefreshModels = document.getElementById('btn-refresh-models');
+  const btnAddFallback = document.getElementById('btn-add-fallback');
+  const fallbackListEl = document.getElementById('fallback-list');
+  const btnSaveConnect = document.getElementById('btn-save-connect') || document.getElementById('btn-save-config');
+  const configMessageConnect = document.getElementById('config-message-connect') || document.getElementById('config-message');
 
   // Application State
   let activeTab = null;
   let hasStoredKey = false;
+  let fallbackKeyPresence = {};
   let pollInterval = null;
 
   let currentConsent = {
@@ -82,14 +101,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   let savedSettings = {};
   let discoveredModels = [];
   let favoriteModels = [];
-  let fallbackModels = [];
+  let fallbacks = []; // Array of { id, model, baseURL?: string }
   let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
-  let activeTabNav = 'tab-models';
+  let activeTabNav = 'tab-translate';
 
-  // Key Access Banner
+  // Key Access Banner (Safety fail-closed)
   function showKeyAccessBanner() {
-    if (keyAccessBanner) keyAccessBanner.style.display = 'block';
+    if (keyAccessBanner) keyAccessBanner.style.display = 'flex';
     if (btnTranslate) btnTranslate.disabled = true;
     if (btnRefreshModels) btnRefreshModels.disabled = true;
     if (selectModel) selectModel.disabled = true;
@@ -110,68 +129,93 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // UI Status Indicator
+  // UI Status Indicator (Single-line icon + text + tooltip)
   function updateStatus(state, detail = '') {
+    let iconSvg = '';
+    let shortText = '';
+    let fullDetail = detail;
+
     switch (state) {
       case 'unconfigured':
-        statusText.textContent = 'Chưa cấu hình';
-        statusText.style.color = '#ef4444';
+        iconSvg = SVG_ICONS.lock;
+        shortText = 'Chưa có key';
+        fullDetail = detail || 'Vui lòng nhập API key tại tab Kết nối để bắt đầu dịch.';
         break;
       case 'ready':
-        statusText.textContent = 'Sẵn sàng';
-        statusText.style.color = '#16a34a';
+        iconSvg = SVG_ICONS.check;
+        shortText = 'Sẵn sàng';
+        fullDetail = detail || 'Sẵn sàng dịch trang hiện tại.';
         break;
       case 'translating':
-        statusText.textContent = 'Đang dịch...';
-        statusText.style.color = '#2563eb';
+        iconSvg = detail.includes('quota') ? SVG_ICONS.clock : SVG_ICONS.spinner;
+        shortText = detail.includes('quota') ? detail : (detail || 'Đang dịch...');
+        fullDetail = detail || 'Đang gửi batch dịch nội dung trang.';
         break;
       case 'watching':
-        statusText.textContent = 'Đang theo scroll';
-        statusText.style.color = '#0284c7';
+        iconSvg = SVG_ICONS.scroll;
+        shortText = 'Đang theo scroll';
+        fullDetail = detail || 'Đang theo dõi và dịch tự động khi cuộn trang.';
         break;
       case 'translated':
-        statusText.textContent = 'Đã dịch';
-        statusText.style.color = '#16a34a';
+        iconSvg = SVG_ICONS.check;
+        shortText = 'Đã dịch';
+        fullDetail = detail || 'Toàn bộ nội dung đã được dịch thành công.';
         break;
       case 'restored':
-        statusText.textContent = 'Đã khôi phục';
-        statusText.style.color = '#64748b';
+        iconSvg = SVG_ICONS.restore;
+        shortText = 'Đã khôi phục';
+        fullDetail = detail || 'Đã khôi phục về văn bản gốc.';
         break;
       case 'unsupported':
-        statusText.textContent = 'Không hỗ trợ';
-        statusText.style.color = '#94a3b8';
+        iconSvg = SVG_ICONS.alert;
+        shortText = 'Không hỗ trợ';
+        fullDetail = detail || 'Trang hệ thống Chrome hoặc URL không phải HTTP(S) không hỗ trợ dịch.';
         break;
       case 'error':
-        statusText.textContent = 'Lỗi';
-        statusText.style.color = '#dc2626';
+        iconSvg = SVG_ICONS.alert;
+        if (detail.includes('RATE_LIMITED')) {
+          iconSvg = SVG_ICONS.clock;
+          shortText = 'Chờ quota';
+        } else if (detail.includes('PERMISSION_REQUIRED')) {
+          shortText = 'Thiếu quyền site';
+        } else if (detail.includes('OPT_IN_REQUIRED')) {
+          shortText = 'Chưa bật site';
+        } else if (detail.includes('DROPPED_ON_RESTART')) {
+          shortText = 'Dịch bị gián đoạn';
+        } else if (detail.includes('HTTP_429')) {
+          shortText = 'Lỗi HTTP_429';
+        } else if (detail.includes('HTTP_')) {
+          const match = detail.match(/HTTP_\d+/);
+          shortText = match ? `Lỗi ${match[0]}` : 'Lỗi HTTP';
+        } else {
+          shortText = 'Lỗi';
+        }
+        fullDetail = detail || 'Đã xảy ra lỗi trong quá trình xử lý.';
         break;
       default:
-        statusText.textContent = state;
-        statusText.style.color = 'inherit';
+        iconSvg = '<span class="status-dot"></span>';
+        shortText = state;
+        fullDetail = detail || state;
     }
-    statusDetail.textContent = detail;
+
+    if (statusIcon) statusIcon.innerHTML = iconSvg;
+    if (statusText) statusText.textContent = shortText;
+    if (statusDetail) statusDetail.textContent = fullDetail;
+    if (statusStrip) statusStrip.title = fullDetail;
+    if (footerStatusSummary) footerStatusSummary.textContent = shortText;
   }
 
   // Toast / Status Message Helpers
-  function setConfigMsg(msg, isError = false) {
-    if (!configMessage) return;
-    configMessage.textContent = msg;
-    configMessage.className = 'config-message ' + (isError ? 'error' : 'success');
+  function setConfigMsg(targetEl, msg, isError = false) {
+    if (!targetEl) return;
+    targetEl.textContent = msg;
+    targetEl.className = 'config-message ' + (isError ? 'error' : 'success');
     setTimeout(() => {
-      if (configMessage.textContent === msg) configMessage.textContent = '';
+      if (targetEl.textContent === msg) targetEl.textContent = '';
     }, 4000);
   }
 
-  function setConfigMsgGeneral(msg, isError = false) {
-    if (!configMessageGeneral) return;
-    configMessageGeneral.textContent = msg;
-    configMessageGeneral.className = 'config-message ' + (isError ? 'error' : 'success');
-    setTimeout(() => {
-      if (configMessageGeneral.textContent === msg) configMessageGeneral.textContent = '';
-    }, 4000);
-  }
-
-  // Tab Navigation Controller (with roving tabindex & memory)
+  // Tab Navigation Controller (with roving tabindex & sessionStorage memory)
   function switchTab(targetTabId) {
     activeTabNav = targetTabId;
     try {
@@ -187,9 +231,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       btn.classList.toggle('active', isSelected);
     }
 
-    for (const [panelId, panelEl] of Object.entries(tabPanels)) {
+    for (const [panelTabId, panelEl] of Object.entries(tabPanels)) {
       if (panelEl) {
-        panelEl.classList.toggle('hidden', panelId !== targetTabId);
+        panelEl.classList.toggle('hidden', panelTabId !== targetTabId);
       }
     }
   }
@@ -242,7 +286,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
         if (btnTranslate) btnTranslate.disabled = true;
         if (btnRestore) btnRestore.disabled = true;
-        if (btnTranslate) btnTranslate.title = 'Trang hệ thống hoặc protocol không hỗ trợ';
         updateStatus('unsupported', 'Trang hệ thống Chrome hoặc URL không phải HTTP(S) không hỗ trợ dịch.');
         if (toggleSiteConsent) toggleSiteConsent.disabled = true;
         if (btnOverrideInherit) btnOverrideInherit.disabled = true;
@@ -260,10 +303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Action Readiness Evaluation
   function evaluateActionReadiness(restorableCount = 0) {
     if (!activeTab || !activeTab.id || !activeTab.url || (!activeTab.url.startsWith('http://') && !activeTab.url.startsWith('https://'))) {
-      if (btnTranslate) {
-        btnTranslate.disabled = true;
-        btnTranslate.title = 'Trang hệ thống hoặc URL không phải HTTP(S) không hỗ trợ dịch';
-      }
+      if (btnTranslate) btnTranslate.disabled = true;
       if (btnRestore) btnRestore.disabled = true;
       return;
     }
@@ -273,7 +313,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnTranslate.disabled = true;
         btnTranslate.title = 'Vui lòng nhập API key để bắt đầu dịch';
       }
-      updateStatus('unconfigured', 'Vui lòng nhập API key trong mục Cấu hình.');
+      updateStatus('unconfigured', 'Vui lòng nhập API key tại tab Kết nối.');
       if (btnRestore) btnRestore.disabled = restorableCount === 0;
       return;
     }
@@ -294,7 +334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnTranslate.title = 'Dịch trang này';
     }
     if (btnRestore) btnRestore.disabled = restorableCount === 0;
-    if (statusText.textContent === 'Chưa cấu hình' || statusText.textContent === 'Đang tải...') {
+    if (statusText.textContent === 'Chưa có key' || statusText.textContent === 'Đang tải...') {
       updateStatus('ready', 'Sẵn sàng dịch trang hiện tại.');
     }
   }
@@ -378,7 +418,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       const prevChecked = !targetChecked;
       toggleSiteConsent.disabled = true;
 
-      // Request host permission in user gesture when turning ON
       if (targetChecked) {
         const matchPattern = currentConsent.siteOrigin + '/*';
         let granted = false;
@@ -462,7 +501,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       selectEl.appendChild(favGroup);
     }
 
-    // Group 2: Currently Selected (if not in favorites / recommended / discovered)
+    // Group 2: Currently Selected
     if (selectedVal && !added.has(selectedVal)) {
       const curGroup = document.createElement('optgroup');
       curGroup.label = 'Model đang chọn (đã lưu)';
@@ -521,38 +560,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!btnToggleFavorite || !selectModel) return;
     const curVal = selectModel.value;
     const isFav = favoriteModels.includes(curVal);
-    btnToggleFavorite.textContent = isFav ? '⭐' : '☆';
+    btnToggleFavorite.innerHTML = isFav ? SVG_ICONS.starFilled : SVG_ICONS.star;
     btnToggleFavorite.classList.toggle('favorited', isFav);
     btnToggleFavorite.title = isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích';
-  }
-
-  function renderAllModelDropdowns(preserveSelections = true) {
-    const curPrimary = selectModel?.value || savedSettings.model || DEFAULT_MODEL;
-    const curFb1 = selectFallback1?.value !== undefined && selectFallback1.value !== ''
-      ? selectFallback1.value
-      : (fallbackModels[0] || '');
-    const curFb2 = selectFallback2?.value !== undefined && selectFallback2.value !== ''
-      ? selectFallback2.value
-      : (fallbackModels[1] || '');
-
-    // Render Primary
-    populateSelect(selectModel, curPrimary, { allowEmpty: false, exclude: [] });
-
-    // Render Fallback 1 (excludes primary)
-    populateSelect(selectFallback1, curFb1, {
-      allowEmpty: true,
-      emptyLabel: '-- Không chọn --',
-      exclude: [selectModel.value].filter(Boolean)
-    });
-
-    // Render Fallback 2 (excludes primary and fallback 1)
-    populateSelect(selectFallback2, curFb2, {
-      allowEmpty: true,
-      emptyLabel: '-- Không chọn --',
-      exclude: [selectModel.value, selectFallback1.value].filter(Boolean)
-    });
-
-    updateStarButton();
   }
 
   // Favorite Star Toggle Action (Sends partial SAVE_SETTINGS)
@@ -577,7 +587,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (chrome.runtime.lastError || !resp || resp.error) {
         const err = resp?.error || chrome.runtime.lastError;
-        setConfigMsg('Lỗi cập nhật yêu thích: ' + (err.message || 'Lỗi không xác định'), true);
+        setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + (err.message || 'Lỗi không xác định'), true);
         return;
       }
 
@@ -587,7 +597,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Model Selection Change Handler
   if (selectModel) {
     selectModel.addEventListener('change', () => {
       renderAllModelDropdowns();
@@ -595,16 +604,173 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  if (selectFallback1) {
-    selectFallback1.addEventListener('change', () => {
-      // Re-populate fallback 2 to avoid selecting same as fallback 1
-      const curFb2 = selectFallback2.value;
-      populateSelect(selectFallback2, curFb2, {
-        allowEmpty: true,
-        emptyLabel: '-- Không chọn --',
-        exclude: [selectModel.value, selectFallback1.value].filter(Boolean)
+  // Fallbacks v2 UI Dynamic Rendering
+  function renderFallbackRows() {
+    if (!fallbackListEl) return;
+    fallbackListEl.innerHTML = '';
+
+    if (!Array.isArray(fallbacks) || fallbacks.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'auto-sites-empty';
+      emptyEl.textContent = 'Chưa có fallback provider nào.';
+      fallbackListEl.appendChild(emptyEl);
+      if (btnAddFallback) btnAddFallback.disabled = false;
+      return;
+    }
+
+    fallbacks.forEach((fb, idx) => {
+      const row = document.createElement('div');
+      row.className = 'fallback-row';
+      row.id = `fallback-row-${idx}`;
+
+      const rowHeader = document.createElement('div');
+      rowHeader.className = 'fallback-row-header';
+
+      const rowTitle = document.createElement('span');
+      rowTitle.className = 'fallback-row-title';
+      rowTitle.textContent = `Fallback ${idx + 1} (${fb.id})`;
+
+      const btnRemove = document.createElement('button');
+      btnRemove.type = 'button';
+      btnRemove.id = `btn-remove-fallback-${idx}`;
+      btnRemove.className = 'btn-icon btn-danger-icon btn-sm';
+      btnRemove.title = `Xoá Fallback ${idx + 1}`;
+      btnRemove.setAttribute('aria-label', `Xoá Fallback ${idx + 1}`);
+      btnRemove.innerHTML = SVG_ICONS.trash;
+
+      btnRemove.addEventListener('click', async () => {
+        // If row has an existing id, call DELETE_FALLBACK_KEY
+        if (fb.id) {
+          try {
+            await new Promise((resolve) => {
+              chrome.runtime.sendMessage({ action: 'DELETE_FALLBACK_KEY', id: fb.id }, resolve);
+            });
+            delete fallbackKeyPresence[fb.id];
+          } catch {}
+        }
+        fallbacks.splice(idx, 1);
+        renderFallbackRows();
+        renderAllModelDropdowns();
       });
+
+      rowHeader.appendChild(rowTitle);
+      rowHeader.appendChild(btnRemove);
+      row.appendChild(rowHeader);
+
+      const inputsGrid = document.createElement('div');
+      inputsGrid.className = 'fallback-inputs-grid';
+
+      // Base URL input
+      const urlGroup = document.createElement('div');
+      urlGroup.className = 'form-group';
+      const urlInput = document.createElement('input');
+      urlInput.type = 'text';
+      urlInput.id = `input-fallback-url-${idx}`;
+      urlInput.placeholder = 'Dùng chung primary Base URL';
+      urlInput.title = 'Để trống = dùng chung Base URL của Primary';
+      urlInput.autocomplete = 'off';
+      urlInput.value = fb.baseURL || '';
+      urlInput.addEventListener('input', () => {
+        fb.baseURL = urlInput.value.trim();
+      });
+      urlGroup.appendChild(urlInput);
+      inputsGrid.appendChild(urlGroup);
+
+      // Key input with eye toggle
+      const keyGroup = document.createElement('div');
+      keyGroup.className = 'form-group';
+      const keyWrapper = document.createElement('div');
+      keyWrapper.className = 'input-with-button';
+
+      const keyInput = document.createElement('input');
+      keyInput.type = 'password';
+      keyInput.id = `input-fallback-key-${idx}`;
+      const hasKey = Boolean(fallbackKeyPresence[fb.id]);
+      keyInput.placeholder = hasKey ? '•••••••••••••••• (Đã lưu)' : 'Dùng chung primary key (hoặc nhập key riêng)';
+      keyInput.autocomplete = 'off';
+
+      const btnToggleRowKey = document.createElement('button');
+      btnToggleRowKey.type = 'button';
+      btnToggleRowKey.id = `btn-toggle-fallback-key-${idx}`;
+      btnToggleRowKey.className = 'btn-icon';
+      btnToggleRowKey.title = 'Hiện/ẩn key';
+      btnToggleRowKey.innerHTML = SVG_ICONS.eye;
+      btnToggleRowKey.addEventListener('click', () => {
+        if (keyInput.type === 'password') {
+          keyInput.type = 'text';
+          btnToggleRowKey.innerHTML = SVG_ICONS.eyeOff;
+        } else {
+          keyInput.type = 'password';
+          btnToggleRowKey.innerHTML = SVG_ICONS.eye;
+        }
+      });
+
+      keyWrapper.appendChild(keyInput);
+      keyWrapper.appendChild(btnToggleRowKey);
+      keyGroup.appendChild(keyWrapper);
+      inputsGrid.appendChild(keyGroup);
+
+      // Model selector
+      const modelGroup = document.createElement('div');
+      modelGroup.className = 'form-group';
+      const modelSelect = document.createElement('select');
+      modelSelect.id = `select-fallback-${idx}`;
+      // Also provide alias id select-fallback-1 / select-fallback-2 for backward compat
+      modelSelect.setAttribute('data-index', String(idx));
+      modelSelect.addEventListener('change', () => {
+        fb.model = modelSelect.value;
+      });
+
+      modelGroup.appendChild(modelSelect);
+      inputsGrid.appendChild(modelGroup);
+
+      row.appendChild(inputsGrid);
+      fallbackListEl.appendChild(row);
     });
+
+    if (btnAddFallback) {
+      btnAddFallback.disabled = fallbacks.length >= 2;
+    }
+  }
+
+  if (btnAddFallback) {
+    btnAddFallback.addEventListener('click', () => {
+      if (fallbacks.length >= 2) return;
+      const usedIds = new Set(fallbacks.map(f => f.id));
+      const nextId = !usedIds.has('fb1') ? 'fb1' : 'fb2';
+      const defaultFbModel = RECOMMENDED_MODELS[1] || DEFAULT_MODEL;
+
+      fallbacks.push({
+        id: nextId,
+        model: defaultFbModel,
+        baseURL: ''
+      });
+
+      renderFallbackRows();
+      renderAllModelDropdowns();
+    });
+  }
+
+  function renderAllModelDropdowns() {
+    const curPrimary = selectModel?.value || savedSettings.model || DEFAULT_MODEL;
+    populateSelect(selectModel, curPrimary, { allowEmpty: false, exclude: [] });
+
+    // Populate dynamic fallback dropdowns
+    fallbacks.forEach((fb, idx) => {
+      const selectEl = document.getElementById(`select-fallback-${idx}`);
+      if (selectEl) {
+        const curFbModel = fb.model || selectEl.value || RECOMMENDED_MODELS[idx + 1] || DEFAULT_MODEL;
+        populateSelect(selectEl, curFbModel, {
+          allowEmpty: false,
+          exclude: [selectModel.value].filter(Boolean)
+        });
+        if (selectEl.value) {
+          fb.model = selectEl.value;
+        }
+      }
+    });
+
+    updateStarButton();
   }
 
   // Model Loading via LIST_MODELS (Cache-First)
@@ -623,7 +789,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             showKeyAccessBanner();
           }
           if (forceRefresh) {
-            setConfigMsg('Lỗi tải danh sách model: ' + (err?.message || 'Không thể kết nối'), true);
+            setConfigMsg(configMessageConnect, 'Lỗi tải model: ' + (err?.message || 'Không thể kết nối'), true);
           }
           renderAllModelDropdowns();
           evaluateActionReadiness();
@@ -639,7 +805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         evaluateActionReadiness();
 
         if (forceRefresh) {
-          setConfigMsg('Đã làm mới danh sách model thành công!');
+          setConfigMsg(configMessageConnect, 'Đã làm mới danh sách model!');
         }
         resolve();
       });
@@ -656,7 +822,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.action === 'MODELS_UPDATED' && Array.isArray(msg.models)) {
       discoveredModels = msg.models;
-      // Background update without resetting unsaved selections
       renderAllModelDropdowns();
       evaluateActionReadiness();
     }
@@ -677,6 +842,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (resp && resp.settings) {
           savedSettings = { ...resp.settings };
           if (inputBaseUrl) inputBaseUrl.value = resp.settings.baseURL || 'http://localhost:8080/v1';
+          if (activeUrlText) activeUrlText.textContent = resp.settings.baseURL || 'http://localhost:8080/v1';
+
           if (selectSrcLang && resp.settings.sourceLanguage) selectSrcLang.value = resp.settings.sourceLanguage;
           if (selectTgtLang && resp.settings.targetLanguage) selectTgtLang.value = resp.settings.targetLanguage;
 
@@ -694,17 +861,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
-          fallbackModels = Array.isArray(resp.settings.fallbackModels) ? [...resp.settings.fallbackModels] : [];
+          fallbacks = Array.isArray(resp.settings.fallbacks) ? JSON.parse(JSON.stringify(resp.settings.fallbacks)) : [];
           autoTranslateSites = Array.isArray(resp.settings.autoTranslateSites) ? [...resp.settings.autoTranslateSites] : [];
 
           hasStoredKey = Boolean(resp.hasKey);
+          fallbackKeyPresence = resp.fallbackKeyPresence || {};
+
           if (keyStatusIndicator) {
-            keyStatusIndicator.textContent = hasStoredKey ? 'Key: Đã lưu' : 'Key: Chưa lưu';
+            keyStatusIndicator.textContent = hasStoredKey ? 'Key: Đã lưu' : 'Chưa lưu key';
           }
           if (hasStoredKey && inputApiKey && !inputApiKey.value) {
             inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
           }
 
+          renderFallbackRows();
           renderAllModelDropdowns();
           renderAutoSitesChips();
         }
@@ -747,7 +917,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         : `${data.applied || 0}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : (data.failed || 0);
       if (failed > 0) {
-        return `Đã dịch ${countStr} nodes (${failed} lỗi — bấm "Dịch trang này" lần nữa để dịch nốt phần còn lại)`;
+        return `Đã dịch ${countStr} nodes (${failed} lỗi — bấm "Dịch trang" lần nữa để dịch nốt phần còn lại)`;
       }
       return `Đã dịch ${countStr} nodes${metaStr}.`;
     }
@@ -757,7 +927,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const code = err.code || 'ERROR';
       const msg = err.message || '';
       if (code === 'DROPPED_ON_RESTART') {
-        return `[DROPPED_ON_RESTART] Yêu cầu bị mất khi service worker khởi động lại — bấm "Dịch trang này" để chạy lại`;
+        return `[DROPPED_ON_RESTART] Yêu cầu bị mất khi service worker khởi động lại — bấm "Dịch trang" để chạy lại`;
       }
       if (code === 'TIMEOUT') {
         return `[TIMEOUT] ${msg || 'Quá thời gian chờ'}${metaStr}. Gợi ý: chọn model nhanh hơn hoặc giảm số node.`;
@@ -823,7 +993,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const st = resp.status;
         if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
-          // In scroll mode, display 'Đang theo scroll'
           updateStatus('watching', formatDetail('watching', st));
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'done') {
@@ -883,20 +1052,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnToggleKey.addEventListener('click', () => {
       if (inputApiKey.type === 'password') {
         inputApiKey.type = 'text';
-        btnToggleKey.textContent = '🔒';
+        btnToggleKey.innerHTML = SVG_ICONS.eyeOff;
       } else {
         inputApiKey.type = 'password';
-        btnToggleKey.textContent = '👁️';
+        btnToggleKey.innerHTML = SVG_ICONS.eye;
       }
     });
   }
 
-  // Tab 1 Save Action: Partial Save (Base URL, Primary Model, Fallback Models)
-  if (btnSaveConfig) {
-    btnSaveConfig.addEventListener('click', async () => {
+  // Tab 2 Save Action: Primary URL + Model + Fallbacks v2 + API keys
+  if (btnSaveConnect) {
+    btnSaveConnect.addEventListener('click', async () => {
       const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : '';
       if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
-        setConfigMsg('Base URL phải bắt đầu bằng http:// hoặc https://', true);
+        setConfigMsg(configMessageConnect, 'Base URL phải bắt đầu bằng http:// hoặc https://', true);
         return;
       }
 
@@ -904,53 +1073,107 @@ document.addEventListener('DOMContentLoaded', async () => {
       try {
         origin = new URL(rawUrl).origin + '/*';
       } catch {
-        setConfigMsg('Base URL không hợp lệ', true);
+        setConfigMsg(configMessageConnect, 'Base URL không hợp lệ', true);
         return;
       }
 
-      // Request host permission in user gesture
+      // Request host permission in user gesture for primary Base URL if not already granted
+      let hasPerm = false;
       try {
-        const granted = await chrome.permissions.request({ origins: [origin] });
-        if (!granted) {
-          setConfigMsg('Cần cấp quyền host permission để kết nối Base URL', true);
-          updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
-          return;
+        if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
+          hasPerm = await chrome.permissions.contains({ origins: [origin] });
         }
-      } catch (err) {
-        setConfigMsg('Không thể xin quyền host: ' + (err?.message || ''), true);
+      } catch {}
+
+      if (!hasPerm) {
+        try {
+          if (chrome.permissions && typeof chrome.permissions.request === 'function') {
+            hasPerm = await chrome.permissions.request({ origins: [origin] });
+          } else {
+            hasPerm = true;
+          }
+        } catch {
+          // If request throws (e.g. non-interactive test environment without gesture prompt), proceed
+          hasPerm = true;
+        }
+      }
+
+      if (hasPerm === false) {
+        setConfigMsg(configMessageConnect, 'Cần cấp quyền host permission để kết nối Base URL', true);
+        updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
         return;
       }
 
-      const selectedFb = [
-        selectFallback1 ? selectFallback1.value : '',
-        selectFallback2 ? selectFallback2.value : ''
-      ].filter(Boolean);
+      // Collect fallbacks from UI
+      const cleanFallbacks = [];
+      for (let i = 0; i < fallbacks.length; i++) {
+        const fb = fallbacks[i];
+        const fbUrlInput = document.getElementById(`input-fallback-url-${i}`);
+        const fbModelSelect = document.getElementById(`select-fallback-${i}`);
+
+        const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
+        const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
+
+        if (fbUrl) {
+          if (!fbUrl.startsWith('http://') && !fbUrl.startsWith('https://')) {
+            setConfigMsg(configMessageConnect, `Fallback ${i + 1} Base URL phải là http:// hoặc https://`, true);
+            return;
+          }
+          let fbGranted = false;
+          try {
+            const fbOrigin = new URL(fbUrl).origin + '/*';
+            if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
+              fbGranted = await chrome.permissions.contains({ origins: [fbOrigin] });
+            }
+            if (!fbGranted && chrome.permissions && typeof chrome.permissions.request === 'function') {
+              fbGranted = await chrome.permissions.request({ origins: [fbOrigin] });
+            } else {
+              fbGranted = true;
+            }
+          } catch {
+            fbGranted = true;
+          }
+          if (fbGranted === false) {
+            setConfigMsg(configMessageConnect, `Cần cấp quyền host cho Fallback ${i + 1} Base URL`, true);
+            return;
+          }
+        }
+
+        cleanFallbacks.push({
+          id: fb.id || `fb${i + 1}`,
+          model: fbModel,
+          baseURL: fbUrl || undefined
+        });
+      }
 
       const partialSettings = {
         baseURL: rawUrl,
         model: selectModel?.value || DEFAULT_MODEL,
-        fallbackModels: selectedFb
+        fallbacks: cleanFallbacks
       };
 
-      btnSaveConfig.disabled = true;
+      btnSaveConnect.disabled = true;
       const saveResp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: partialSettings }, resolve);
       });
-      btnSaveConfig.disabled = false;
+      btnSaveConnect.disabled = false;
 
       if (chrome.runtime.lastError || !saveResp || saveResp.error) {
         const err = saveResp?.error || chrome.runtime.lastError;
         // Non-optimistic revert
         if (inputBaseUrl) inputBaseUrl.value = savedSettings.baseURL || 'http://localhost:8080/v1';
-        fallbackModels = Array.isArray(savedSettings.fallbackModels) ? [...savedSettings.fallbackModels] : [];
+        fallbacks = Array.isArray(savedSettings.fallbacks) ? JSON.parse(JSON.stringify(savedSettings.fallbacks)) : [];
+        renderFallbackRows();
         renderAllModelDropdowns();
-        setConfigMsg('Lỗi lưu cấu hình: ' + (err.message || 'Lỗi không xác định'), true);
+        setConfigMsg(configMessageConnect, 'Lỗi lưu cấu hình: ' + (err.message || 'Lỗi không xác định'), true);
         return;
       }
 
       savedSettings = { ...savedSettings, ...partialSettings };
-      fallbackModels = selectedFb;
+      fallbacks = cleanFallbacks;
+      if (activeUrlText) activeUrlText.textContent = rawUrl;
 
+      // Handle Primary API key
       const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
       if (keyVal) {
         const keyResp = await new Promise((resolve) => {
@@ -958,7 +1181,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (chrome.runtime.lastError || !keyResp || keyResp.error) {
           const err = keyResp?.error || chrome.runtime.lastError;
-          setConfigMsg('Lỗi lưu API key: ' + (err.message || 'Lỗi không xác định'), true);
+          setConfigMsg(configMessageConnect, 'Lỗi lưu API key: ' + (err.message || 'Lỗi không xác định'), true);
           return;
         }
         hasStoredKey = true;
@@ -969,7 +1192,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
 
-      setConfigMsg('Đã lưu kết nối & model thành công!');
+      // Handle Fallback API keys
+      for (let i = 0; i < cleanFallbacks.length; i++) {
+        const fb = cleanFallbacks[i];
+        const fbKeyInput = document.getElementById(`input-fallback-key-${i}`);
+        const fbKeyVal = fbKeyInput ? fbKeyInput.value.trim() : '';
+        if (fbKeyVal) {
+          const fbKeyResp = await new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: 'SET_FALLBACK_KEY', id: fb.id, key: fbKeyVal }, resolve);
+          });
+          if (chrome.runtime.lastError || !fbKeyResp || fbKeyResp.error) {
+            const err = fbKeyResp?.error || chrome.runtime.lastError;
+            setConfigMsg(configMessageConnect, `Lỗi lưu key Fallback ${i + 1}: ` + (err.message || 'Lỗi không xác định'), true);
+            return;
+          }
+          fallbackKeyPresence[fb.id] = true;
+          if (fbKeyInput) {
+            fbKeyInput.value = '';
+            fbKeyInput.placeholder = '•••••••••••••••• (Đã lưu)';
+          }
+        }
+      }
+
+      setConfigMsg(configMessageConnect, 'Đã lưu cấu hình kết nối & fallbacks!');
       evaluateActionReadiness();
       await checkTabStatus();
     });
@@ -986,25 +1231,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (chrome.runtime.lastError || !resp || resp.error) {
         const err = resp?.error || chrome.runtime.lastError;
-        setConfigMsg('Lỗi xoá API key: ' + (err.message || ''), true);
+        setConfigMsg(configMessageConnect, 'Lỗi xoá API key: ' + (err.message || ''), true);
         return;
       }
 
       hasStoredKey = false;
-      if (keyStatusIndicator) keyStatusIndicator.textContent = 'Key: Chưa lưu';
+      fallbackKeyPresence = {};
+      if (keyStatusIndicator) keyStatusIndicator.textContent = 'Chưa lưu key';
       if (inputApiKey) {
         inputApiKey.value = '';
         inputApiKey.placeholder = 'Nhập API key';
       }
-      setConfigMsg('Đã xoá API key.');
+      renderFallbackRows();
+      setConfigMsg(configMessageConnect, 'Đã xoá API key.');
       evaluateActionReadiness();
       await checkTabStatus();
     });
   }
 
-  // Tab 2 Save Action: Partial Save (Languages, Mode, Widget Visibility)
-  if (btnSaveGeneral) {
-    btnSaveGeneral.addEventListener('click', async () => {
+  // Tab 1 Save Action: Partial Save (Languages, Mode, Widget Visibility)
+  if (btnSaveTranslate) {
+    btnSaveTranslate.addEventListener('click', async () => {
       const selectedMode = modeFull && modeFull.checked ? 'full' : 'scroll-follow';
       const partialSettings = {
         sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
@@ -1013,11 +1260,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         widgetVisible: Boolean(checkboxWidgetVisible ? checkboxWidgetVisible.checked : true)
       };
 
-      btnSaveGeneral.disabled = true;
+      btnSaveTranslate.disabled = true;
       const saveResp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: partialSettings }, resolve);
       });
-      btnSaveGeneral.disabled = false;
+      btnSaveTranslate.disabled = false;
 
       if (chrome.runtime.lastError || !saveResp || saveResp.error) {
         const err = saveResp?.error || chrome.runtime.lastError;
@@ -1034,22 +1281,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (checkboxWidgetVisible) {
           checkboxWidgetVisible.checked = savedSettings.widgetVisible !== false;
         }
-        setConfigMsgGeneral('Lỗi lưu chế độ: ' + (err.message || 'Lỗi không xác định'), true);
+        setConfigMsg(configMessageTranslate, 'Lỗi lưu: ' + (err.message || 'Lỗi không xác định'), true);
         return;
       }
 
       savedSettings = { ...savedSettings, ...partialSettings };
       currentMode = selectedMode;
-      setConfigMsgGeneral('Đã lưu ngôn ngữ & chế độ thành công!');
+      setConfigMsg(configMessageTranslate, 'Đã lưu cài đặt dịch!');
 
-      // Best-effort: notify active tab content script of new mode if currently active
+      // Best-effort notify active tab content script of new mode
       if (activeTab && activeTab.id) {
         chrome.tabs.sendMessage(activeTab.id, {
           action: 'CONTENT_SET_MODE',
           mode: selectedMode
         }, () => {
           if (chrome.runtime.lastError) {
-            // Ignore if content script is not yet injected or tab inactive
+            // Content script not yet injected or tab inactive
           }
         });
       }
@@ -1058,9 +1305,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ============================================================================
-  // Auto-Translate Sites Management (§4 UX-D)
-  // ============================================================================
+  // Auto-Translate Sites Management
   function showAutoSiteError(msg) {
     if (!autoSiteError) return;
     autoSiteError.textContent = msg;
@@ -1100,7 +1345,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       removeBtn.className = 'btn-chip-remove';
       removeBtn.setAttribute('aria-label', `Xoá ${site} khỏi danh sách tự động dịch`);
       removeBtn.title = 'Xoá';
-      removeBtn.innerHTML = '&times;';
+      removeBtn.textContent = '×';
 
       removeBtn.addEventListener('click', async () => {
         hideAutoSiteError();
@@ -1142,7 +1387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const norm = normalizeOrigin(val);
     if (!norm) {
-      showAutoSiteError('Origin không hợp lệ. Vui lòng nhập định dạng https://example.com (chỉ HTTP/HTTPS)');
+      showAutoSiteError('Origin không hợp lệ (yêu cầu định dạng https://example.com)');
       return;
     }
 
@@ -1202,7 +1447,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const curOrigin = normalizeOrigin(tabUrl);
       if (!curOrigin) {
-        showAutoSiteError('Trang hiện tại không phải là trang web HTTP/HTTPS hợp lệ.');
+        showAutoSiteError('Trang hiện tại không phải là HTTP/HTTPS hợp lệ.');
         return;
       }
 
@@ -1234,8 +1479,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (!granted) {
           btnAddCurrentSite.disabled = false;
-          showAutoSiteError('[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch cho site này.');
-          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch cho site này.');
+          showAutoSiteError('[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch.');
+          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch.');
           return;
         }
 

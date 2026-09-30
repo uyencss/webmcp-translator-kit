@@ -10,124 +10,83 @@
   <div class="container">
     <!-- Header -->
     <header class="header">
-      <div class="logo-title">
-        <span class="icon">🌐</span>
-        <h1>WebMCP Translator</h1>
+      <div class="brand">
+        <svg class="icon brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/>
+          <path d="M5 9c0 2.144 2.952 3.908 6.7 4"/>
+          <path d="M12 20l4 -9l4 9"/>
+          <path d="M19.1 18h-6.2"/>
+        </svg>
+        <h1 class="brand-title">WebMCP Translator</h1>
       </div>
-      <span class="badge" id="slice-badge">Direct Mode</span>
+      <div class="header-right">
+        <span class="privacy-note" title="Dữ liệu trang được gửi an toàn tới Base URL đã cấu hình" aria-label="Thông tin bảo mật">
+          <svg class="icon icon-sm text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
+          </svg>
+        </span>
+        <span class="badge" id="slice-badge">Direct</span>
+      </div>
     </header>
 
-    <!-- Banners -->
-    <div class="warning-banner" id="privacy-warning-banner">
-      ⚠️ Văn bản trên trang sẽ được gửi tới 9router Base URL đã cấu hình.
+    <!-- Key access banner (Fail-closed error only, hidden by default) -->
+    <div class="error-banner" id="key-access-banner" role="alert" style="display: none;">
+      <svg class="icon icon-sm text-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/>
+      </svg>
+      <span>[KEY_ACCESS_UNAVAILABLE] Lỗi bộ nhớ extension.</span>
     </div>
 
-    <div class="error-banner" id="key-access-banner" role="alert" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); border-left: 3px solid #ef4444; color: #fca5a5; font-size: 11.5px; padding: 8px 10px; border-radius: 8px; line-height: 1.4;">
-      🚨 [KEY_ACCESS_UNAVAILABLE] Lỗi bảo mật bộ nhớ extension. Không thể thiết lập TRUSTED_CONTEXTS.
+    <!-- Status Strip: 1 single compact line with icon + text + tooltip -->
+    <div class="status-strip" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
+      <div class="status-indicator">
+        <span class="status-icon" id="status-icon" aria-hidden="true">
+          <span class="status-dot"></span>
+        </span>
+        <span class="status-text" id="status-text">Đang tải...</span>
+      </div>
+      <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
     </div>
 
-    <!-- Status section (Telemtry Card) -->
-    <section class="section status-card" aria-labelledby="status-header-label">
-      <div class="status-header">
-        <span class="status-label" id="status-header-label">Trạng thái:</span>
-        <span class="status-val" id="status-text">Đang tải...</span>
-      </div>
-      <div class="status-sub" id="status-detail"></div>
-    </section>
-
-    <!-- Consent section -->
-    <section class="section consent-card" id="consent-card" aria-label="Cài đặt quyền dịch trang">
-      <div class="consent-header">
-        <span class="consent-title">Quyền dịch</span>
-        <span class="site-origin-badge" id="site-origin-badge">--</span>
-      </div>
-      <div class="consent-row">
-        <label class="consent-toggle-label" for="toggle-site-consent">
-          <input type="checkbox" id="toggle-site-consent" aria-label="Bật dịch cho site này" />
-          <span class="toggle-text" id="toggle-site-consent-text">Bật dịch cho site này</span>
-        </label>
-      </div>
-      <div class="consent-row tab-override-row">
-        <span class="override-label">Tab này:</span>
-        <div class="btn-group-override" role="group" aria-label="Tab consent override">
-          <button type="button" class="btn-override active" id="btn-override-inherit" data-val="inherit" title="Theo cài đặt site" aria-label="Theo cài đặt site">Theo site</button>
-          <button type="button" class="btn-override" id="btn-override-on" data-val="on" title="Bật tab này" aria-label="Bật tab này">Bật tab này</button>
-          <button type="button" class="btn-override" id="btn-override-off" data-val="off" title="Tắt tab này" aria-label="Tắt tab này">Tắt tab này</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- Actions (Translate / Restore) -->
-    <section class="section actions-card" aria-label="Hành động dịch">
+    <!-- Common Actions: Translate (Primary) & Restore (Ghost) -->
+    <div class="actions-card" aria-label="Hành động dịch">
       <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" disabled>
-        ▶ Dịch trang này
+        <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 4v16l13 -8z"/>
+        </svg>
+        <span>Dịch trang</span>
       </button>
       <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" disabled>
-        ↺ Khôi phục gốc
+        <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>
+        </svg>
+        <span>Khôi phục</span>
       </button>
-    </section>
-
-    <!-- Tab Navigation -->
-    <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
-      <button type="button" class="tab-btn active" role="tab" id="tab-models" aria-selected="true" aria-controls="tabpanel-models" tabindex="0">Model &amp; kết nối</button>
-      <button type="button" class="tab-btn" role="tab" id="tab-general" aria-selected="false" aria-controls="tabpanel-general" tabindex="-1">Ngôn ngữ &amp; chế độ</button>
     </div>
 
-    <!-- Tab 1: Model & kết nối -->
-    <section class="section tab-panel" id="tabpanel-models" role="tabpanel" aria-labelledby="tab-models" tabindex="0">
-      <div class="form-group">
-        <label for="input-base-url">Base URL</label>
-        <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" />
-      </div>
+    <!-- Tablist (role=tablist) -->
+    <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
+      <button type="button" class="tab-btn active" role="tab" id="tab-translate" aria-selected="true" aria-controls="tabpanel-translate" tabindex="0">
+        <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/>
+          <path d="M5 9c0 2.144 2.952 3.908 6.7 4"/>
+          <path d="M12 20l4 -9l4 9"/>
+          <path d="M19.1 18h-6.2"/>
+        </svg>
+        <span>Dịch</span>
+      </button>
+      <button type="button" class="tab-btn" role="tab" id="tab-connect" aria-selected="false" aria-controls="tabpanel-connect" tabindex="-1">
+        <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/>
+          <path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M20 9l-3.5 3.5"/>
+        </svg>
+        <span>Kết nối</span>
+      </button>
+    </div>
 
-      <div class="form-group">
-        <label for="input-api-key">API Key</label>
-        <div class="input-with-button">
-          <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" />
-          <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện hoặc ẩn API key" aria-label="Hiện hoặc ẩn API key">👁️</button>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label for="select-model">Primary Model</label>
-        <div class="input-with-button">
-          <select id="select-model" aria-label="Chọn primary model dịch">
-            <optgroup label="Recommended">
-              <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
-              <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
-              <option value="do/deepseek-v4.1-flash">do/deepseek-v4.1-flash</option>
-              <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
-            </optgroup>
-          </select>
-          <button type="button" id="btn-toggle-favorite" class="btn-icon btn-star" title="Thêm/bỏ yêu thích model này" aria-label="Thêm hoặc bỏ model đang chọn khỏi danh sách yêu thích">☆</button>
-          <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model">🔄</button>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group flex-1">
-          <label for="select-fallback-1">Fallback 1</label>
-          <select id="select-fallback-1" aria-label="Chọn fallback model 1">
-            <option value="">-- Không chọn --</option>
-          </select>
-        </div>
-        <div class="form-group flex-1">
-          <label for="select-fallback-2">Fallback 2</label>
-          <select id="select-fallback-2" aria-label="Chọn fallback model 2">
-            <option value="">-- Không chọn --</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="config-actions">
-        <button id="btn-save-config" class="btn btn-sm btn-success" title="Lưu cấu hình kết nối &amp; model" aria-label="Lưu cấu hình kết nối và model">💾 Lưu kết nối &amp; model</button>
-        <button id="btn-delete-key" class="btn btn-sm btn-danger" title="Xoá API key đã lưu" aria-label="Xoá API key đã lưu">🗑️ Xoá key</button>
-      </div>
-      <div id="config-message" class="config-message" aria-live="polite"></div>
-    </section>
-
-    <!-- Tab 2: Ngôn ngữ & chế độ -->
-    <section class="section tab-panel hidden" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" tabindex="0">
+    <!-- Tab 1: Dịch -->
+    <section class="section tab-panel" id="tabpanel-translate" role="tabpanel" aria-labelledby="tab-translate" tabindex="0">
+      <!-- Ngôn ngữ -->
       <div class="form-row">
         <div class="form-group flex-1">
           <label for="select-src-lang">Nguồn</label>
@@ -149,59 +108,204 @@
         </div>
       </div>
 
+      <!-- Chế độ dịch (Segmented buttons) -->
       <div class="form-group" role="radiogroup" aria-label="Chế độ dịch">
-        <label class="field-title">Chế độ dịch</label>
-        <div class="radio-card">
-          <label class="radio-label" for="mode-scroll">
-            <input type="radio" id="mode-scroll" name="translation-mode" value="scroll-follow" checked />
-            <div class="radio-content">
-              <span class="radio-title">Dịch đuổi theo scroll <span class="badge-rec">Mặc định</span></span>
-              <span class="radio-desc">Tự động phát hiện và dịch khi cuộn trang tới</span>
-            </div>
+        <label class="field-title">Chế độ</label>
+        <div class="segmented-control">
+          <label class="segmented-btn" id="label-mode-scroll">
+            <input type="radio" id="mode-scroll" name="translation-mode" value="scroll-follow" checked class="sr-only" />
+            <span class="segmented-content">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M8 7l4 -4l4 4"/><path d="M8 17l4 4l4 -4"/><path d="M12 3l0 18"/>
+              </svg>
+              <span>Đuổi scroll</span>
+            </span>
           </label>
-          <label class="radio-label" for="mode-full">
-            <input type="radio" id="mode-full" name="translation-mode" value="full" />
-            <div class="radio-content">
-              <span class="radio-title">Dịch toàn bộ trang</span>
-              <span class="radio-desc">Quét và dịch toàn bộ nội dung trong một lần</span>
-            </div>
+          <label class="segmented-btn" id="label-mode-full">
+            <input type="radio" id="mode-full" name="translation-mode" value="full" class="sr-only" />
+            <span class="segmented-content">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/>
+              </svg>
+              <span>Toàn trang</span>
+            </span>
           </label>
         </div>
       </div>
 
-      <div class="form-group checkbox-group">
-        <label class="consent-toggle-label" for="checkbox-widget-visible">
-          <input type="checkbox" id="checkbox-widget-visible" checked />
-          <span class="toggle-text">Hiện icon nổi trên trang (Floating widget)</span>
-        </label>
+      <!-- Quyền dịch & Tab override (Current site) -->
+      <div class="card-compact consent-compact-card" id="consent-card" aria-label="Quyền dịch site hiện tại">
+        <div class="compact-header">
+          <span class="field-title">Site hiện tại</span>
+          <span class="site-origin-badge" id="site-origin-badge">--</span>
+        </div>
+        <div class="compact-row">
+          <label class="toggle-switch-label" for="toggle-site-consent">
+            <input type="checkbox" id="toggle-site-consent" aria-label="Bật dịch cho site này" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text" id="toggle-site-consent-text">Bật dịch cho site này</span>
+          </label>
+        </div>
+        <div class="compact-row tab-override-row">
+          <span class="sub-label">Tab này:</span>
+          <div class="btn-group-override" role="group" aria-label="Tab consent override">
+            <button type="button" class="btn-override active" id="btn-override-inherit" data-val="inherit" title="Theo cài đặt site" aria-label="Theo cài đặt site">Theo site</button>
+            <button type="button" class="btn-override" id="btn-override-on" data-val="on" title="Bật tab này" aria-label="Bật tab này">Bật tab</button>
+            <button type="button" class="btn-override" id="btn-override-off" data-val="off" title="Tắt tab này" aria-label="Tắt tab này">Tắt tab</button>
+          </div>
+        </div>
       </div>
 
-      <div class="form-group auto-translate-group">
-        <div class="auto-translate-header">
-          <label class="field-title" for="input-auto-site">Tự động dịch khi mở trang</label>
-          <button type="button" id="btn-add-current-site" class="btn btn-xs btn-outline" title="Thêm trang hiện tại vào danh sách tự động dịch" aria-label="Thêm trang hiện tại vào danh sách tự động dịch">+ Thêm trang hiện tại</button>
+      <!-- Trang tự dịch (Auto-translate sites) -->
+      <div class="card-compact auto-translate-card" aria-label="Trang tự dịch">
+        <div class="compact-header">
+          <span class="field-title">Trang tự dịch</span>
+          <button type="button" id="btn-add-current-site" class="btn btn-xs btn-outline" title="Thêm trang hiện tại vào danh sách tự động dịch" aria-label="Thêm trang hiện tại vào danh sách tự động dịch">
+            <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+            </svg>
+            <span>Trang này</span>
+          </button>
         </div>
-        <p class="field-desc">Tự động bắt đầu dịch ngay khi mở các trang web trong danh sách này.</p>
-        
         <div class="input-with-button auto-site-input-row">
           <input type="text" id="input-auto-site" placeholder="https://example.com" autocomplete="off" aria-label="Nhập origin trang web để tự động dịch" />
-          <button type="button" id="btn-add-custom-site" class="btn btn-sm btn-secondary" title="Thêm origin vào danh sách" aria-label="Thêm origin vào danh sách">Thêm</button>
+          <button type="button" id="btn-add-custom-site" class="btn btn-icon btn-sm" title="Thêm origin" aria-label="Thêm origin">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+            </svg>
+          </button>
         </div>
         <div id="auto-site-error" class="auto-site-error" role="alert" style="display: none;"></div>
-
         <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
       </div>
 
-      <div class="config-actions">
-        <button id="btn-save-general" class="btn btn-sm btn-success" title="Lưu cài đặt ngôn ngữ &amp; chế độ" aria-label="Lưu cài đặt ngôn ngữ và chế độ">💾 Lưu chế độ</button>
+      <!-- Floating widget toggle -->
+      <div class="form-group-checkbox">
+        <label class="toggle-switch-label" for="checkbox-widget-visible">
+          <input type="checkbox" id="checkbox-widget-visible" checked />
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Hiện icon nổi (widget) trên trang</span>
+        </label>
       </div>
-      <div id="config-message-general" class="config-message" aria-live="polite"></div>
+
+      <!-- Active Base URL (Read-only chip) -->
+      <div class="active-url-row">
+        <span class="active-url-label">Kết nối qua:</span>
+        <span class="chip-active-url" id="chip-active-base-url" title="Base URL đang dùng cho API (cấu hình tại tab Kết nối)">
+          <svg class="icon icon-xs text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/>
+            <path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M20 9l-3.5 3.5"/>
+          </svg>
+          <span class="url-text" id="active-url-text">http://localhost:8080/v1</span>
+        </span>
+      </div>
+
+      <!-- Save Tab 1 actions -->
+      <div class="config-actions">
+        <button id="btn-save-translate" class="btn btn-sm btn-success" title="Lưu cài đặt dịch" aria-label="Lưu cài đặt dịch">
+          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12l5 5l10 -10"/>
+          </svg>
+          <span>Lưu</span>
+        </button>
+      </div>
+      <div id="config-message-translate" class="config-message" aria-live="polite"></div>
+    </section>
+
+    <!-- Tab 2: Kết nối -->
+    <section class="section tab-panel hidden" id="tabpanel-connect" role="tabpanel" aria-labelledby="tab-connect" tabindex="0">
+      <!-- Primary connection section -->
+      <div class="card-compact primary-connect-card">
+        <div class="compact-header">
+          <span class="field-title">Primary Provider</span>
+          <span class="key-status-indicator" id="key-status-indicator">Chưa lưu key</span>
+        </div>
+
+        <div class="form-group">
+          <label for="input-base-url">Base URL</label>
+          <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" />
+        </div>
+
+        <div class="form-group">
+          <label for="input-api-key">API Key</label>
+          <div class="input-with-button">
+            <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" />
+            <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện hoặc ẩn API key" aria-label="Hiện hoặc ẩn API key">
+              <svg class="icon icon-sm eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/>
+                <path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6"/>
+              </svg>
+            </button>
+            <button type="button" id="btn-delete-key" class="btn-icon btn-danger-icon" title="Xoá API key" aria-label="Xoá API key">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="select-model">Model</label>
+          <div class="input-with-button">
+            <select id="select-model" aria-label="Chọn primary model dịch">
+              <optgroup label="Recommended">
+                <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
+                <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
+                <option value="do/deepseek-v4.1-flash">do/deepseek-v4.1-flash</option>
+                <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
+              </optgroup>
+            </select>
+            <button type="button" id="btn-toggle-favorite" class="btn-icon btn-star" title="Thêm/bỏ yêu thích model này" aria-label="Thêm hoặc bỏ model đang chọn khỏi danh sách yêu thích">
+              <svg class="icon icon-sm star-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/>
+              </svg>
+            </button>
+            <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fallbacks section (Fallback v2) -->
+      <div class="card-compact fallbacks-card">
+        <div class="compact-header">
+          <div class="fallbacks-title-group">
+            <span class="field-title">Fallbacks</span>
+            <span class="sub-hint" title="Tối đa 2 fallback models/providers khi primary gặp lỗi 5xx">(tối đa 2)</span>
+          </div>
+          <button type="button" id="btn-add-fallback" class="btn btn-xs btn-outline" title="Thêm fallback row" aria-label="Thêm fallback row">
+            <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+            </svg>
+            <span>Thêm fallback</span>
+          </button>
+        </div>
+
+        <div class="fallback-list" id="fallback-list" aria-label="Danh sách fallback providers">
+          <!-- Fallback rows dynamically rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Save Tab 2 actions -->
+      <div class="config-actions">
+        <button id="btn-save-connect" class="btn btn-sm btn-success" title="Lưu cấu hình kết nối" aria-label="Lưu cấu hình kết nối">
+          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12l5 5l10 -10"/>
+          </svg>
+          <span>Lưu</span>
+        </button>
+      </div>
+      <div id="config-message-connect" class="config-message" aria-live="polite"></div>
     </section>
 
     <!-- Footer -->
     <footer class="footer">
-      <span>WebMCP Translator • </span>
-      <span id="key-status-indicator">Key: Chưa lưu</span>
+      <span>WebMCP Translator</span>
+      <span class="footer-dot">•</span>
+      <span class="footer-mode" id="footer-status-summary">Ready</span>
     </footer>
   </div>
 
