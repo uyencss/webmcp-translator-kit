@@ -4336,7 +4336,7 @@ async function runSingleAttempt() {
     }
 
     // =========================================================================
-    // Test 47: Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)
+    // Test 47: Popup e2e (autosave: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)
     // =========================================================================
     let pTarget1 = null;
     let pTarget2 = null;
@@ -4571,7 +4571,7 @@ async function runSingleAttempt() {
       if (!(appliedCount > 0)) {
         const diag47 = await cdp.evaluate(`(() => ({
           strip: document.querySelector('#status-strip')?.textContent || null,
-          cfgMsg: document.getElementById('config-message-translate')?.textContent || null,
+          saveState: document.getElementById('save-state')?.dataset?.state || null,
           btnDisabled: document.getElementById('btn-translate')?.disabled ?? null
         }))()`, pSession1).catch((e) => ({ diagError: String(e) }));
         const swFromPopup = await cdp.evaluate(`new Promise((resolve) => {
@@ -4649,21 +4649,19 @@ async function runSingleAttempt() {
 
       await cdp.evaluate(`
         const keyInput = document.getElementById("input-fallback-key-0");
-        if (keyInput) keyInput.value = "test-fallback-secret-key-1";
+        if (keyInput) { keyInput.value = "test-fallback-secret-key-1"; keyInput.dispatchEvent(new Event("change")); }
         const sel = document.getElementById("select-fallback-0");
-        if (sel && sel.options.length > 0) sel.value = sel.options[0].value;
+        if (sel && sel.options.length > 0) { sel.value = sel.options[0].value; sel.dispatchEvent(new Event("change")); }
       `, pSession2);
 
-      await cdp.evaluate('document.getElementById("btn-save-connect")?.click()', pSession2);
-      await sleep(400);
-
+      // Autosave is debounced — poll for the flushed result instead of clicking save
       let swSettingsAfterFb = null;
-      for (let w = 0; w < 20; w++) {
+      for (let w = 0; w < 40; w++) {
         swSettingsAfterFb = await cdp.evaluate(`
           self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
         `, swSessionId);
         if (swSettingsAfterFb?.fallbackKeyPresence?.['fb1'] === true) break;
-        await sleep(100);
+        await sleep(150);
       }
 
       if (swSettingsAfterFb?.fallbackKeyPresence?.['fb1'] !== true) {
@@ -4704,22 +4702,24 @@ async function runSingleAttempt() {
       `, pSession2);
       await sleep(100);
 
-      // Save Tab 2
-      await cdp.evaluate('document.getElementById("btn-save-auto")?.click()', pSession2);
-      await sleep(400);
-
-      // Verify settings in SW contain site with mode: 'full'
-      const swSettingsAfterAuto = await cdp.evaluate(`
-        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
-      `, swSessionId);
+      // Autosave persists the row change (debounced) — poll SW for mode full
+      let swSettingsAfterAuto = null;
+      for (let w = 0; w < 40; w++) {
+        swSettingsAfterAuto = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+        const entry = (swSettingsAfterAuto?.settings?.autoTranslateSites || []).find((s) => (s.origin || s) === testSiteOrigin);
+        if (entry && entry.mode === 'full') break;
+        await sleep(150);
+      }
       const savedAutoSites = swSettingsAfterAuto?.settings?.autoTranslateSites || [];
       const testSiteEntry = savedAutoSites.find(s => (s.origin || s) === testSiteOrigin);
       assert.ok(testSiteEntry, `autoTranslateSites must contain ${testSiteOrigin}`);
       assert.equal(testSiteEntry.mode, 'full', `per-site mode for ${testSiteOrigin} must be saved as 'full'`);
 
-      record('T47', 'Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', true, `3 tabs rendered & toggled, Dịch button inside tab-translate applied>0 on fixture, cache hit, favorite preserved, fallback key saved, per-site mode saved to full in tab-auto`);
+      record('T47', 'Popup e2e (autosave: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', true, `3 tabs rendered & toggled, Dịch applied>0 on fixture, cache hit, favorite preserved, fallback key autosaved, per-site mode autosaved to full, no save buttons`);
     } catch (e) {
-      record('T47', 'Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', false, e.message);
+      record('T47', 'Popup e2e (autosave: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', false, e.message);
     } finally {
       if (t47Tab) {
         try { await t47Tab.close(); } catch {}
@@ -5199,21 +5199,36 @@ async function runSingleAttempt() {
       await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession50).catch(() => {});
       await sleep(800);
 
-      // Operate the real Save control with a valid baseURL; SW must refuse
+      // Autosave trigger (no save button): typing in Base URL fires input ->
+      // debounced flush -> SW must refuse (injected failure) and surface it.
       await cdp.evaluate(`document.getElementById('input-base-url').value = 'http://127.0.0.1:${SMOKE_PORT}/v1'`, pSession50);
-      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
-      await sleep(800);
+      await cdp.evaluate(`
+        document.getElementById('input-base-url').dispatchEvent(new Event('input'));
+      `, pSession50);
 
-      const errMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
-      const errCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
+      // Poll for the debounced autosave failure surfacing
+      let errMsg = '';
+      let errCls = '';
+      let errSaveState = '';
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 6000) {
+          await sleep(250);
+          errMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
+          errCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
+          errSaveState = await cdp.evaluate(`document.getElementById('save-state')?.dataset?.state || ''`, pSession50);
+          if ((errMsg && errCls.includes('error')) || errSaveState === 'error') break;
+        }
+      }
       const bannerVisible = await cdp.evaluate(`getComputedStyle(document.getElementById('key-access-banner')).display !== 'none'`, pSession50).catch(() => false);
       assert.ok(
-        (errMsg && errCls.includes('error')) || bannerVisible,
-        `Popup must surface SAVE_SETTINGS failure (message error or banner), got msg=${JSON.stringify(errMsg)} cls=${errCls} banner=${bannerVisible}`
+        (errMsg && errCls.includes('error')) || bannerVisible || errSaveState === 'error',
+        `Popup autosave must surface SAVE_SETTINGS failure (message error, save-state error, or banner), got msg=${JSON.stringify(errMsg)} cls=${errCls} saveState=${errSaveState} banner=${bannerVisible}`
       );
       assert.ok(!/thành công|saved|success/i.test(errMsg), `Popup must NOT report success on failure, got: ${JSON.stringify(errMsg)}`);
 
-      // Restore SW access; Save again from the same popup -> success path
+      // Restore SW access; reload popup for a clean load, then trigger
+      // autosave again -> success path (save-state saved + SW persisted).
       await cdp.evaluate(`
         (async () => {
           self.__translatorSw._setTestStorageAccessFailure(false);
@@ -5226,51 +5241,33 @@ async function runSingleAttempt() {
           return { access: 'ok' };
         } catch (e) { return { access: 'THROW:' + String((e && e.message) || e) }; }
       })()`, swSessionId, true).catch((e) => ({ diagError: String(e) }));
-      // Direct dispatch probe: is SAVE_SETTINGS itself healthy after restore?
-      // (separates SW-side state from popup-side delivery)
-      const directSave = await cdp.evaluate(`
-        (async () => {
-          return await self.__translatorSw.dispatchMessage({
-            action: 'SAVE_SETTINGS',
-            settings: { baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1' }
-          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
-        })()
-      `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
-      // Reload popup so click #2 runs on a fresh listener set (a prior error
-      // path may leave the button element replaced without listeners).
-      // Re-apply permission mock immediately after reload returns.
       try { await cdp.send('Page.reload', {}, pSession50); } catch {}
       await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession50).catch(() => {});
-      await sleep(800);
+      // Wait for clean init (strip leaves loading state)
+      for (let w = 0; w < 20; w++) {
+        const strip = await cdp.evaluate(`document.querySelector('#status-strip')?.textContent || ''`, pSession50).catch(() => '');
+        if (strip && !strip.includes('Đang tải')) break;
+        await sleep(200);
+      }
       await cdp.evaluate(`document.getElementById('input-base-url').value = 'http://127.0.0.1:${SMOKE_PORT}/v1'`, pSession50).catch(() => {});
-      const revBefore = await cdp.evaluate(`
-        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => r?.configRevision ?? null)
-      `, swSessionId, true).catch(() => null);
-      const disabledBeforeClick = await cdp.evaluate(`document.getElementById('btn-save-connect')?.disabled ?? null`, pSession50).catch(() => 'eval-fail');
-      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
-      // Poll: the save roundtrip can be slow under load; read final message
-      let okMsg = '';
-      let okCls = '';
-      let saveDisabled = null;
+      await cdp.evaluate(`document.getElementById('input-base-url').dispatchEvent(new Event('input'))`, pSession50).catch(() => {});
+      let saveStateOk = '';
+      let swAfter = null;
+      const expectedBaseURL = `http://127.0.0.1:${SMOKE_PORT}/v1`;
       {
         const t0 = Date.now();
-        while (Date.now() - t0 < 5000) {
+        while (Date.now() - t0 < 8000) {
           await sleep(250);
-          okMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
-          okCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
-          saveDisabled = await cdp.evaluate(`document.getElementById('btn-save-connect')?.disabled ?? null`, pSession50);
-          if (okMsg && !okMsg.includes('Test-injected')) break;
+          saveStateOk = await cdp.evaluate(`document.getElementById('save-state')?.dataset?.state || ''`, pSession50);
+          swAfter = await cdp.evaluate(`
+            self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => ({ rev: r?.configRevision ?? null, baseURL: r?.settings?.baseURL ?? null }))
+          `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
+          if (saveStateOk === 'saved' && swAfter && swAfter.baseURL === expectedBaseURL) break;
         }
       }
-      const sentActions = await cdp.evaluate(`
-        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => ({ rev: r?.configRevision ?? null, baseURL: r?.settings?.baseURL ?? null }))
-      `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
-      const trace50 = await cdp.evaluate(`window.__saveTrace || null`, pSession50).catch(() => null);
-      const btnConn = await cdp.evaluate(`(() => { const el = document.getElementById('btn-save-connect'); if (!el) return 'NO-EL'; return { connected: el.isConnected, count: document.querySelectorAll('#btn-save-connect').length }; })()`, pSession50).catch((e) => ({ diagError: String(e) }));
-      const activeUrlText = await cdp.evaluate(`document.getElementById('active-url-text')?.textContent || ''`, pSession50).catch(() => '');
-      assert.ok(okMsg && okCls.includes('success'), `Popup must report success after restore, got msg=${JSON.stringify(okMsg)} cls=${okCls} saveDisabled=${saveDisabled} disabledBeforeClick=${disabledBeforeClick} btnConn=${JSON.stringify(btnConn)} trace=${JSON.stringify(trace50)} activeUrlText=${JSON.stringify(activeUrlText)} revBefore=${revBefore} swAfter=${JSON.stringify(sentActions)} restoreCheck=${JSON.stringify(restoreCheck)} directSave=${JSON.stringify(directSave)}`);
+      assert.ok(saveStateOk === 'saved' && swAfter && swAfter.baseURL === expectedBaseURL, `Popup autosave must report saved and persist baseURL after restore, got saveState=${JSON.stringify(saveStateOk)} swAfter=${JSON.stringify(swAfter)} restoreCheck=${JSON.stringify(restoreCheck)}`);
 
-      record('T50', 'Popup error path (fail-closed UI + recovery)', true, `error surfaced, no false success; success after restore`);
+      record('T50', 'Popup error path (fail-closed UI + recovery)', true, `autosave error surfaced, no false success; autosaved after restore`);
     } catch (e) {
       record('T50', 'Popup error path (fail-closed UI + recovery)', false, e.message);
     } finally {

@@ -1251,3 +1251,110 @@ select optgroup {
     max-width: 160px;
   }
 }
+
+/* ==========================================================================
+   UX-G: autosave indicator, icon-first connect fields, auto-site status
+   ========================================================================== */
+.save-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  cursor: help;
+  flex: none;
+}
+
+.save-state .save-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7280;
+  transition: background 0.2s ease;
+}
+
+.save-state[data-state="saving"] .save-dot {
+  background: #60a5fa;
+  animation: save-pulse 0.9s ease-in-out infinite;
+}
+
+.save-state[data-state="saved"] .save-dot {
+  background: #34d399;
+}
+
+.save-state[data-state="error"] .save-dot {
+  background: #f87171;
+}
+
+@keyframes save-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.field-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  color: var(--text-muted);
+  cursor: help;
+}
+
+.field-icon-xs {
+  width: 20px;
+}
+
+.field-icon-title {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+#btn-base-perm:not(.granted) {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+#btn-base-perm.granted {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.site-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7280;
+}
+
+.site-dot[data-state="on"] {
+  background: #34d399;
+  box-shadow: 0 0 4px rgba(52, 211, 153, 0.7);
+}
+
+.site-dot[data-state="standby"] {
+  background: #fbbf24;
+  box-shadow: 0 0 4px rgba(251, 191, 36, 0.6);
+}
+
+.btn-site-enable {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.btn-site-enable:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.btn-site-enable.enabled {
+  color: #34d399;
+}

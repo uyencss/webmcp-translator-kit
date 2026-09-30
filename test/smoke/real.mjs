@@ -89,7 +89,7 @@ class CdpConnection {
     this.eventListeners.push(listener);
   }
 
-  send(method, params = {}, sessionId = undefined) {
+  send(method, params = {}, sessionId = undefined, timeoutMs = 30000) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -97,7 +97,7 @@ class CdpConnection {
           this.callbacks.delete(id);
           reject(new Error(`CDP Timeout on ${method}`));
         }
-      }, 30000);
+      }, timeoutMs);
 
       this.callbacks.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
@@ -110,12 +110,12 @@ class CdpConnection {
     });
   }
 
-  async evaluate(expression, sessionId = undefined, awaitPromise = true) {
+  async evaluate(expression, sessionId = undefined, awaitPromise = true, timeoutMs = 30000) {
     const r = await this.send('Runtime.evaluate', {
       expression,
       awaitPromise,
       returnByValue: true
-    }, sessionId);
+    }, sessionId, timeoutMs);
     if (r.exceptionDetails) {
       throw new Error('EVAL_ERROR: ' + JSON.stringify(r.exceptionDetails));
     }
@@ -259,6 +259,18 @@ async function main() {
     // Normalize Base URL to include /v1 if missing
     const targetBaseUrl = rawBaseUrl.endsWith('/v1') ? rawBaseUrl : rawBaseUrl.replace(/\/+$/, '') + '/v1';
 
+    // Wait for SW module to be evaluated (avoids race on fresh contexts)
+    let pingRes = null;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try {
+        pingRes = await cdp.evaluate('self.__translatorSw && self.__translatorSw.dispatchMessage({ action: "PING" })', swSessionId);
+      } catch {}
+      if (pingRes && pingRes.ok === true) break;
+      await sleep(250);
+    }
+    assert.ok(pingRes && pingRes.ok === true, 'SW must respond to PING before real test, got: ' + JSON.stringify(pingRes));
+
+    console.log('[5/5] setup dispatch...');
     // Configure storage via SW dispatchMessage without logging the token
     await cdp.evaluate(`
       (async () => {
@@ -275,6 +287,17 @@ async function main() {
           action: 'SET_KEY',
           key: ${JSON.stringify(rawToken)}
         });
+        // TEST-ONLY harness: content is injected by evaluate (no real tab
+        // sender), so register a synthetic top-frame sender + site consent
+        // exactly like the fake-server suite (T48 pattern).
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('http://127.0.0.1:${FIXTURE_PORT}', true);
+        self.__translatorSw._registerTestTab(9001, 'http://127.0.0.1:${FIXTURE_PORT}/fixture.html');
+        await self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: 'http://127.0.0.1:${FIXTURE_PORT}',
+          enabled: true
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
       })()
     `, swSessionId);
 
@@ -297,8 +320,10 @@ async function main() {
       if (msg.sessionId === fixtureSessionId && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpSendToSw') {
         const { callId, payload } = JSON.parse(msg.params.payload);
         try {
+          // Synthetic top-frame tab sender (mirrors a real content script
+          // sender; registered above via _registerTestTab).
           const swRes = await cdp.evaluate(
-            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)})`,
+            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)}, { frameId: 0, tab: { id: 9001, url: ${JSON.stringify(fixtureUrl)} }, url: ${JSON.stringify(fixtureUrl)} })`,
             swSessionId
           );
           await cdp.evaluate(
@@ -316,6 +341,7 @@ async function main() {
       }
     });
 
+    console.log('[5/5] bridge install...');
     await cdp.evaluate(`
       window.__bridgePending = new Map();
       window.__bridgeCallId = 1;
@@ -343,23 +369,27 @@ async function main() {
       };
     `, fixtureSessionId, false);
 
+    console.log('[5/5] injecting content.js...');
     const contentJsSource = fs.readFileSync(path.join(EXTENSION_DIR, 'content.js'), 'utf8');
     await cdp.evaluate(`${contentJsSource}\n;true;`, fixtureSessionId, false);
 
+    console.log('[5/5] reading fixture...');
     const initialTitle = await cdp.evaluate('window.__fixture.getTitleText()', fixtureSessionId);
     const initialFav = await cdp.evaluate('window.__fixture.getFavText()', fixtureSessionId);
     assert.equal(initialTitle, '欢迎使用翻译系统');
     assert.equal(initialFav, '收藏');
 
-    // Execute real translation
+    // Execute real translation (provider latency can exceed the default 30s
+    // CDP timeout — allow 180s for this call only)
     const tStart = Date.now();
+    console.log('[5/5] real translation call...');
     const trResult = await cdp.evaluate(`
       window.__translatorDom.executeTranslation({
         sourceLanguage: 'auto',
         targetLanguage: 'vi',
         model: '${DEFAULT_MODEL}'
       })
-    `, fixtureSessionId, true);
+    `, fixtureSessionId, true, 180000);
     const latencyMs = Date.now() - tStart;
 
     assert.ok(trResult && trResult.ok === true, 'Translation failed: ' + JSON.stringify(trResult));

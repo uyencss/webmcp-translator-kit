@@ -29,7 +29,8 @@ const SVG_ICONS = {
   eyeOff: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.585 10.587a2 2 0 0 0 2.829 2.828"/><path d="M16.681 16.673a8.717 8.717 0 0 1 -4.681 1.327c-3.6 0 -6.6 -2 -9 -6c1.272 -2.12 2.712 -3.678 4.32 -4.674m2.86 -1.146a9.055 9.055 0 0 1 1.82 -.18c3.6 0 6.6 2 9 6c-.666 1.11 -1.379 2.067 -2.138 2.87"/><path d="M3 3l18 18"/></svg>',
   star: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>',
   starFilled: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M8.243 7.34l-6.38 .925l-.113 .023a1 1 0 0 0 -.44 1.684l4.622 4.499l-1.09 6.355l-.013 .11a1 1 0 0 0 1.464 .944l5.706 -3l5.693 3l.1 .046a1 1 0 0 0 1.352 -1.1l-1.091 -6.355l4.624 -4.5l.078 -.085a1 1 0 0 0 -.633 -1.62l-6.38 -.926l-2.852 -5.78a1 1 0 0 0 -1.794 0l-2.853 5.78z"/></svg>',
-  trash: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>'
+  trash: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>',
+  power: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>'
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -61,8 +62,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnOverrideOn = document.getElementById('btn-override-on');
   const btnOverrideOff = document.getElementById('btn-override-off');
   const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
-  const btnSaveTranslate = document.getElementById('btn-save-translate') || document.getElementById('btn-save-general');
-  const configMessageTranslate = document.getElementById('config-message-translate') || document.getElementById('config-message-general');
+
+  // Autosave indicator (header)
+  const saveStateEl = document.getElementById('save-state');
+  const saveDotEl = document.getElementById('save-dot');
 
   // Tab 2 Elements ("Tự động")
   const btnAddCurrentSite = document.getElementById('btn-add-current-site');
@@ -70,11 +73,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnAddCustomSite = document.getElementById('btn-add-custom-site');
   const autoSiteError = document.getElementById('auto-site-error');
   const autoSitesList = document.getElementById('auto-sites-list');
-  const btnSaveAuto = document.getElementById('btn-save-auto');
-  const configMessageAuto = document.getElementById('config-message-auto');
 
   // Tab 3 Elements ("Kết nối")
   const inputBaseUrl = document.getElementById('input-base-url');
+  const btnBasePerm = document.getElementById('btn-base-perm');
   const inputApiKey = document.getElementById('input-api-key');
   const btnToggleKey = document.getElementById('btn-toggle-key');
   const btnDeleteKey = document.getElementById('btn-delete-key');
@@ -84,8 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnRefreshModels = document.getElementById('btn-refresh-models');
   const btnAddFallback = document.getElementById('btn-add-fallback');
   const fallbackListEl = document.getElementById('fallback-list');
-  const btnSaveConnect = document.getElementById('btn-save-connect') || document.getElementById('btn-save-config');
-  const configMessageConnect = document.getElementById('config-message-connect') || document.getElementById('config-message');
+  const configMessageConnect = document.getElementById('config-message-connect');
 
   // Application State
   let activeTab = null;
@@ -107,6 +108,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
   let activeTabNav = 'tab-translate';
+
+  // Autosave state (no save buttons — every change persists to storage)
+  let settingsLoaded = false;
+  let autosaveTimer = null;
+  let autosaveInFlight = false;
+  let autosaveQueued = false;
 
   // Key Access Banner (Safety fail-closed)
   function showKeyAccessBanner() {
@@ -215,6 +222,157 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => {
       if (targetEl.textContent === msg) targetEl.textContent = '';
     }, 4000);
+  }
+
+  // Promise wrapper for runtime messages
+  function sendMsg(message) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, resolve);
+      } catch (err) {
+        resolve({ error: { code: 'ERROR', message: String((err && err.message) || err) } });
+      }
+    });
+  }
+
+  // Autosave indicator state
+  function setSaveState(state, title) {
+    if (saveStateEl) {
+      saveStateEl.dataset.state = state;
+      if (title) saveStateEl.title = title;
+      else if (state === 'saved') saveStateEl.title = 'Mọi thay đổi đã được lưu tự động';
+      else if (state === 'saving') saveStateEl.title = 'Đang lưu...';
+      else if (state === 'error') saveStateEl.title = 'Lưu thất bại — xem chi tiết lỗi bên dưới';
+      else saveStateEl.title = 'Mọi thay đổi được lưu tự động';
+    }
+  }
+
+  // Collect fallback rows from UI (no permission requests here — autosave has
+  // no user gesture; host permissions are granted via explicit buttons/Dịch)
+  function collectCleanFallbacks() {
+    const out = [];
+    for (let i = 0; i < fallbacks.length; i++) {
+      const fb = fallbacks[i];
+      const fbUrlInput = document.getElementById(`input-fallback-url-${i}`);
+      const fbModelSelect = document.getElementById(`select-fallback-${i}`);
+      const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
+      const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
+      if (fbUrl && !/^https?:\/\/.+/i.test(fbUrl)) {
+        return { fallbacks: null, error: `Fallback ${i + 1} Base URL phải là http:// hoặc https://` };
+      }
+      out.push({ id: fb.id || `fb${i + 1}`, model: fbModel, baseURL: fbUrl || undefined });
+    }
+    return { fallbacks: out, error: null };
+  }
+
+  function collectSettingsPatch() {
+    const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : '';
+    if (rawUrl && !/^https?:\/\/.+/i.test(rawUrl)) {
+      return { patch: null, error: 'Base URL phải bắt đầu bằng http:// hoặc https://' };
+    }
+    const fbRes = collectCleanFallbacks();
+    if (fbRes.error) return { patch: null, error: fbRes.error };
+    const patch = {
+      sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
+      targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
+      widgetVisible: checkboxWidgetVisible ? Boolean(checkboxWidgetVisible.checked) : true,
+      model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
+      fallbacks: fbRes.fallbacks,
+      autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites)),
+      favoriteModels: [...favoriteModels]
+    };
+    if (rawUrl) patch.baseURL = rawUrl;
+    return { patch, error: null };
+  }
+
+  // Autosave: persist every UI change to storage (debounced for typing).
+  // Host permission requests NEVER happen here (no gesture) — they live in
+  // explicit buttons (site toggle, + Trang này, base shield, Dịch).
+  async function flushAutosave() {
+    if (autosaveInFlight) {
+      autosaveQueued = true;
+      return;
+    }
+    if (autosaveTimer) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+    autosaveInFlight = true;
+    setSaveState('saving');
+    try {
+      const { patch, error } = collectSettingsPatch();
+      if (error) {
+        setSaveState('error', error);
+        setConfigMsg(configMessageConnect, error, true);
+        return;
+      }
+      const saveResp = await sendMsg({ action: 'SAVE_SETTINGS', settings: patch });
+      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+        const err = (saveResp && saveResp.error) || chrome.runtime.lastError || {};
+        throw new Error((err && err.message) || 'Không thể lưu cấu hình');
+      }
+      savedSettings = { ...savedSettings, ...patch };
+      fallbacks = JSON.parse(JSON.stringify(patch.fallbacks));
+
+      // Primary API key (saved on change/blur, then masked)
+      const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
+      if (keyVal) {
+        const keyResp = await sendMsg({ action: 'SET_KEY', key: keyVal });
+        if (chrome.runtime.lastError || !keyResp || keyResp.error) {
+          const err = (keyResp && keyResp.error) || chrome.runtime.lastError || {};
+          throw new Error('Lỗi lưu API key: ' + ((err && err.message) || 'Lỗi không xác định'));
+        }
+        hasStoredKey = true;
+        if (keyStatusIndicator) keyStatusIndicator.textContent = 'Key: Đã lưu';
+        if (inputApiKey) {
+          inputApiKey.value = '';
+          inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
+        }
+      }
+
+      // Fallback API keys (saved on change, then masked)
+      for (let i = 0; i < fallbacks.length; i++) {
+        const fb = fallbacks[i];
+        const fbKeyInput = document.getElementById(`input-fallback-key-${i}`);
+        const fbKeyVal = fbKeyInput ? fbKeyInput.value.trim() : '';
+        if (fbKeyVal) {
+          const fbKeyResp = await sendMsg({ action: 'SET_FALLBACK_KEY', id: fb.id, key: fbKeyVal });
+          if (chrome.runtime.lastError || !fbKeyResp || fbKeyResp.error) {
+            const err = (fbKeyResp && fbKeyResp.error) || chrome.runtime.lastError || {};
+            throw new Error(`Lỗi lưu key Fallback ${i + 1}: ` + ((err && err.message) || 'Lỗi không xác định'));
+          }
+          fallbackKeyPresence[fb.id] = true;
+          if (fbKeyInput) {
+            fbKeyInput.value = '';
+            fbKeyInput.placeholder = '•••••••••••••••• (Đã lưu)';
+          }
+        }
+      }
+
+      setSaveState('saved');
+      evaluateActionReadiness();
+      if (inputBaseUrl) refreshBasePermState();
+    } catch (err) {
+      const msg = (err && err.message) || 'Không thể lưu cấu hình';
+      setSaveState('error', msg);
+      setConfigMsg(configMessageConnect, msg, true);
+    } finally {
+      autosaveInFlight = false;
+      if (autosaveQueued) {
+        autosaveQueued = false;
+        flushAutosave();
+      }
+    }
+  }
+
+  function markDirty() {
+    if (!settingsLoaded) return;
+    setSaveState('saving');
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
+      flushAutosave();
+    }, 600);
   }
 
   // Tab Navigation Controller (with roving tabindex & sessionStorage memory)
@@ -623,6 +781,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     selectModel.addEventListener('change', () => {
       renderAllModelDropdowns();
       evaluateActionReadiness();
+      markDirty();
     });
   }
 
@@ -673,6 +832,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         fallbacks.splice(idx, 1);
         renderFallbackRows();
         renderAllModelDropdowns();
+        flushAutosave();
       });
 
       rowHeader.appendChild(rowTitle);
@@ -694,6 +854,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.value = fb.baseURL || '';
       urlInput.addEventListener('input', () => {
         fb.baseURL = urlInput.value.trim();
+        markDirty();
       });
       urlGroup.appendChild(urlInput);
       inputsGrid.appendChild(urlGroup);
@@ -710,6 +871,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const hasKey = Boolean(fallbackKeyPresence[fb.id]);
       keyInput.placeholder = hasKey ? '•••••••••••••••• (Đã lưu)' : 'Dùng chung primary key (hoặc nhập key riêng)';
       keyInput.autocomplete = 'off';
+      keyInput.addEventListener('change', () => {
+        markDirty();
+      });
 
       const btnToggleRowKey = document.createElement('button');
       btnToggleRowKey.type = 'button';
@@ -741,6 +905,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       modelSelect.setAttribute('data-index', String(idx));
       modelSelect.addEventListener('change', () => {
         fb.model = modelSelect.value;
+        markDirty();
       });
 
       modelGroup.appendChild(modelSelect);
@@ -770,6 +935,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       renderFallbackRows();
       renderAllModelDropdowns();
+      flushAutosave();
     });
   }
 
@@ -1076,164 +1242,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Tab 2 Save Action: Primary URL + Model + Fallbacks v2 + API keys
-  if (btnSaveConnect) {
-    btnSaveConnect.addEventListener('click', async () => {
-      const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : '';
-      if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
-        setConfigMsg(configMessageConnect, 'Base URL phải bắt đầu bằng http:// hoặc https://', true);
-        return;
-      }
+  // Connect tab: autosave (no save button). Typing/changing any field persists
+  // to storage automatically. Host permission needs a user gesture, so it is
+  // granted via the shield button or at Dịch time — never inside autosave.
+  if (inputBaseUrl) {
+    inputBaseUrl.addEventListener('input', () => {
+      markDirty();
+    });
+    inputBaseUrl.addEventListener('change', () => {
+      refreshBasePermState();
+    });
+  }
 
-      let origin = '';
+  if (inputApiKey) {
+    inputApiKey.addEventListener('change', () => {
+      markDirty();
+    });
+  }
+
+  async function getBaseOrigin() {
+    const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
+    if (!rawUrl) return null;
+    try {
+      return new URL(rawUrl).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  async function refreshBasePermState() {
+    if (!btnBasePerm) return;
+    const origin = await getBaseOrigin();
+    let granted = false;
+    if (origin && chrome.permissions && typeof chrome.permissions.contains === 'function') {
       try {
-        origin = new URL(rawUrl).origin + '/*';
-      } catch {
+        granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
+      } catch {}
+    }
+    btnBasePerm.classList.toggle('granted', granted);
+    btnBasePerm.title = granted
+      ? `Đã cấp quyền kết nối (${origin})`
+      : `Cấp quyền kết nối Base URL (${origin || 'URL chưa hợp lệ'})`;
+    btnBasePerm.setAttribute('aria-label', btnBasePerm.title);
+  }
+
+  if (btnBasePerm) {
+    btnBasePerm.addEventListener('click', async () => {
+      const origin = await getBaseOrigin();
+      if (!origin) {
         setConfigMsg(configMessageConnect, 'Base URL không hợp lệ', true);
         return;
       }
-
-      // Request host permission in user gesture for primary Base URL if not already granted
-      let hasPerm = false;
+      let granted = false;
       try {
-        if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
-          hasPerm = await chrome.permissions.contains({ origins: [origin] });
+        if (chrome.permissions && typeof chrome.permissions.request === 'function') {
+          granted = await chrome.permissions.request({ origins: [origin + '/*'] });
+        } else {
+          granted = true;
         }
-      } catch {}
-
-      if (!hasPerm) {
-        try {
-          if (chrome.permissions && typeof chrome.permissions.request === 'function') {
-            hasPerm = await chrome.permissions.request({ origins: [origin] });
-          } else {
-            hasPerm = true;
-          }
-        } catch {
-          // If request throws (e.g. non-interactive test environment without gesture prompt), proceed
-          hasPerm = true;
-        }
+      } catch {
+        granted = false;
       }
-
-      if (hasPerm === false) {
+      if (!granted) {
         setConfigMsg(configMessageConnect, 'Cần cấp quyền host permission để kết nối Base URL', true);
         updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
-        return;
       }
-
-      // Collect fallbacks from UI
-      const cleanFallbacks = [];
-      for (let i = 0; i < fallbacks.length; i++) {
-        const fb = fallbacks[i];
-        const fbUrlInput = document.getElementById(`input-fallback-url-${i}`);
-        const fbModelSelect = document.getElementById(`select-fallback-${i}`);
-
-        const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
-        const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
-
-        if (fbUrl) {
-          if (!fbUrl.startsWith('http://') && !fbUrl.startsWith('https://')) {
-            setConfigMsg(configMessageConnect, `Fallback ${i + 1} Base URL phải là http:// hoặc https://`, true);
-            return;
-          }
-          let fbGranted = false;
-          try {
-            const fbOrigin = new URL(fbUrl).origin + '/*';
-            if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
-              fbGranted = await chrome.permissions.contains({ origins: [fbOrigin] });
-            }
-            if (!fbGranted && chrome.permissions && typeof chrome.permissions.request === 'function') {
-              fbGranted = await chrome.permissions.request({ origins: [fbOrigin] });
-            } else {
-              fbGranted = true;
-            }
-          } catch {
-            fbGranted = true;
-          }
-          if (fbGranted === false) {
-            setConfigMsg(configMessageConnect, `Cần cấp quyền host cho Fallback ${i + 1} Base URL`, true);
-            return;
-          }
-        }
-
-        cleanFallbacks.push({
-          id: fb.id || `fb${i + 1}`,
-          model: fbModel,
-          baseURL: fbUrl || undefined
-        });
-      }
-
-      const partialSettings = {
-        baseURL: rawUrl,
-        model: selectModel?.value || DEFAULT_MODEL,
-        fallbacks: cleanFallbacks
-      };
-
-      btnSaveConnect.disabled = true;
-      const saveResp = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: partialSettings }, resolve);
-      });
-      btnSaveConnect.disabled = false;
-
-      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-        const err = saveResp?.error || chrome.runtime.lastError;
-        // Non-optimistic revert
-        if (inputBaseUrl) inputBaseUrl.value = savedSettings.baseURL || 'http://localhost:8080/v1';
-        fallbacks = Array.isArray(savedSettings.fallbacks) ? JSON.parse(JSON.stringify(savedSettings.fallbacks)) : [];
-        renderFallbackRows();
-        renderAllModelDropdowns();
-        setConfigMsg(configMessageConnect, 'Lỗi lưu cấu hình: ' + (err.message || 'Lỗi không xác định'), true);
-        return;
-      }
-
-      savedSettings = { ...savedSettings, ...partialSettings };
-      fallbacks = cleanFallbacks;
-
-      // Handle Primary API key
-      const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
-      if (keyVal) {
-        const keyResp = await new Promise((resolve) => {
-          chrome.runtime.sendMessage({ action: 'SET_KEY', key: keyVal }, resolve);
-        });
-        if (chrome.runtime.lastError || !keyResp || keyResp.error) {
-          const err = keyResp?.error || chrome.runtime.lastError;
-          setConfigMsg(configMessageConnect, 'Lỗi lưu API key: ' + (err.message || 'Lỗi không xác định'), true);
-          return;
-        }
-        hasStoredKey = true;
-        if (keyStatusIndicator) keyStatusIndicator.textContent = 'Key: Đã lưu';
-        if (inputApiKey) {
-          inputApiKey.value = '';
-          inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
-        }
-      }
-
-      // Handle Fallback API keys
-      for (let i = 0; i < cleanFallbacks.length; i++) {
-        const fb = cleanFallbacks[i];
-        const fbKeyInput = document.getElementById(`input-fallback-key-${i}`);
-        const fbKeyVal = fbKeyInput ? fbKeyInput.value.trim() : '';
-        if (fbKeyVal) {
-          const fbKeyResp = await new Promise((resolve) => {
-            chrome.runtime.sendMessage({ action: 'SET_FALLBACK_KEY', id: fb.id, key: fbKeyVal }, resolve);
-          });
-          if (chrome.runtime.lastError || !fbKeyResp || fbKeyResp.error) {
-            const err = fbKeyResp?.error || chrome.runtime.lastError;
-            setConfigMsg(configMessageConnect, `Lỗi lưu key Fallback ${i + 1}: ` + (err.message || 'Lỗi không xác định'), true);
-            return;
-          }
-          fallbackKeyPresence[fb.id] = true;
-          if (fbKeyInput) {
-            fbKeyInput.value = '';
-            fbKeyInput.placeholder = '•••••••••••••••• (Đã lưu)';
-          }
-        }
-      }
-
-      setConfigMsg(configMessageConnect, 'Đã lưu cấu hình kết nối & fallbacks!');
-      evaluateActionReadiness();
+      await refreshBasePermState();
       await checkTabStatus();
     });
   }
+
 
   // Delete API Key
   if (btnDeleteKey) {
@@ -1264,38 +1342,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Tab 1 Save Action: Partial Save (Languages, Widget Visibility)
-  if (btnSaveTranslate) {
-    btnSaveTranslate.addEventListener('click', async () => {
-      const partialSettings = {
-        sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
-        targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
-        widgetVisible: Boolean(checkboxWidgetVisible ? checkboxWidgetVisible.checked : true)
-      };
-
-      btnSaveTranslate.disabled = true;
-      const saveResp = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: partialSettings }, resolve);
-      });
-      btnSaveTranslate.disabled = false;
-
-      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-        const err = saveResp?.error || chrome.runtime.lastError;
-        // Non-optimistic revert
-        if (selectSrcLang) selectSrcLang.value = savedSettings.sourceLanguage || 'auto';
-        if (selectTgtLang) selectTgtLang.value = savedSettings.targetLanguage || 'vi';
-        if (checkboxWidgetVisible) {
-          checkboxWidgetVisible.checked = savedSettings.widgetVisible !== false;
-        }
-        setConfigMsg(configMessageTranslate, 'Lỗi lưu: ' + (err.message || 'Lỗi không xác định'), true);
-        return;
-      }
-
-      savedSettings = { ...savedSettings, ...partialSettings };
-      setConfigMsg(configMessageTranslate, 'Đã lưu cài đặt dịch!');
-      await checkTabStatus();
+  // Tab 1: autosave (no save button). Language + widget changes persist
+  // immediately; failures revert to last saved values.
+  if (selectSrcLang) {
+    selectSrcLang.addEventListener('change', () => {
+      markDirty();
     });
   }
+  if (selectTgtLang) {
+    selectTgtLang.addEventListener('change', () => {
+      markDirty();
+    });
+  }
+  if (checkboxWidgetVisible) {
+    checkboxWidgetVisible.addEventListener('change', () => {
+      markDirty();
+    });
+  }
+
 
   // Tab 2 Auto-Translate Sites Management
   function showAutoSiteError(msg) {
@@ -1308,6 +1372,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!autoSiteError) return;
     autoSiteError.textContent = '';
     autoSiteError.style.display = 'none';
+  }
+
+  // Shared: grant host permission + enable site consent for an origin.
+  // Must run inside a user gesture (button click). Adding an origin to the
+  // auto list alone is NOT enough — the auto-start gate also requires site
+  // consent + host permission, otherwise auto-translate silently does nothing.
+  async function enableSiteForOrigin(origin) {
+    let granted = false;
+    try {
+      if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
+        granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
+      }
+      if (!granted && chrome.permissions && typeof chrome.permissions.request === 'function') {
+        granted = await chrome.permissions.request({ origins: [origin + '/*'] });
+      } else if (!chrome.permissions) {
+        granted = true;
+      }
+    } catch {
+      granted = false;
+    }
+    if (!granted) return { ok: false, reason: 'permission' };
+    const resp = await sendMsg({ action: 'SET_SITE_ENABLED', origin, enabled: true });
+    if (chrome.runtime.lastError || !resp || resp.error) {
+      return { ok: false, reason: 'save', error: (resp && resp.error) || chrome.runtime.lastError };
+    }
+    return { ok: true };
+  }
+
+  // Per-row status dots: green = permission granted + autoStart on (auto will
+  // run); amber = in list but missing permission/consent (auto silent);
+  // grey = autoStart off.
+  async function refreshSiteDots() {
+    if (!autoSitesList) return;
+    const cards = autoSitesList.querySelectorAll('.auto-site-card');
+    for (const card of cards) {
+      const origin = card.dataset ? card.dataset.origin : null;
+      const dot = card.querySelector('.site-dot');
+      const powerBtn = card.querySelector('.btn-site-enable');
+      if (!dot || !origin) continue;
+      let granted = false;
+      try {
+        if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
+          granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
+        }
+      } catch {}
+      const site = autoTranslateSites.find((s) => (s.origin || s) === origin);
+      const autoOn = site && site.autoStart !== false;
+      const state = !autoOn ? 'off' : (granted ? 'on' : 'standby');
+      dot.dataset.state = state;
+      dot.title = state === 'on'
+        ? `${origin}: sẽ tự dịch khi mở trang`
+        : state === 'standby'
+          ? `${origin}: chưa cấp quyền/bật dịch — bấm nút nguồn để bật`
+          : `${origin}: đã tắt tự dịch`;
+      if (powerBtn) {
+        powerBtn.classList.toggle('enabled', granted);
+        powerBtn.title = granted ? `Đã bật dịch cho ${origin}` : `Bật dịch cho ${origin}`;
+      }
+    }
   }
 
   function renderAutoSites() {
@@ -1332,9 +1455,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       card.setAttribute('role', 'listitem');
       card.dataset.origin = site.origin;
 
-      // Row 1: Main controls (Origin chip + Mode mini-select + AutoStart toggle + Delete button)
+      // Row 1: Status dot + origin + controls (enable, mode, autostart, delete)
       const mainRow = document.createElement('div');
       mainRow.className = 'auto-site-row-main';
+
+      const statusDot = document.createElement('span');
+      statusDot.className = 'site-dot';
+      statusDot.dataset.state = 'off';
+      statusDot.title = 'Đang kiểm tra quyền...';
+      statusDot.setAttribute('aria-hidden', 'true');
 
       const originSpan = document.createElement('span');
       originSpan.className = 'chip-origin';
@@ -1343,6 +1472,31 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const controlsDiv = document.createElement('div');
       controlsDiv.className = 'auto-site-controls';
+
+      // Enable button: grants host permission + enables site consent in one
+      // gesture (required for auto-translate gate: list alone is not enough)
+      const enableBtn = document.createElement('button');
+      enableBtn.type = 'button';
+      enableBtn.className = 'btn-icon btn-sm btn-site-enable';
+      enableBtn.id = `btn-enable-site-${idx}`;
+      enableBtn.title = `Bật dịch cho ${site.origin}`;
+      enableBtn.setAttribute('aria-label', `Bật dịch cho ${site.origin}`);
+      enableBtn.innerHTML = SVG_ICONS.power;
+      enableBtn.addEventListener('click', async () => {
+        hideAutoSiteError();
+        enableBtn.disabled = true;
+        const res = await enableSiteForOrigin(site.origin);
+        enableBtn.disabled = false;
+        if (!res.ok) {
+          showAutoSiteError(res.reason === 'permission'
+            ? `Cần cấp quyền truy cập cho ${site.origin} để tự động dịch.`
+            : `Lỗi bật dịch cho ${site.origin}: ` + ((res.error && res.error.message) || 'Không thể lưu'));
+        }
+        if (site.origin === currentConsent.siteOrigin) {
+          await loadConsent();
+        }
+        refreshSiteDots();
+      });
 
       // Mini Mode Select
       const modeSelect = document.createElement('select');
@@ -1358,6 +1512,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       modeSelect.value = site.mode || 'inherit';
       modeSelect.addEventListener('change', () => {
         site.mode = modeSelect.value;
+        markDirty();
       });
 
       // AutoStart Toggle
@@ -1372,6 +1527,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       toggleInput.checked = site.autoStart !== false;
       toggleInput.addEventListener('change', () => {
         site.autoStart = toggleInput.checked;
+        markDirty();
+        refreshSiteDots();
       });
 
       const toggleSlider = document.createElement('span');
@@ -1414,8 +1571,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       controlsDiv.appendChild(modeSelect);
       controlsDiv.appendChild(toggleLabel);
+      controlsDiv.appendChild(enableBtn);
       controlsDiv.appendChild(deleteBtn);
 
+      mainRow.appendChild(statusDot);
       mainRow.appendChild(originSpan);
       mainRow.appendChild(controlsDiv);
 
@@ -1423,9 +1582,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       const subRow = document.createElement('div');
       subRow.className = 'auto-site-row-sub';
 
-      const langLabel = document.createElement('span');
-      langLabel.className = 'auto-site-lang-label';
-      langLabel.textContent = 'Ngôn ngữ:';
+      const langIcon = document.createElement('span');
+      langIcon.className = 'field-icon field-icon-xs';
+      langIcon.title = 'Ngôn ngữ riêng cho trang này (mặc định: theo chung)';
+      langIcon.setAttribute('aria-hidden', 'true');
+      langIcon.innerHTML = '<svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/><path d="M5 9c0 2.144 2.952 3.908 6.7 4"/><path d="M12 20l4 -9l4 9"/><path d="M19.1 18h-6.2"/></svg>';
 
       const srcSelect = document.createElement('select');
       srcSelect.className = 'select-mini auto-site-lang-src';
@@ -1443,6 +1604,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       srcSelect.value = site.sourceLanguage || '';
       srcSelect.addEventListener('change', () => {
         site.sourceLanguage = srcSelect.value || null;
+        markDirty();
       });
 
       const arrowSpan = document.createElement('span');
@@ -1462,9 +1624,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       tgtSelect.value = site.targetLanguage || '';
       tgtSelect.addEventListener('change', () => {
         site.targetLanguage = tgtSelect.value || null;
+        markDirty();
       });
 
-      subRow.appendChild(langLabel);
+      subRow.appendChild(langIcon);
       subRow.appendChild(srcSelect);
       subRow.appendChild(arrowSpan);
       subRow.appendChild(tgtSelect);
@@ -1474,33 +1637,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       autoSitesList.appendChild(card);
     });
+
+    refreshSiteDots();
   }
 
-  // Tab 2 Save Action
-  if (btnSaveAuto) {
-    btnSaveAuto.addEventListener('click', async () => {
-      hideAutoSiteError();
-      btnSaveAuto.disabled = true;
+  // Tab 2: no save button — every row control autosaves via markDirty();
+  // delete/add flows persist immediately in their own handlers below.
 
-      const saveResp = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({
-          action: 'SAVE_SETTINGS',
-          settings: { autoTranslateSites }
-        }, resolve);
-      });
-      btnSaveAuto.disabled = false;
-
-      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-        const err = saveResp?.error || chrome.runtime.lastError;
-        showAutoSiteError('Lỗi lưu: ' + (err?.message || 'Không thể lưu'));
-        if (configMessageAuto) setConfigMsg(configMessageAuto, 'Lỗi lưu cấu hình', true);
-        return;
-      }
-
-      savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(autoTranslateSites));
-      if (configMessageAuto) setConfigMsg(configMessageAuto, 'Đã lưu cấu hình tự động!');
-    });
-  }
 
   async function handleAddCustomSite() {
     hideAutoSiteError();
@@ -1548,6 +1691,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
     if (inputAutoSite) inputAutoSite.value = '';
     renderAutoSites();
+
+    // Auto-start gate needs site consent + host permission too — enable in
+    // this same gesture, otherwise the new entry would silently never run.
+    const enableRes = await enableSiteForOrigin(norm);
+    if (!enableRes.ok) {
+      showAutoSiteError(enableRes.reason === 'permission'
+        ? `Đã thêm ${norm}, nhưng chưa cấp quyền truy cập — bấm nút nguồn trên dòng đó để bật.`
+        : `Đã thêm ${norm}, nhưng bật dịch thất bại — bấm nút nguồn trên dòng đó để thử lại.`);
+    }
+    refreshSiteDots();
   }
 
   if (btnAddCustomSite) {
@@ -1665,6 +1818,38 @@ document.addEventListener('DOMContentLoaded', async () => {
       startPolling();
 
       try {
+        // Flush pending autosave first so the stored config (not stale field
+        // values) is the single source of truth for this run.
+        await flushAutosave();
+
+        // SW fetch to Base URL needs its host permission; request it here in
+        // the click gesture if not granted yet (autosave cannot request it).
+        const runBaseURL = savedSettings.baseURL || 'http://localhost:8080/v1';
+        let runOrigin = null;
+        try {
+          runOrigin = new URL(runBaseURL).origin;
+        } catch {}
+        if (runOrigin && chrome.permissions && typeof chrome.permissions.contains === 'function') {
+          let hasBasePerm = false;
+          try {
+            hasBasePerm = await chrome.permissions.contains({ origins: [runOrigin + '/*'] });
+            if (!hasBasePerm && typeof chrome.permissions.request === 'function') {
+              hasBasePerm = await chrome.permissions.request({ origins: [runOrigin + '/*'] });
+            }
+          } catch {
+            hasBasePerm = false;
+          }
+          if (!hasBasePerm) {
+            stopPolling();
+            updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
+            setConfigMsg(configMessageConnect, 'Cần cấp quyền host permission để kết nối Base URL', true);
+            evaluateActionReadiness();
+            await refreshBasePermState();
+            return;
+          }
+          await refreshBasePermState();
+        }
+
         const ensureResp = await new Promise((resolve) => {
           chrome.runtime.sendMessage({
             action: 'ENSURE_CONTENT',
@@ -1686,10 +1871,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           : (savedSettings.translationMode || currentMode || 'scroll-follow');
 
         const currentSettings = {
-          baseURL: inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || 'http://localhost:8080/v1'),
-          model: selectModel?.value || savedSettings.model || DEFAULT_MODEL,
-          sourceLanguage: selectSrcLang?.value || savedSettings.sourceLanguage || 'auto',
-          targetLanguage: selectTgtLang?.value || savedSettings.targetLanguage || 'vi',
+          baseURL: savedSettings.baseURL || 'http://localhost:8080/v1',
+          model: savedSettings.model || selectModel?.value || DEFAULT_MODEL,
+          sourceLanguage: savedSettings.sourceLanguage || selectSrcLang?.value || 'auto',
+          targetLanguage: savedSettings.targetLanguage || selectTgtLang?.value || 'vi',
           translationMode: effectiveSiteMode
         };
 
@@ -1772,6 +1957,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initial Sequence
   await loadSettings();
+  settingsLoaded = true;
+  setSaveState('saved');
+  await refreshBasePermState();
   const tabOk = await resolveActiveTab();
   if (tabOk) {
     await loadConsent();

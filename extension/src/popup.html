@@ -25,6 +25,9 @@
             <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
           </svg>
         </span>
+        <span class="save-state" id="save-state" title="Mọi thay đổi được lưu tự động" aria-label="Trạng thái lưu tự động" role="status">
+          <span class="save-dot" id="save-dot" aria-hidden="true"></span>
+        </span>
         <span class="badge" id="slice-badge" title="Chế độ dịch trực tiếp qua 9router API">Direct</span>
       </div>
     </header>
@@ -146,17 +149,6 @@
           <span class="toggle-text">Hiện icon nổi trên trang</span>
         </label>
       </div>
-
-      <!-- Save Tab 1 actions -->
-      <div class="config-actions">
-        <button id="btn-save-translate" class="btn btn-sm btn-success" title="Lưu cài đặt dịch" aria-label="Lưu cài đặt dịch">
-          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 12l5 5l10 -10"/>
-          </svg>
-          <span>Lưu</span>
-        </button>
-      </div>
-      <div id="config-message-translate" class="config-message" aria-live="polite"></div>
     </section>
 
     <!-- Tab 2: Tự động -->
@@ -185,37 +177,49 @@
 
       <!-- Danh sách site cấu hình riêng -->
       <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
-
-      <!-- Save Tab 2 actions -->
-      <div class="config-actions">
-        <button id="btn-save-auto" class="btn btn-sm btn-success" title="Lưu cấu hình tự động" aria-label="Lưu cấu hình tự động">
-          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 12l5 5l10 -10"/>
-          </svg>
-          <span>Lưu</span>
-        </button>
-      </div>
-      <div id="config-message-auto" class="config-message" aria-live="polite"></div>
     </section>
 
-    <!-- Tab 3: Kết nối -->
+    <!-- Tab 3: Kết nối (icon-first, autosave — không nút Lưu) -->
     <section class="section tab-panel hidden" id="tabpanel-connect" role="tabpanel" aria-labelledby="tab-connect" tabindex="0">
       <!-- Primary connection section -->
       <div class="card-compact primary-connect-card">
         <div class="compact-header">
-          <span class="field-title">Chính</span>
+          <span class="field-icon-title" title="Kết nối chính" aria-hidden="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/>
+              <path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M20 9l-3.5 3.5"/>
+            </svg>
+          </span>
           <span class="key-status-indicator" id="key-status-indicator">Chưa lưu key</span>
         </div>
 
         <div class="form-group">
-          <label for="input-base-url">Base URL</label>
-          <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" />
+          <div class="input-with-button">
+            <span class="field-icon" title="Base URL" aria-hidden="true">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54 .54l3 -3a5 5 0 0 0 -7.07 -7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0 -7.54 -.54l-3 3a5 5 0 0 0 7.07 7.07l1.71 -1.71"/>
+              </svg>
+            </span>
+            <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" title="Base URL của 9router" />
+            <button type="button" id="btn-base-perm" class="btn-icon" title="Cấp quyền kết nối Base URL" aria-label="Cấp quyền kết nối Base URL">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3l7 3v5c0 5 -3.5 8.5 -7 10c-3.5 -1.5 -7 -5 -7 -10v-5z"/>
+                <path d="M9 12l2 2l4 -4"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div class="form-group">
-          <label for="input-api-key">API Key</label>
           <div class="input-with-button">
-            <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" />
+            <span class="field-icon" title="API Key" aria-hidden="true">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="8" cy="15" r="4"/>
+                <path d="M10.85 12.15l8.5 -8.5"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>
+              </svg>
+            </span>
+            <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" title="API Key — tự lưu khi gõ xong" />
             <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện hoặc ẩn API key" aria-label="Hiện hoặc ẩn API key">
               <svg class="icon icon-sm eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/>
@@ -231,9 +235,13 @@
         </div>
 
         <div class="form-group">
-          <label for="select-model">Model</label>
           <div class="input-with-button">
-            <select id="select-model" aria-label="Chọn primary model dịch">
+            <span class="field-icon" title="Model" aria-hidden="true">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 7h10v10h-10z"/><path d="M9 2v3"/><path d="M15 2v3"/><path d="M9 19v3"/><path d="M15 19v3"/><path d="M2 9h3"/><path d="M2 15h3"/><path d="M19 9h3"/><path d="M19 15h3"/>
+              </svg>
+            </span>
+            <select id="select-model" aria-label="Chọn primary model dịch" title="Primary model dịch">
               <optgroup label="Recommended">
                 <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
                 <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
@@ -259,7 +267,11 @@
       <div class="card-compact fallbacks-card">
         <div class="compact-header">
           <div class="fallbacks-title-group">
-            <span class="field-title">Dự phòng</span>
+            <span class="field-icon" title="Dự phòng (tối đa 2)" aria-hidden="true">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l9 5l-9 5l-9 -5z"/><path d="M3 12l9 5l9 -5"/><path d="M3 17l9 5l9 -5"/>
+              </svg>
+            </span>
             <span class="sub-hint" title="Tối đa 2 fallback models/providers khi primary gặp lỗi 5xx">(tối đa 2)</span>
           </div>
           <button type="button" id="btn-add-fallback" class="btn btn-xs btn-outline" title="Thêm fallback row" aria-label="Thêm fallback row">
@@ -275,15 +287,6 @@
         </div>
       </div>
 
-      <!-- Save Tab 2 actions -->
-      <div class="config-actions">
-        <button id="btn-save-connect" class="btn btn-sm btn-success" title="Lưu cấu hình kết nối" aria-label="Lưu cấu hình kết nối">
-          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 12l5 5l10 -10"/>
-          </svg>
-          <span>Lưu</span>
-        </button>
-      </div>
       <div id="config-message-connect" class="config-message" aria-live="polite"></div>
     </section>
 
