@@ -151,17 +151,22 @@ function createFixtureServer(port = parseInt(process.env.FIXTURE_PORT || '8091',
   const fixtureLongPath = path.resolve(HERE, 'fixture-long.html');
   const fixtureLongContent = fs.existsSync(fixtureLongPath) ? fs.readFileSync(fixtureLongPath, 'utf8') : '';
   const server = http.createServer((req, res) => {
-    if (req.url === '/fixture.html' || req.url === '/') {
+    // Match by pathname so query strings (?t52b, ?nav=...) still serve fixtures
+    let pathname = req.url || '/';
+    try {
+      pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+    } catch {}
+    if (pathname === '/fixture.html' || pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fixtureContent);
       return;
     }
-    if (req.url === '/fixture-20nodes.html') {
+    if (pathname === '/fixture-20nodes.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fixture20Content);
       return;
     }
-    if (req.url === '/fixture-long.html') {
+    if (pathname === '/fixture-long.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fixtureLongContent);
       return;
@@ -3651,7 +3656,9 @@ async function runSingleAttempt() {
       const afterAuto = await cdp.evaluate(`
         self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
       `, swSessionId, true);
-      assert.deepEqual(afterAuto.settings.autoTranslateSites, ['https://example.com']);
+      assert.deepEqual(afterAuto.settings.autoTranslateSites, [
+        { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+      ]);
       assert.equal(afterAuto.configRevision, revAfterModel, `configRevision must NOT bump when only autoTranslateSites change (expected ${revAfterModel}, got ${afterAuto.configRevision})`);
 
       // 4. Changing translationMode MUST bump configRevision
@@ -3818,8 +3825,11 @@ async function runSingleAttempt() {
       };
       cdp.addEventListener(listener);
 
-      // Setup chrome.runtime messaging bridge on this tab
-      await cdp.evaluate(`
+      // Setup chrome.runtime messaging bridge on this tab.
+      // Re-runnable: call tab.setupBridge() again after real navigation,
+      // because a new document loses all page JS state (bridge + content).
+      const setupBridge = async () => {
+        await cdp.evaluate(`
         window.__bridgePending = new Map();
         window.__bridgeCallId = 1;
         window.__contentMessageListeners = [];
@@ -3873,6 +3883,8 @@ async function runSingleAttempt() {
           window.__cdpSendToSw(JSON.stringify({ callId, payload: message }));
         };
       `, sessionId, false);
+      };
+      await setupBridge();
 
       const injectContentScript = async () => {
         const contentJsSource = fs.readFileSync(path.join(EXTENSION_DIR, 'content.js'), 'utf8');
@@ -3891,6 +3903,7 @@ async function runSingleAttempt() {
         sessionId,
         tabId: assignedTabId,
         injectContentScript,
+        setupBridge,
         dispatchToContent: async (msg) => {
           return await cdp.evaluate(`window.__dispatchToContent(${JSON.stringify(msg)})`, sessionId, true);
         },
@@ -4323,44 +4336,258 @@ async function runSingleAttempt() {
     }
 
     // =========================================================================
-    // Test 47: Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)
+    // Test 47: Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)
     // =========================================================================
     let pTarget1 = null;
     let pTarget2 = null;
+    let t47Tab = null;
     try {
+      // Setup fixture tab for live translation action verification
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+      t47Tab = await createBridgedFixtureTab(fixtureUrl);
+      await t47Tab.injectContentScript();
+      // Reset tab rate window (T44-T46 consume the default tab quota) and
+      // ensure the test tab is registered for policy checks.
+      // Also seed key + base settings: the Dịch action needs a stored key.
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._registerTestTab(${t47Tab.tabId}, ${JSON.stringify(fixtureUrl)});
+          self.__translatorSw._setTestRateLimits(null);
+          await self.__translatorSw._resetRateStateForTest();
+          // Bypass ENSURE_CONTENT scripting check: harness tab ids are not
+          // resolvable via chrome.tabs (sender + tabId validation retained)
+          self.__translatorSw._setTestEnsureContentOk(true);
+          const setKeyRes = await self.__translatorSw.dispatchMessage({ action: 'SET_KEY', key: 'fake-test-key' }, popupSender);
+          if (!setKeyRes || !setKeyRes.ok) throw new Error('T47 setup SET_KEY failed: ' + JSON.stringify(setKeyRes));
+          const saveRes = await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi'
+            }
+          }, popupSender);
+          if (!saveRes || !saveRes.ok) throw new Error('T47 setup SAVE_SETTINGS failed: ' + JSON.stringify(saveRes));
+          const verifyRes = await self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+          if (!verifyRes?.settings || verifyRes.settings.baseURL !== 'http://127.0.0.1:${SMOKE_PORT}/v1') throw new Error('T47 setup settings not persisted: ' + JSON.stringify(verifyRes?.settings));
+          if (!verifyRes?.hasKey) throw new Error('T47 setup key not persisted');
+        })()
+      `, swSessionId);
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: true,
+          tabId: ${t47Tab.tabId}
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId);
+
+      // Pre-install page mocks BEFORE popup JS runs via
+      // Page.addScriptToEvaluateOnNewDocument. This removes the need for a
+      // reload (the old reload re-ran init AFTER our __setTestActiveTab call,
+      // letting init overwrite activeTab=null → stuck "Đang tải...") and
+      // guarantees mocks exist before init starts (no mid-init stall).
+      let t47PreloadId = null; // kept for finally-cleanup symmetry (addScript N/A on extension targets)
+      // NOTE: Page.addScriptToEvaluateOnNewDocument does NOT apply to
+      // chrome-extension targets in headless CDP (verified: __testActiveTab
+      // MISSING after load), so mocks are installed directly right after
+      // attach instead — still before init's first async boundary resolves.
+
       // 1. Open popup target 1
       pTarget1 = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
       const pAttach1 = await cdp.send('Target.attachToTarget', { targetId: pTarget1.targetId, flatten: true });
       const pSession1 = pAttach1.sessionId;
       await cdp.send('Runtime.enable', {}, pSession1);
-      await sleep(500);
+      await cdp.send('Runtime.addBinding', { name: '__cdpPopupSendTabMessage' }, pSession1);
+      const popupMsgListener = async (msg) => {
+        if (msg.sessionId === pSession1 && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpPopupSendTabMessage') {
+          const { callId, payload } = JSON.parse(msg.params.payload);
+          try {
+            const res = await t47Tab.dispatchToContent(payload);
+            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, ${JSON.stringify(res)})`, pSession1, false);
+          } catch (err) {
+            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, undefined, ${JSON.stringify(err.message)})`, pSession1, false);
+          }
+        }
+      };
+      cdp.addEventListener(popupMsgListener);
+      const t47MocksJs = `
+        try {
+          window.__testActiveTab = { id: ${t47Tab.tabId}, url: '${fixtureUrl}' };
+        } catch (e) {}
+        try {
+          chrome.tabs = chrome.tabs || {};
+          chrome.tabs.query = async () => [{ id: ${t47Tab.tabId}, url: '${fixtureUrl}', active: true }];
+        } catch (e) {}
+        try { chrome.permissions = { contains: async () => true, request: async () => true }; } catch (e) {}
+        try {
+          window.__tabPending = window.__tabPending || new Map();
+          window.__tabCallId = window.__tabCallId || 1;
+          if (!window.__cdpTabReply) {
+            window.__cdpTabReply = function(callId, response, lastError) {
+              if (window.__tabPending.has(callId)) {
+                const cb = window.__tabPending.get(callId);
+                window.__tabPending.delete(callId);
+                if (lastError) window.chrome.runtime.lastError = { message: lastError };
+                else delete window.chrome.runtime.lastError;
+                try { cb(response); } finally { delete window.chrome.runtime.lastError; }
+              }
+            };
+          }
+          chrome.tabs.sendMessage = function(tabId, message, options, callback) {
+            const cb = typeof options === 'function' ? options : callback;
+            const callId = window.__tabCallId++;
+            if (typeof cb === 'function') window.__tabPending.set(callId, cb);
+            window.__cdpPopupSendTabMessage(JSON.stringify({ callId, payload: message }));
+          };
+        } catch (e) {}
+      `;
 
-      // (a) Assert: role=tablist render & 2 tab panels & tab switching
+
+      // Install page mocks immediately after attach (before init's async work
+      // resolves): mock chrome.tabs.query so resolveActiveTab never touches the
+      // real API (hangs headless), plus permissions mock. Denials at SW-level by T15.
+      // Then reload: init re-runs from scratch WITH mocks already present
+      // (Page.reload returns immediately while the page is still unparsed, so
+      // the mock evaluate below wins the race deterministically — plain
+      // post-attach mocks lose it under load).
+      await cdp.evaluate(t47MocksJs, pSession1).catch(() => {});
+      try { await cdp.send('Page.reload', {}, pSession1); } catch {}
+      await cdp.evaluate(t47MocksJs, pSession1).catch(() => {});
+
+      // Capture init errors (mocks were pre-installed, so init runs once, cleanly).
+      const t47PageErrors = [];
+      const t47ExcListener = async (msg) => {
+        if (msg.sessionId === pSession1 && msg.method === 'Runtime.exceptionThrown') {
+          try {
+            t47PageErrors.push(String(msg.params?.exceptionDetails?.text || msg.params?.exceptionDetails?.exception?.description || 'exception').slice(0, 300));
+          } catch {}
+        }
+      };
+      cdp.addEventListener(t47ExcListener);
+      try { await cdp.send('Log.enable', {}, pSession1); } catch {}
+      const t47ConsoleErrors = [];
+      const t47LogListener = async (msg) => {
+        if (msg.sessionId === pSession1 && msg.method === 'Log.entryAdded') {
+          try {
+            const e = msg.params?.entry || {};
+            if (e.level === 'error' || e.level === 'warning') t47ConsoleErrors.push(String(e.text || e.url || 'log').slice(0, 200));
+          } catch {}
+        }
+      };
+      cdp.addEventListener(t47LogListener);
+
+      // Wait for popup initial load (settings + consent); a fixed sleep flakes
+      // under load (strip stuck at "Đang tải...", actions disabled).
+      let pingOk = false;
+      let stripInit = '';
+      for (let w = 0; w < 20; w++) {
+        stripInit = await cdp.evaluate(`document.querySelector('#status-strip')?.textContent || ''`, pSession1).catch(() => '');
+        try {
+          const pong = await cdp.evaluate(`self.__translatorSw ? 'sw-present' : 'no-sw'`, swSessionId).catch(() => 'eval-fail');
+          pingOk = pong === 'sw-present';
+        } catch {}
+        if (stripInit && !stripInit.includes('Đang tải') && pingOk) break;
+        await sleep(200);
+      }
+      // If init lost the race (still loading with mocks present), reload once
+      // and reinstall mocks immediately: reload returns before parsing, so the
+      // mock evaluate wins deterministically on the second try.
+      if (!stripInit || stripInit.includes('Đang tải')) {
+        try { await cdp.send('Page.reload', {}, pSession1); } catch {}
+        await cdp.evaluate(t47MocksJs, pSession1).catch(() => {});
+        for (let w = 0; w < 20; w++) {
+          stripInit = await cdp.evaluate(`document.querySelector('#status-strip')?.textContent || ''`, pSession1).catch(() => '');
+          if (stripInit && !stripInit.includes('Đang tải')) break;
+          await sleep(200);
+        }
+      }
+      // Preload mocks served their purpose (popup init done); remove so later
+      // tabs (T48+) never inherit them.
+      try { if (t47PreloadId) await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: t47PreloadId }); t47PreloadId = null; } catch {}
+
+      // (a) Assert: role=tablist render & 3 tab panels & tab switching
       const hasTablist = await cdp.evaluate('Boolean(document.querySelector(".tab-list[role=\\"tablist\\"]"))', pSession1);
       assert.ok(hasTablist, 'Popup must render [role="tablist"]');
 
       const tabs = await cdp.evaluate('Array.from(document.querySelectorAll(".tab-btn[role=\\"tab\\"]")).map(el => el.id)', pSession1);
-      assert.deepEqual(tabs, ['tab-translate', 'tab-connect'], 'Popup must have 2 tabs: tab-translate and tab-connect');
+      assert.deepEqual(tabs, ['tab-translate', 'tab-auto', 'tab-connect'], 'Popup must have 3 tabs: tab-translate, tab-auto, tab-connect');
 
-      // Check initial panel visibility (translate visible, connect hidden)
-      const isConnectHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
+      // Check initial panel visibility (translate visible, auto & connect hidden)
       const isTranslateHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
-      assert.ok(isConnectHiddenInit, 'tabpanel-connect must be hidden initially');
+      const isAutoHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-auto")?.classList.contains("hidden")', pSession1);
+      const isConnectHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
       assert.ok(!isTranslateHiddenInit, 'tabpanel-translate must be visible initially');
+      assert.ok(isAutoHiddenInit, 'tabpanel-auto must be hidden initially');
+      assert.ok(isConnectHiddenInit, 'tabpanel-connect must be hidden initially');
 
-      // Click tab-connect -> panel visibility flips
+      // Click tab-auto -> tabpanel-auto visible, others hidden
+      await cdp.evaluate('document.getElementById("tab-auto")?.click()', pSession1);
+      await sleep(100);
+      const isAutoHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-auto")?.classList.contains("hidden")', pSession1);
+      const isTranslateHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
+      assert.ok(!isAutoHiddenAfter, 'tabpanel-auto must be visible after click');
+      assert.ok(isTranslateHiddenAfter, 'tabpanel-translate must be hidden after switching');
+
+      // Click tab-connect -> tabpanel-connect visible, others hidden
       await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession1);
       await sleep(100);
       const isConnectHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
-      const isTranslateHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
       assert.ok(!isConnectHiddenAfter, 'tabpanel-connect must be visible after click');
-      assert.ok(isTranslateHiddenAfter, 'tabpanel-translate must be hidden after switching');
 
       // Switch back to tab-translate
       await cdp.evaluate('document.getElementById("tab-translate")?.click()', pSession1);
       await sleep(100);
 
-      // (b) Model list: cache-first (second popup open does NOT request /models)
+      // (b) Actions in tab-translate: verify btn-translate and btn-restore are inside tabpanel-translate & executes translation
+      const btnInTranslatePanel = await cdp.evaluate('Boolean(document.querySelector("#tabpanel-translate #btn-translate"))', pSession1);
+      assert.ok(btnInTranslatePanel, 'btn-translate must be inside #tabpanel-translate');
+      const btnRestoreInTranslatePanel = await cdp.evaluate('Boolean(document.querySelector("#tabpanel-translate #btn-restore"))', pSession1);
+      assert.ok(btnRestoreInTranslatePanel, 'btn-restore must be inside #tabpanel-translate');
+
+      // Wait until btn-translate is enabled
+      for (let w = 0; w < 20; w++) {
+        const disabled = await cdp.evaluate('document.getElementById("btn-translate")?.disabled', pSession1);
+        if (!disabled) break;
+        await sleep(150);
+      }
+
+      // Click btn-translate in popup -> fixture translates
+      await cdp.evaluate('document.getElementById("btn-translate")?.click()', pSession1);
+      let appliedCount = 0;
+      let lastStErr = null;
+      for (let w = 0; w < 30; w++) {
+        await sleep(200);
+        const st = await cdp.evaluate('window.__translatorDom.getStatus()', t47Tab.sessionId).catch(() => ({}));
+        if (st) lastStErr = st.error || null;
+        if (st && st.totalApplied > 0) {
+          appliedCount = st.totalApplied;
+          break;
+        }
+      }
+      if (!(appliedCount > 0)) {
+        const diag47 = await cdp.evaluate(`(() => ({
+          strip: document.querySelector('#status-strip')?.textContent || null,
+          cfgMsg: document.getElementById('config-message-translate')?.textContent || null,
+          btnDisabled: document.getElementById('btn-translate')?.disabled ?? null
+        }))()`, pSession1).catch((e) => ({ diagError: String(e) }));
+        const swFromPopup = await cdp.evaluate(`new Promise((resolve) => {
+          try {
+            chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (resp) => {
+              resolve({ hasKey: resp?.hasKey, baseURL: resp?.settings?.baseURL, err: resp?.error || null, lastError: chrome.runtime.lastError ? String(chrome.runtime.lastError.message) : null });
+            });
+          } catch (e) { resolve({ threw: String(e) }); }
+        })`, pSession1).catch((e) => ({ diagError: String(e) }));
+        const testActiveTabInPage = await cdp.evaluate(`typeof window.__testActiveTab === 'undefined' ? 'MISSING' : JSON.stringify(window.__testActiveTab)`, pSession1).catch((e) => 'eval-fail');
+        const initTrace = await cdp.evaluate(`window.__initTrace || null`, pSession1).catch(() => null);
+        const logs47 = fakeServer.getLogs().length;
+        assert.ok(false, `Clicking Dịch in tab-translate must apply translations on fixture, got ${appliedCount}, statusError=${JSON.stringify(lastStErr)}, diag=${JSON.stringify(diag47)}, swFromPopup=${JSON.stringify(swFromPopup)}, testActiveTabInPage=${JSON.stringify(testActiveTabInPage)}, initTrace=${JSON.stringify(initTrace)}, consoleErr=${JSON.stringify(t47ConsoleErrors.slice(0, 4))}, providerLogs=${logs47}, pageErrors=${JSON.stringify(t47PageErrors.slice(0, 3))}`);
+      }
+
+      // (c) Model list: cache-first (second popup open does NOT request /models)
       const modelsCountBefore = fakeServer.getModelsFetchCount();
       await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId });
       pTarget1 = null;
@@ -4371,6 +4598,9 @@ async function runSingleAttempt() {
       const pSession2 = pAttach2.sessionId;
       await cdp.send('Runtime.enable', {}, pSession2);
       await sleep(500);
+      // Mock chrome.permissions in harness popups (real prompt can hang
+      // headless CDP tabs; denial paths are covered at SW-level by T15)
+      await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession2).catch(() => {});
 
       const modelsCountAfter = fakeServer.getModelsFetchCount();
       assert.equal(modelsCountAfter, modelsCountBefore, 'Re-opening popup must use L2 cache and NOT send /models request');
@@ -4379,7 +4609,7 @@ async function runSingleAttempt() {
       await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession2);
       await sleep(200);
 
-      // (c) Favorite: click star button for selected model -> sends SAVE_SETTINGS partial -> favoriteModels updated -> UI selection not reset
+      // (d) Favorite: click star button for selected model -> sends SAVE_SETTINGS partial -> favoriteModels updated -> UI selection not reset
       const curSelectedModel = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
       assert.ok(curSelectedModel, 'select-model must have a selected value');
 
@@ -4405,7 +4635,7 @@ async function runSingleAttempt() {
       const modelValAfterFav = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
       assert.equal(modelValAfterFav, curSelectedModel, 'UI model selection must NOT be reset when toggling favorite');
 
-      // (d) Fallback v2 row + key: remove any pre-existing rows -> add row -> enter key & model -> save -> SET_FALLBACK_KEY called & fallbackKeyPresence[fb1]=true
+      // (e) Fallback v2 row + key: remove any pre-existing rows -> add row -> enter key & model -> save -> SET_FALLBACK_KEY called & fallbackKeyPresence[fb1]=true
       while (await cdp.evaluate('Boolean(document.getElementById("btn-remove-fallback-0"))', pSession2)) {
         await cdp.evaluate('document.getElementById("btn-remove-fallback-0")?.click()', pSession2);
         await sleep(50);
@@ -4446,27 +4676,61 @@ async function runSingleAttempt() {
       assert.equal(swSettingsAfterFb.settings.fallbacks[0].id, 'fb1', 'settings.fallbacks[0].id must be fb1');
       assert.equal(swSettingsAfterFb?.fallbackKeyPresence?.['fb1'], true, 'fallbackKeyPresence[fb1] must be true after saving key');
 
-      // (e) Mode radio: switch to tab-translate -> change mode -> click Save -> translationMode updated in settings
-      await cdp.evaluate('document.getElementById("tab-translate")?.click()', pSession2);
-      await sleep(100);
+      // (f) Per-site mode in tab-auto (mode is NO LONGER on tab-translate)
+      const modeOnTranslate = await cdp.evaluate('Boolean(document.querySelector("#tabpanel-translate #mode-full"))', pSession2);
+      assert.ok(!modeOnTranslate, 'Translation mode radio buttons must NOT be present on tab-translate');
 
-      await cdp.evaluate('document.getElementById("mode-full")?.click()', pSession2);
-      await cdp.evaluate('(document.getElementById("btn-save-translate") || document.getElementById("btn-save-general"))?.click()', pSession2);
+      // Switch to tab-auto
+      await cdp.evaluate('document.getElementById("tab-auto")?.click()', pSession2);
+      await sleep(200);
+
+      // Add a test site via input
+      const testSiteOrigin = 'https://per-site-test.example.com';
+      await cdp.evaluate(`
+        const inp = document.getElementById("input-auto-site");
+        if (inp) inp.value = "${testSiteOrigin}";
+        document.getElementById("btn-add-custom-site")?.click();
+      `, pSession2);
       await sleep(300);
 
-      const swSettingsAfterMode = await cdp.evaluate(`
+      // Find the row for this site and change its mode to 'full'
+      await cdp.evaluate(`
+        const card = Array.from(document.querySelectorAll(".auto-site-card")).find(el => el.dataset.origin === "${testSiteOrigin}");
+        const modeSel = card?.querySelector(".auto-site-mode");
+        if (modeSel) {
+          modeSel.value = "full";
+          modeSel.dispatchEvent(new Event("change"));
+        }
+      `, pSession2);
+      await sleep(100);
+
+      // Save Tab 2
+      await cdp.evaluate('document.getElementById("btn-save-auto")?.click()', pSession2);
+      await sleep(400);
+
+      // Verify settings in SW contain site with mode: 'full'
+      const swSettingsAfterAuto = await cdp.evaluate(`
         self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
       `, swSessionId);
-      const savedMode = swSettingsAfterMode?.settings?.translationMode || swSettingsAfterMode?.translationMode;
-      assert.equal(savedMode, 'full', 'translationMode in settings must be updated to full');
+      const savedAutoSites = swSettingsAfterAuto?.settings?.autoTranslateSites || [];
+      const testSiteEntry = savedAutoSites.find(s => (s.origin || s) === testSiteOrigin);
+      assert.ok(testSiteEntry, `autoTranslateSites must contain ${testSiteOrigin}`);
+      assert.equal(testSiteEntry.mode, 'full', `per-site mode for ${testSiteOrigin} must be saved as 'full'`);
 
-      record('T47', 'Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)', true, `tablist rendered & tabs toggled, 0 extra /models requests on reopen (cache hit), favorite toggled & selection kept, fallback row + key saved (fb1=true), mode radio saved to full`);
+      record('T47', 'Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', true, `3 tabs rendered & toggled, Dịch button inside tab-translate applied>0 on fixture, cache hit, favorite preserved, fallback key saved, per-site mode saved to full in tab-auto`);
     } catch (e) {
-      record('T47', 'Popup e2e (redesigned: 2 tabs, cache, favorite, fallback v2 + key, mode save)', false, e.message);
+      record('T47', 'Popup e2e (redesigned: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', false, e.message);
     } finally {
+      if (t47Tab) {
+        try { await t47Tab.close(); } catch {}
+      }
+      try {
+        await cdp.evaluate(`self.__translatorSw._setTestEnsureContentOk(false)`, swSessionId);
+      } catch {}
       if (pTarget1) {
         try { await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId }); } catch {}
       }
+      try { if (typeof t47PreloadId !== 'undefined' && t47PreloadId) await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: t47PreloadId }); } catch {}
       if (pTarget2) {
         try { await cdp.send('Target.closeTarget', { targetId: pTarget2.targetId }); } catch {}
       }
@@ -4911,11 +5175,13 @@ async function runSingleAttempt() {
     // =========================================================================
     let pTarget50 = null;
     try {
-      // Force SW storage-access failure (fail-closed KEY_ACCESS_UNAVAILABLE)
+      // Force SW storage-access failure via TEST-ONLY hook (fail-closed
+      // KEY_ACCESS_UNAVAILABLE). Never monkeypatch native Chrome APIs here:
+      // re-assignment cannot restore their receiver binding afterwards.
       await cdp.evaluate(`
         (async () => {
-          self.__t50OrigSetAccessLevel = chrome.storage.local.setAccessLevel;
-          chrome.storage.local.setAccessLevel = async () => { throw new Error('injected T50'); };
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestStorageAccessFailure(true);
           self.__translatorSw._resetStorageAccessStateForTest();
         })()
       `, swSessionId);
@@ -4924,6 +5190,13 @@ async function runSingleAttempt() {
       const pAttach50 = await cdp.send('Target.attachToTarget', { targetId: pTarget50.targetId, flatten: true });
       const pSession50 = pAttach50.sessionId;
       await cdp.send('Runtime.enable', {}, pSession50);
+      await sleep(800);
+      // Mock chrome.permissions (real prompt can hang headless CDP tabs;
+      // denial paths are covered at SW-level by T15). Reload + re-mock
+      // immediately so init (re)starts with mocks present.
+      await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession50).catch(() => {});
+      try { await cdp.send('Page.reload', {}, pSession50); } catch {}
+      await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession50).catch(() => {});
       await sleep(800);
 
       // Operate the real Save control with a valid baseURL; SW must refuse
@@ -4943,15 +5216,59 @@ async function runSingleAttempt() {
       // Restore SW access; Save again from the same popup -> success path
       await cdp.evaluate(`
         (async () => {
-          chrome.storage.local.setAccessLevel = self.__t50OrigSetAccessLevel;
+          self.__translatorSw._setTestStorageAccessFailure(false);
           self.__translatorSw._resetStorageAccessStateForTest();
         })()
       `, swSessionId);
-      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
+      const restoreCheck = await cdp.evaluate(`(async () => {
+        try {
+          await self.__translatorSw.ensureStorageAccess();
+          return { access: 'ok' };
+        } catch (e) { return { access: 'THROW:' + String((e && e.message) || e) }; }
+      })()`, swSessionId, true).catch((e) => ({ diagError: String(e) }));
+      // Direct dispatch probe: is SAVE_SETTINGS itself healthy after restore?
+      // (separates SW-side state from popup-side delivery)
+      const directSave = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: { baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1' }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        })()
+      `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
+      // Reload popup so click #2 runs on a fresh listener set (a prior error
+      // path may leave the button element replaced without listeners).
+      // Re-apply permission mock immediately after reload returns.
+      try { await cdp.send('Page.reload', {}, pSession50); } catch {}
+      await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession50).catch(() => {});
       await sleep(800);
-      const okMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
-      const okCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
-      assert.ok(okMsg && okCls.includes('success'), `Popup must report success after restore, got msg=${JSON.stringify(okMsg)} cls=${okCls}`);
+      await cdp.evaluate(`document.getElementById('input-base-url').value = 'http://127.0.0.1:${SMOKE_PORT}/v1'`, pSession50).catch(() => {});
+      const revBefore = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => r?.configRevision ?? null)
+      `, swSessionId, true).catch(() => null);
+      const disabledBeforeClick = await cdp.evaluate(`document.getElementById('btn-save-connect')?.disabled ?? null`, pSession50).catch(() => 'eval-fail');
+      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
+      // Poll: the save roundtrip can be slow under load; read final message
+      let okMsg = '';
+      let okCls = '';
+      let saveDisabled = null;
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 5000) {
+          await sleep(250);
+          okMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
+          okCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
+          saveDisabled = await cdp.evaluate(`document.getElementById('btn-save-connect')?.disabled ?? null`, pSession50);
+          if (okMsg && !okMsg.includes('Test-injected')) break;
+        }
+      }
+      const sentActions = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => ({ rev: r?.configRevision ?? null, baseURL: r?.settings?.baseURL ?? null }))
+      `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
+      const trace50 = await cdp.evaluate(`window.__saveTrace || null`, pSession50).catch(() => null);
+      const btnConn = await cdp.evaluate(`(() => { const el = document.getElementById('btn-save-connect'); if (!el) return 'NO-EL'; return { connected: el.isConnected, count: document.querySelectorAll('#btn-save-connect').length }; })()`, pSession50).catch((e) => ({ diagError: String(e) }));
+      const activeUrlText = await cdp.evaluate(`document.getElementById('active-url-text')?.textContent || ''`, pSession50).catch(() => '');
+      assert.ok(okMsg && okCls.includes('success'), `Popup must report success after restore, got msg=${JSON.stringify(okMsg)} cls=${okCls} saveDisabled=${saveDisabled} disabledBeforeClick=${disabledBeforeClick} btnConn=${JSON.stringify(btnConn)} trace=${JSON.stringify(trace50)} activeUrlText=${JSON.stringify(activeUrlText)} revBefore=${revBefore} swAfter=${JSON.stringify(sentActions)} restoreCheck=${JSON.stringify(restoreCheck)} directSave=${JSON.stringify(directSave)}`);
 
       record('T50', 'Popup error path (fail-closed UI + recovery)', true, `error surfaced, no false success; success after restore`);
     } catch (e) {
@@ -4960,7 +5277,7 @@ async function runSingleAttempt() {
       try {
         await cdp.evaluate(`
           (async () => {
-            if (self.__t50OrigSetAccessLevel) chrome.storage.local.setAccessLevel = self.__t50OrigSetAccessLevel;
+            self.__translatorSw._setTestStorageAccessFailure(false);
             self.__translatorSw._resetStorageAccessStateForTest();
           })()
         `, swSessionId);
@@ -5187,6 +5504,271 @@ async function runSingleAttempt() {
           })()
         `, swSessionId);
       } catch {}
+    }
+
+    // Test 52: Auto-translate survives real document navigation (G2-H1 regression)
+    // Uses a REAL tab + REAL content script + REAL navigation (not dispatchMessage).
+    // =========================================================================
+    let t52Tab = null;
+    try {
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits(null);
+          await self.__translatorSw._resetRateStateForTest();
+          await self.__translatorSw.dispatchMessage({ action: 'SET_SITE_ENABLED', origin: '${fixtureOrigin}', enabled: true }, popupSender);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              autoTranslateSites: ['${fixtureOrigin}']
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // Page A: new real tab, content auto-starts on load
+      t52Tab = await createBridgedFixtureTab(fixtureUrl);
+      await t52Tab.injectContentScript();
+      let callsA = 0;
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 8000) {
+          await sleep(200);
+          if (fakeServer.getLogs().length > 0) break;
+        }
+        callsA = fakeServer.getLogs().length;
+      }
+      assert.ok(callsA > 0, `Page A must auto-translate on load, got ${callsA} provider calls`);
+
+      // Real same-origin navigation to page B (new document, new content)
+      const pageBUrl = `${fixtureUrl}?t52b`;
+      await cdp.send('Page.navigate', { url: pageBUrl }, t52Tab.sessionId);
+      await sleep(1500);
+      // New document lost all page JS: re-setup bridge + content (harness delivery;
+      // SW-side epoch semantics under test stays fully real)
+      await t52Tab.setupBridge();
+      await t52Tab.injectContentScript();
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${t52Tab.tabId}, ${JSON.stringify(pageBUrl)})`, swSessionId);
+      // Unique text per page (else page B is a pure cache hit with 0 calls —
+      // same technique as the L2 probe: distinct text per path).
+      // Insert at TOP of body: inside initial viewport+lookahead so the first
+      // flush collects it (a node past +2H would never be collected).
+      await cdp.evaluate(`document.body.insertAdjacentHTML('afterbegin', '<p id="t52-unique-b">UNIQUE_T52B_' + Date.now() + '_第二页独特文本</p>')`, t52Tab.sessionId);
+
+      // Page B must auto-translate: strictly MORE provider calls than page A
+      let callsB = callsA;
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 10000) {
+          await sleep(200);
+          callsB = fakeServer.getLogs().length;
+          if (callsB > callsA) break;
+        }
+      }
+      if (!(callsB > callsA)) {
+        const diagB = await cdp.evaluate(`window.__translatorDom.getStatus()`, t52Tab.sessionId).catch((e) => ({ stError: String(e) }));
+        const gateB = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'WIDGET_GET_STATE' }, { frameId: 0, url: '${pageBUrl}', tab: { id: ${t52Tab.tabId}, url: '${pageBUrl}' } })
+        `, swSessionId, true).catch((e) => ({ gateError: String(e) }));
+        assert.ok(false, `Page B must auto-translate after navigation (calls ${callsA} -> ${callsB}), status=${JSON.stringify(diagB)}, gate=${JSON.stringify(gateB)}`);
+      }
+      const stB = await cdp.evaluate('window.__translatorDom.getStatus()', t52Tab.sessionId);
+      assert.ok(stB && stB.totalApplied > 0, `Page B must apply translations, got: ${JSON.stringify(stB)}`);
+      assert.equal(stB.totalFailed, 0, `Page B must have 0 failed (no hot-loop spam), got: ${JSON.stringify(stB)}`);
+
+      // Reload variant: same assertions after a real reload
+      await cdp.send('Page.reload', {}, t52Tab.sessionId);
+      await sleep(1500);
+      await t52Tab.setupBridge();
+      await t52Tab.injectContentScript();
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${t52Tab.tabId}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
+      await cdp.evaluate(`document.body.insertAdjacentHTML('afterbegin', '<p id="t52-unique-r">UNIQUE_T52R_' + Date.now() + '_重载独特文本</p>')`, t52Tab.sessionId);
+      let callsR = callsB;
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 10000) {
+          await sleep(200);
+          callsR = fakeServer.getLogs().length;
+          if (callsR > callsB) break;
+        }
+      }
+      assert.ok(callsR > callsB, `Reloaded page must auto-translate (calls ${callsB} -> ${callsR})`);
+      const stR = await cdp.evaluate('window.__translatorDom.getStatus()', t52Tab.sessionId);
+      assert.ok(stR && stR.totalApplied > 0, `Reloaded page must apply translations, got: ${JSON.stringify(stR)}`);
+      assert.equal(stR.totalFailed, 0, `Reloaded page must have 0 failed, got: ${JSON.stringify(stR)}`);
+
+      record('T52', 'Auto-translate after real navigation + reload (G2-H1)', true, `A:${callsA} B:${callsB} R:${callsR} reqs, applied>0, failed=0`);
+    } catch (e) {
+      record('T52', 'Auto-translate after real navigation + reload (G2-H1)', false, e.message);
+    } finally {
+      if (t52Tab) {
+        try { await t52Tab.close(); } catch {}
+      }
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+            await self.__translatorSw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { autoTranslateSites: [] } }, popupSender);
+          })()
+        `, swSessionId);
+      } catch {}
+      fakeServer.setMode('normal');
+      fakeServer.clearLog();
+    }
+
+    // Test 53: Per-site autoTranslateSites configuration overrides (Schema v4)
+    // =========================================================================
+    let t53Tab1 = null;
+    let t53Tab2 = null;
+    let t53Tab3 = null;
+    try {
+      // Ensure test permission and site enabled
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      // (a) Subtest 1: site with autoStart: false -> new tab on same origin -> 0 provider requests
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              translationMode: 'scroll-follow',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              autoTranslateSites: [
+                { origin: '${fixtureOrigin}', autoStart: false, mode: 'inherit', sourceLanguage: null, targetLanguage: null }
+              ]
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      t53Tab1 = await createBridgedFixtureTab(fixtureUrl);
+      await t53Tab1.injectContentScript();
+      await sleep(2000);
+
+      const logs1 = fakeServer.getLogs();
+      assert.equal(logs1.length, 0, `Subtest 1 (autoStart: false): Expected 0 provider requests in 2s, got ${logs1.length}`);
+      const st1 = await cdp.evaluate('window.__translatorDom.getStatus()', t53Tab1.sessionId);
+      assert.equal(st1.watching, false, 'Subtest 1: watching must remain false when autoStart: false');
+      assert.equal(st1.totalApplied, 0, 'Subtest 1: applied must remain 0 when autoStart: false');
+      const gate1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'WIDGET_GET_STATE' }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${t53Tab1.tabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.equal(gate1.autoStart, false, 'WIDGET_GET_STATE must return autoStart: false');
+      assert.equal(gate1.reason, 'auto_off', 'WIDGET_GET_STATE must return reason: auto_off');
+      await t53Tab1.close();
+      t53Tab1 = null;
+
+      // (b) Subtest 2: site with mode: 'full' override (global translationMode is 'scroll-follow') -> auto-start uses full
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              translationMode: 'scroll-follow',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              autoTranslateSites: [
+                { origin: '${fixtureOrigin}', autoStart: true, mode: 'full', sourceLanguage: null, targetLanguage: null }
+              ]
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      t53Tab2 = await createBridgedFixtureTab(fixtureUrl);
+      await t53Tab2.injectContentScript();
+
+      let st2 = null;
+      const t0_2 = Date.now();
+      while (Date.now() - t0_2 < 8000) {
+        await sleep(200);
+        st2 = await cdp.evaluate('window.__translatorDom.getStatus()', t53Tab2.sessionId).catch(() => null);
+        if (st2 && st2.totalApplied > 0 && st2.mode === 'full') break;
+      }
+      assert.ok(st2, 'Subtest 2: status must be accessible');
+      assert.equal(st2.mode, 'full', `Subtest 2: mode must be overridden to 'full' (got ${st2.mode})`);
+      assert.ok(st2.totalApplied > 0, `Subtest 2: full mode auto-start must apply translations (applied: ${st2.totalApplied})`);
+      await t53Tab2.close();
+      t53Tab2 = null;
+
+      // (c) Subtest 3: site with sourceLanguage: 'zh', targetLanguage: 'en' -> provider receives overridden languages
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              translationMode: 'scroll-follow',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              autoTranslateSites: [
+                { origin: '${fixtureOrigin}', autoStart: true, mode: 'inherit', sourceLanguage: 'zh', targetLanguage: 'en' }
+              ]
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      t53Tab3 = await createBridgedFixtureTab(fixtureUrl);
+      await t53Tab3.injectContentScript();
+      await cdp.evaluate(`document.body.insertAdjacentHTML('beforeend', '<p id="t53-lang-probe">UNIQUE_T53_' + Date.now() + '_中文测试文本</p>')`, t53Tab3.sessionId);
+
+      let targetLog = null;
+      const t0_3 = Date.now();
+      while (Date.now() - t0_3 < 8000) {
+        await sleep(200);
+        const logs = fakeServer.getLogs();
+        targetLog = logs.find(l => {
+          const bodyStr = JSON.stringify(l.body || {});
+          return bodyStr.includes('from zh to en');
+        });
+        if (targetLog) break;
+      }
+      assert.ok(targetLog, `Subtest 3: Provider must receive prompt with per-site languages (zh -> en), logs: ${JSON.stringify(fakeServer.getLogs().map(l => l.body?.messages))}`);
+      await t53Tab3.close();
+      t53Tab3 = null;
+
+      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages)', true, 'autoStart:false 0 reqs, mode:full override, per-site lang zh->en received by provider');
+    } catch (e) {
+      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages)', false, e.message);
+    } finally {
+      if (t53Tab1) { try { await t53Tab1.close(); } catch {} }
+      if (t53Tab2) { try { await t53Tab2.close(); } catch {} }
+      if (t53Tab3) { try { await t53Tab3.close(); } catch {} }
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+            await self.__translatorSw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { autoTranslateSites: [] } }, popupSender);
+          })()
+        `, swSessionId);
+      } catch {}
+      fakeServer.clearLog();
     }
 
   } finally {

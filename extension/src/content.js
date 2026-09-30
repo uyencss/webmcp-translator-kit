@@ -820,6 +820,8 @@
   }
 
   async function dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch) {
+    // Fatal outcomes must not reschedule a flush (avoids hot-loop spam)
+    let batchFatal = false;
     try {
       const res = await translateChunkWithRecovery(
         chunk,
@@ -855,6 +857,10 @@
         }
       } else if (res.error && res.error.code === 'DROPPED_ON_RESTART') {
         // Terminal for this batch, do not auto-replay; nodes remain unpatched and can be re-triggered
+        batchFatal = true;
+      } else if (res.error && res.error.code === 'ABORTED') {
+        // Cancelled on purpose (navigation/config/epoch): do not reschedule
+        batchFatal = true;
       }
     } catch (err) {
       // Non-fatal error during scroll dispatch
@@ -864,7 +870,7 @@
         pendingSet.delete(k);
       }
       scrollSession.inFlight = Math.max(0, scrollSession.inFlight - 1);
-      if (scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+      if (!batchFatal && scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
         scheduleScrollFlush();
       }
     }
@@ -1587,9 +1593,9 @@
     translateBtn.addEventListener('click', () => {
       setPanelVisibility(false);
       if (currentMode === 'scroll-follow') {
-        startScrollFollowSession();
+        startScrollFollowSession(widgetState);
       } else {
-        executeTranslation();
+        executeTranslation(widgetState);
       }
     });
 
@@ -1755,9 +1761,23 @@
     try {
       epoch++;
       if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
-        chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
+        chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch, reason: 'pagehide' }, () => {
           if (chrome.runtime?.lastError) { /* ignore */ }
         });
+      }
+    } catch {}
+  });
+
+  // bfcache restore: re-sync epoch so stale in-flight work cannot patch us
+  window.addEventListener('pageshow', (e) => {
+    try {
+      if (e && e.persisted) {
+        epoch++;
+        if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+          chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
+            if (chrome.runtime?.lastError) { /* ignore */ }
+          });
+        }
       }
     } catch {}
   });

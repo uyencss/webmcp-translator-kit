@@ -48,22 +48,6 @@
       <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
     </div>
 
-    <!-- Common Actions: Translate (Primary) & Restore (Ghost) -->
-    <div class="actions-card" aria-label="Hành động dịch">
-      <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" disabled>
-        <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M7 4v16l13 -8z"/>
-        </svg>
-        <span>Dịch trang</span>
-      </button>
-      <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" disabled>
-        <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>
-        </svg>
-        <span>Khôi phục</span>
-      </button>
-    </div>
-
     <!-- Tablist (role=tablist) -->
     <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
       <button type="button" class="tab-btn active" role="tab" id="tab-translate" aria-selected="true" aria-controls="tabpanel-translate" tabindex="0">
@@ -74,6 +58,13 @@
           <path d="M19.1 18h-6.2"/>
         </svg>
         <span>Dịch</span>
+      </button>
+      <button type="button" class="tab-btn" role="tab" id="tab-auto" aria-selected="false" aria-controls="tabpanel-auto" tabindex="-1">
+        <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/>
+          <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/>
+        </svg>
+        <span>Tự động</span>
       </button>
       <button type="button" class="tab-btn" role="tab" id="tab-connect" aria-selected="false" aria-controls="tabpanel-connect" tabindex="-1">
         <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -108,31 +99,6 @@
         </div>
       </div>
 
-      <!-- Chế độ dịch (Segmented buttons) -->
-      <div class="form-group" role="radiogroup" aria-label="Chế độ dịch">
-        <label class="field-title">Chế độ</label>
-        <div class="segmented-control">
-          <label class="segmented-btn" id="label-mode-scroll">
-            <input type="radio" id="mode-scroll" name="translation-mode" value="scroll-follow" checked class="sr-only" />
-            <span class="segmented-content">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M8 7l4 -4l4 4"/><path d="M8 17l4 4l4 -4"/><path d="M12 3l0 18"/>
-              </svg>
-              <span>Đuổi scroll</span>
-            </span>
-          </label>
-          <label class="segmented-btn" id="label-mode-full">
-            <input type="radio" id="mode-full" name="translation-mode" value="full" class="sr-only" />
-            <span class="segmented-content">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/>
-              </svg>
-              <span>Toàn trang</span>
-            </span>
-          </label>
-        </div>
-      </div>
-
       <!-- Quyền dịch & Tab override (Current site) -->
       <div class="card-compact consent-compact-card" id="consent-card" aria-label="Quyền dịch site hiện tại">
         <div class="compact-header">
@@ -156,27 +122,20 @@
         </div>
       </div>
 
-      <!-- Trang tự dịch (Auto-translate sites) -->
-      <div class="card-compact auto-translate-card" aria-label="Trang tự dịch">
-        <div class="compact-header">
-          <span class="field-title">Trang tự dịch</span>
-          <button type="button" id="btn-add-current-site" class="btn btn-xs btn-outline" title="Thêm trang hiện tại vào danh sách tự động dịch" aria-label="Thêm trang hiện tại vào danh sách tự động dịch">
-            <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
-            </svg>
-            <span>Trang này</span>
-          </button>
-        </div>
-        <div class="input-with-button auto-site-input-row">
-          <input type="text" id="input-auto-site" placeholder="https://example.com" autocomplete="off" aria-label="Nhập origin trang web để tự động dịch" />
-          <button type="button" id="btn-add-custom-site" class="btn btn-icon btn-sm" title="Thêm origin" aria-label="Thêm origin">
-            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
-            </svg>
-          </button>
-        </div>
-        <div id="auto-site-error" class="auto-site-error" role="alert" style="display: none;"></div>
-        <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
+      <!-- Actions: Translate (Primary) & Restore (Ghost) -->
+      <div class="actions-card" aria-label="Hành động dịch">
+        <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" disabled>
+          <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 4v16l13 -8z"/>
+          </svg>
+          <span>Dịch trang</span>
+        </button>
+        <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" disabled>
+          <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>
+          </svg>
+          <span>Khôi phục</span>
+        </button>
       </div>
 
       <!-- Floating widget toggle -->
@@ -186,18 +145,6 @@
           <span class="toggle-slider"></span>
           <span class="toggle-text">Hiện icon nổi trên trang</span>
         </label>
-      </div>
-
-      <!-- Active Base URL (Read-only chip) -->
-      <div class="active-url-row">
-        <span class="active-url-label">Kết nối qua:</span>
-        <span class="chip-active-url" id="chip-active-base-url" title="Base URL đang dùng cho API (cấu hình tại tab Kết nối)">
-          <svg class="icon icon-xs text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/>
-            <path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M20 9l-3.5 3.5"/>
-          </svg>
-          <span class="url-text" id="active-url-text">http://localhost:8080/v1</span>
-        </span>
       </div>
 
       <!-- Save Tab 1 actions -->
@@ -212,7 +159,46 @@
       <div id="config-message-translate" class="config-message" aria-live="polite"></div>
     </section>
 
-    <!-- Tab 2: Kết nối -->
+    <!-- Tab 2: Tự động -->
+    <section class="section tab-panel hidden" id="tabpanel-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="0">
+      <!-- Thêm site tự dịch -->
+      <div class="card-compact auto-translate-header-card">
+        <div class="compact-header">
+          <span class="field-title">Trang tự động dịch</span>
+          <button type="button" id="btn-add-current-site" class="btn btn-xs btn-outline" title="Thêm trang hiện tại vào danh sách tự động dịch" aria-label="Thêm trang hiện tại vào danh sách tự động dịch">
+            <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+            </svg>
+            <span>+ Trang này</span>
+          </button>
+        </div>
+        <div class="input-with-button auto-site-input-row">
+          <input type="text" id="input-auto-site" placeholder="https://example.com" autocomplete="off" aria-label="Nhập origin trang web để tự động dịch" />
+          <button type="button" id="btn-add-custom-site" class="btn btn-icon btn-sm" title="Thêm origin" aria-label="Thêm origin">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+            </svg>
+          </button>
+        </div>
+        <div id="auto-site-error" class="auto-site-error" role="alert" style="display: none;"></div>
+      </div>
+
+      <!-- Danh sách site cấu hình riêng -->
+      <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
+
+      <!-- Save Tab 2 actions -->
+      <div class="config-actions">
+        <button id="btn-save-auto" class="btn btn-sm btn-success" title="Lưu cấu hình tự động" aria-label="Lưu cấu hình tự động">
+          <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12l5 5l10 -10"/>
+          </svg>
+          <span>Lưu</span>
+        </button>
+      </div>
+      <div id="config-message-auto" class="config-message" aria-live="polite"></div>
+    </section>
+
+    <!-- Tab 3: Kết nối -->
     <section class="section tab-panel hidden" id="tabpanel-connect" role="tabpanel" aria-labelledby="tab-connect" tabindex="0">
       <!-- Primary connection section -->
       <div class="card-compact primary-connect-card">

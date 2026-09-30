@@ -3,7 +3,56 @@
 
 import { normalizeOrigin } from './consent.mjs';
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
+
+export const VALID_PER_SITE_MODES = Object.freeze(['inherit', 'scroll-follow', 'full']);
+
+/**
+ * Normalizes a single per-site auto translate configuration.
+ * Accepts either a string origin or an object.
+ * Returns { origin, mode, autoStart, sourceLanguage, targetLanguage } or null.
+ *
+ * @param {unknown} item
+ * @returns {{ origin: string, mode: 'inherit'|'scroll-follow'|'full', autoStart: boolean, sourceLanguage: string|null, targetLanguage: string|null }|null}
+ */
+export function normalizePerSiteConfig(item) {
+  if (typeof item === 'string') {
+    const norm = normalizeOrigin(item);
+    if (!norm) return null;
+    return {
+      origin: norm,
+      mode: 'inherit',
+      autoStart: true,
+      sourceLanguage: null,
+      targetLanguage: null
+    };
+  }
+
+  if (item && typeof item === 'object' && !Array.isArray(item)) {
+    const rawOrigin = typeof item.origin === 'string' ? item.origin : '';
+    const norm = normalizeOrigin(rawOrigin);
+    if (!norm) return null;
+
+    const mode = VALID_PER_SITE_MODES.includes(item.mode) ? item.mode : 'inherit';
+    const autoStart = typeof item.autoStart === 'boolean' ? item.autoStart : true;
+    const sourceLanguage = (typeof item.sourceLanguage === 'string' && item.sourceLanguage.trim())
+      ? item.sourceLanguage.trim()
+      : null;
+    const targetLanguage = (typeof item.targetLanguage === 'string' && item.targetLanguage.trim())
+      ? item.targetLanguage.trim()
+      : null;
+
+    return {
+      origin: norm,
+      mode,
+      autoStart,
+      sourceLanguage,
+      targetLanguage
+    };
+  }
+
+  return null;
+}
 
 export const DEFAULT_SETTINGS = Object.freeze({
   version: SETTINGS_VERSION,
@@ -159,17 +208,15 @@ export function migrateSettings(raw) {
     res.favoriteModels = [];
   }
 
-  // v2: autoTranslateSites (unique normalized origins, max 200)
+  // v4: autoTranslateSites (unique normalized origins, max 200, per-site config object)
   if (Array.isArray(res.autoTranslateSites)) {
     const cleaned = [];
     const seen = new Set();
     for (const item of res.autoTranslateSites) {
-      if (typeof item === 'string') {
-        const norm = normalizeOrigin(item);
-        if (norm && !seen.has(norm)) {
-          seen.add(norm);
-          cleaned.push(norm);
-        }
+      const normalized = normalizePerSiteConfig(item);
+      if (normalized && !seen.has(normalized.origin)) {
+        seen.add(normalized.origin);
+        cleaned.push(normalized);
       }
     }
     res.autoTranslateSites = cleaned.slice(0, 200);
@@ -325,26 +372,64 @@ export function validateSettings(settings) {
   // Check autoTranslateSites
   if (settings.autoTranslateSites !== undefined) {
     if (!Array.isArray(settings.autoTranslateSites)) {
-      errors.push('autoTranslateSites must be an array of strings');
+      errors.push('autoTranslateSites must be an array');
     } else if (settings.autoTranslateSites.length > 200) {
       errors.push('autoTranslateSites cannot have more than 200 sites');
     } else {
       const seen = new Set();
-      for (const site of settings.autoTranslateSites) {
-        if (typeof site !== 'string' || !site.trim()) {
-          errors.push('autoTranslateSites elements must be non-empty strings');
+      for (let i = 0; i < settings.autoTranslateSites.length; i++) {
+        const site = settings.autoTranslateSites[i];
+        if (typeof site === 'string') {
+          if (!site.trim()) {
+            errors.push('autoTranslateSites elements must be non-empty strings or objects');
+            break;
+          }
+          const norm = normalizeOrigin(site);
+          if (!norm || norm !== site.trim()) {
+            errors.push(`autoTranslateSites element "${site}" must be a valid normalized HTTP(S) origin`);
+            break;
+          }
+          if (seen.has(norm)) {
+            errors.push('autoTranslateSites cannot contain duplicate origins');
+            break;
+          }
+          seen.add(norm);
+        } else if (site && typeof site === 'object' && !Array.isArray(site)) {
+          if (typeof site.origin !== 'string' || !site.origin.trim()) {
+            errors.push(`autoTranslateSites[${i}].origin must be a non-empty string`);
+            break;
+          }
+          const norm = normalizeOrigin(site.origin);
+          if (!norm || norm !== site.origin.trim()) {
+            errors.push(`autoTranslateSites element "${site.origin}" must be a valid normalized HTTP(S) origin`);
+            break;
+          }
+          if (seen.has(norm)) {
+            errors.push('autoTranslateSites cannot contain duplicate origins');
+            break;
+          }
+          seen.add(norm);
+
+          if (site.mode !== undefined && !VALID_PER_SITE_MODES.includes(site.mode)) {
+            errors.push(`autoTranslateSites[${i}].mode must be 'inherit', 'scroll-follow', or 'full'`);
+            break;
+          }
+          if (site.autoStart !== undefined && typeof site.autoStart !== 'boolean') {
+            errors.push(`autoTranslateSites[${i}].autoStart must be a boolean`);
+            break;
+          }
+          if (site.sourceLanguage !== undefined && site.sourceLanguage !== null && typeof site.sourceLanguage !== 'string') {
+            errors.push(`autoTranslateSites[${i}].sourceLanguage must be a string or null`);
+            break;
+          }
+          if (site.targetLanguage !== undefined && site.targetLanguage !== null && typeof site.targetLanguage !== 'string') {
+            errors.push(`autoTranslateSites[${i}].targetLanguage must be a string or null`);
+            break;
+          }
+        } else {
+          errors.push(`autoTranslateSites elements must be non-empty strings or objects`);
           break;
         }
-        const norm = normalizeOrigin(site);
-        if (!norm || norm !== site.trim()) {
-          errors.push(`autoTranslateSites element "${site}" must be a valid normalized HTTP(S) origin`);
-          break;
-        }
-        if (seen.has(norm)) {
-          errors.push('autoTranslateSites cannot contain duplicate origins');
-          break;
-        }
-        seen.add(norm);
       }
     }
   }

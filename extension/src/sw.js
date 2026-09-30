@@ -35,7 +35,8 @@ import {
   SETTINGS_VERSION,
   DEFAULT_SETTINGS,
   migrateSettings,
-  validateSettings
+  validateSettings,
+  normalizePerSiteConfig
 } from './settings.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
@@ -69,6 +70,21 @@ let currentAccessLevel = 'TRUSTED_AND_UNTRUSTED_CONTEXTS';
 function _resetStorageAccessStateForTest() {
   storageAccessInitialized = false;
   storageAccessFailed = false;
+}
+
+// TEST-ONLY: force ensureStorageAccess() to fail closed (avoids monkeypatching
+// native Chrome API objects, which cannot be safely restored with delete).
+let _forceStorageAccessFailure = false;
+function _setTestStorageAccessFailure(enabled) {
+  if (!_testMode) return;
+  _forceStorageAccessFailure = Boolean(enabled);
+}
+
+// TEST-ONLY: bypass ENSURE_CONTENT scripting check (harness tab ids).
+let _testEnsureContentOk = false;
+function _setTestEnsureContentOk(enabled) {
+  if (!_testMode) return;
+  _testEnsureContentOk = Boolean(enabled);
 }
 
 // ============================================================================
@@ -405,6 +421,18 @@ function createTypedError(code, message, retryable, details = {}) {
 async function ensureStorageAccess() {
   if (storageAccessInitialized && !storageAccessFailed) return;
 
+  if (_testMode && _forceStorageAccessFailure) {
+    currentAccessLevel = 'UNAVAILABLE';
+    storageAccessInitialized = false;
+    storageAccessFailed = true;
+    throw createTypedError(
+      'KEY_ACCESS_UNAVAILABLE',
+      'Test-injected storage access failure',
+      false,
+      { reason: 'test hook' }
+    );
+  }
+
   if (
     typeof chrome === 'undefined' ||
     !chrome.storage ||
@@ -428,6 +456,12 @@ async function ensureStorageAccess() {
     storageAccessInitialized = true;
     storageAccessFailed = false;
   } catch (err) {
+    if (err && typeof err.message === 'string' && /already/i.test(err.message)) {
+      currentAccessLevel = 'TRUSTED_CONTEXTS';
+      storageAccessInitialized = true;
+      storageAccessFailed = false;
+      return;
+    }
     currentAccessLevel = 'UNAVAILABLE';
     storageAccessInitialized = false;
     storageAccessFailed = true;
@@ -1814,8 +1848,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         await chrome.storage.local.set({ settings: migrated });
 
-        // Push WIDGET_STATE_CHANGED if mode or widgetVisible changed
-        if (oldSettings.translationMode !== migrated.translationMode || oldSettings.widgetVisible !== migrated.widgetVisible) {
+        // Push WIDGET_STATE_CHANGED if mode, widgetVisible or autoTranslateSites changed
+        if (
+          oldSettings.translationMode !== migrated.translationMode ||
+          oldSettings.widgetVisible !== migrated.widgetVisible ||
+          JSON.stringify(oldSettings.autoTranslateSites) !== JSON.stringify(migrated.autoTranslateSites)
+        ) {
           notifyAllWidgetStateChanged();
         }
 
@@ -2190,6 +2228,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
+        // TEST-ONLY: harness tabs use simulated ids that chrome.tabs cannot
+        // resolve; bypass the scripting check while keeping sender + tabId validation.
+        if (_testMode && _testEnsureContentOk === true) {
+          return { ok: true, testBypass: true };
+        }
+
         let tab = null;
         try {
           if (chrome.tabs && typeof chrome.tabs.get === 'function') {
@@ -2386,6 +2430,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           } else {
             tabQueues.delete(tabId);
           }
+        }
+        // Navigation unload (pagehide): the document is gone, so its epoch is
+        // meaningless — drop it so the next document seeds fresh (G2-H1).
+        if (message && message.reason === 'pagehide') {
+          tabEpochs.delete(tabId);
         }
         return { ok: true, cancelled: cancelledCount };
       }
@@ -2617,14 +2666,24 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const effective = getEffectivePolicy({ tabOverride, siteEnabled });
 
         const autoSites = Array.isArray(settings.autoTranslateSites) ? settings.autoTranslateSites : [];
-        const inAutoList = autoSites.includes(gate.origin);
+        const rawSiteEntry = autoSites.find((s) => (typeof s === 'string' ? s : s?.origin) === gate.origin);
+        const siteConfig = rawSiteEntry ? (normalizePerSiteConfig(rawSiteEntry) || {
+          origin: gate.origin,
+          mode: 'inherit',
+          autoStart: true,
+          sourceLanguage: null,
+          targetLanguage: null
+        }) : null;
+
         const urlMatchesSender = !sender.url || !sender.tab?.url || (normalizeOrigin(sender.url) === normalizeOrigin(sender.tab.url));
 
         let autoStart = false;
         let reason;
 
-        if (!inAutoList) {
+        if (!siteConfig) {
           reason = 'not_in_list';
+        } else if (siteConfig.autoStart === false) {
+          reason = 'auto_off';
         } else if (tabOverride === 'off') {
           reason = 'tab_off';
         } else if (!siteEnabled) {
@@ -2637,16 +2696,32 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           reason = 'not_in_list';
         }
 
+        const effectiveMode = (siteConfig && siteConfig.mode && siteConfig.mode !== 'inherit')
+          ? siteConfig.mode
+          : (settings.translationMode || 'scroll-follow');
+
+        const effectiveSrcLang = (siteConfig && siteConfig.sourceLanguage)
+          ? siteConfig.sourceLanguage
+          : (settings.sourceLanguage || 'auto');
+
+        const effectiveTgtLang = (siteConfig && siteConfig.targetLanguage)
+          ? siteConfig.targetLanguage
+          : (settings.targetLanguage || 'vi');
+
         return {
           effective,
           siteEnabled,
           tabOverride,
           permission: hasPerm,
-          mode: settings.translationMode || 'scroll-follow',
+          mode: effectiveMode,
+          sourceLanguage: effectiveSrcLang,
+          targetLanguage: effectiveTgtLang,
+          model: settings.model || DEFAULT_MODEL,
           widgetVisible: settings.widgetVisible ?? true,
           position,
           hasKey,
           autoStart,
+          siteConfig: siteConfig ? { ...siteConfig } : null,
           ...(reason ? { reason } : {})
         };
       }
@@ -2822,6 +2897,8 @@ globalScope.__translatorSw = {
   _setTestPermission,
   _registerTestTab,
   _testRegistryHas,
+  _setTestStorageAccessFailure,
+  _setTestEnsureContentOk,
   _setTestRateLimits,
   _setTestRateWindowSeconds,
   _setTestMaxQueue,

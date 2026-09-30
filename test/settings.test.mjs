@@ -7,9 +7,9 @@ import {
   validateSettings
 } from '../extension/src/settings.mjs';
 
-test('settings: SETTINGS_VERSION is defined as 3', () => {
+test('settings: SETTINGS_VERSION is defined as 4', () => {
   assert.equal(typeof SETTINGS_VERSION, 'number');
-  assert.equal(SETTINGS_VERSION, 3);
+  assert.equal(SETTINGS_VERSION, 4);
 });
 
 test('settings: migrateSettings converts v0 (unversioned) to canonical version with defaults', () => {
@@ -40,7 +40,7 @@ test('settings: migrateSettings converts v0 (unversioned) to canonical version w
   assert.deepEqual(migrated.rateLimits, DEFAULT_SETTINGS.rateLimits);
 });
 
-test('settings: migrateSettings converts v1 to canonical v3 with default new fields', () => {
+test('settings: migrateSettings converts v1 to canonical v4 with default new fields', () => {
   const v1Raw = {
     version: 1,
     baseURL: 'http://localhost:8080/v1',
@@ -52,7 +52,7 @@ test('settings: migrateSettings converts v1 to canonical v3 with default new fie
 
   const migrated = migrateSettings(v1Raw);
 
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.equal(migrated.baseURL, v1Raw.baseURL);
   assert.equal(migrated.model, v1Raw.model);
   assert.equal(migrated.translationMode, 'scroll-follow');
@@ -63,7 +63,7 @@ test('settings: migrateSettings converts v1 to canonical v3 with default new fie
   assert.deepEqual(migrated.autoTranslateSites, []);
 });
 
-test('settings: migrateSettings converts v2 fallbackModels to v3 fallbacks with inherit', () => {
+test('settings: migrateSettings converts v2 fallbackModels to v4 fallbacks with inherit', () => {
   const raw = {
     version: 2,
     baseURL: 'http://localhost:8080/v1',
@@ -73,7 +73,7 @@ test('settings: migrateSettings converts v2 fallbackModels to v3 fallbacks with 
 
   const migrated = migrateSettings(raw);
 
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.deepEqual(migrated.fallbacks, [
     { id: 'fb1', model: 'fb-1' },
     { id: 'fb2', model: 'fb-2' }
@@ -394,27 +394,101 @@ test('settings: migrateSettings normalizes autoTranslateSites (normalizes to ori
   const migrated = migrateSettings(raw);
 
   assert.deepEqual(migrated.autoTranslateSites, [
-    'https://example.com',
-    'http://127.0.0.1:8089',
-    'http://site.org:8080'
+    { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
+    { origin: 'http://127.0.0.1:8089', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
+    { origin: 'http://site.org:8080', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
   ]);
 
   // Test capping to 200 items
   const manySites = Array.from({ length: 250 }, (_, i) => `https://site-${i}.com`);
   const migratedCapped = migrateSettings({ autoTranslateSites: manySites });
   assert.equal(migratedCapped.autoTranslateSites.length, 200);
-  assert.equal(migratedCapped.autoTranslateSites[0], 'https://site-0.com');
-  assert.equal(migratedCapped.autoTranslateSites[199], 'https://site-199.com');
+  assert.deepEqual(migratedCapped.autoTranslateSites[0], {
+    origin: 'https://site-0.com',
+    mode: 'inherit',
+    autoStart: true,
+    sourceLanguage: null,
+    targetLanguage: null
+  });
+  assert.deepEqual(migratedCapped.autoTranslateSites[199], {
+    origin: 'https://site-199.com',
+    mode: 'inherit',
+    autoStart: true,
+    sourceLanguage: null,
+    targetLanguage: null
+  });
+});
+
+test('settings: migrateSettings preserves and normalizes per-site object configurations', () => {
+  const raw = {
+    autoTranslateSites: [
+      {
+        origin: 'https://full-custom.com/subpath',
+        mode: 'full',
+        autoStart: false,
+        sourceLanguage: ' zh ',
+        targetLanguage: 'en'
+      },
+      {
+        origin: 'http://scroll-site.org',
+        mode: 'scroll-follow',
+        autoStart: true
+      },
+      {
+        origin: 'https://invalid-mode.com',
+        mode: 'turbo',
+        autoStart: 'not-bool'
+      },
+      {
+        origin: 'https://full-custom.com' // duplicate after origin normalization
+      }
+    ]
+  };
+
+  const migrated = migrateSettings(raw);
+
+  assert.deepEqual(migrated.autoTranslateSites, [
+    {
+      origin: 'https://full-custom.com',
+      mode: 'full',
+      autoStart: false,
+      sourceLanguage: 'zh',
+      targetLanguage: 'en'
+    },
+    {
+      origin: 'http://scroll-site.org',
+      mode: 'scroll-follow',
+      autoStart: true,
+      sourceLanguage: null,
+      targetLanguage: null
+    },
+    {
+      origin: 'https://invalid-mode.com',
+      mode: 'inherit',
+      autoStart: true,
+      sourceLanguage: null,
+      targetLanguage: null
+    }
+  ]);
 });
 
 test('settings: validateSettings accepts valid autoTranslateSites and rejects invalid entries', () => {
-  // Valid
+  // Valid (both strings and objects)
   const valid = {
     baseURL: 'http://localhost:8080/v1',
     model: 'test',
     sourceLanguage: 'auto',
     targetLanguage: 'vi',
-    autoTranslateSites: ['https://example.com', 'http://127.0.0.1:8089']
+    autoTranslateSites: [
+      'https://example.com',
+      {
+        origin: 'http://127.0.0.1:8089',
+        mode: 'full',
+        autoStart: false,
+        sourceLanguage: 'en',
+        targetLanguage: 'vi'
+      }
+    ]
   };
   assert.equal(validateSettings(valid).valid, true);
 
@@ -431,26 +505,42 @@ test('settings: validateSettings accepts valid autoTranslateSites and rejects in
   assert.equal(tooMany.valid, false);
   assert.ok(tooMany.errors.some((e) => e.includes('more than 200')));
 
-  // Rejects non-origin / unnormalized entries
-  const unnormalized = validateSettings({
+  // Rejects non-origin / unnormalized entries in string format
+  const unnormalizedStr = validateSettings({
     ...valid,
     autoTranslateSites: ['https://example.com/path']
   });
-  assert.equal(unnormalized.valid, false);
-  assert.ok(unnormalized.errors.some((e) => e.includes('valid normalized HTTP(S) origin')));
+  assert.equal(unnormalizedStr.valid, false);
+  assert.ok(unnormalizedStr.errors.some((e) => e.includes('valid normalized HTTP(S) origin')));
 
-  // Rejects non-HTTP(S) scheme
-  const nonHttp = validateSettings({
+  // Rejects non-origin / unnormalized entries in object format
+  const unnormalizedObj = validateSettings({
     ...valid,
-    autoTranslateSites: ['chrome://extensions']
+    autoTranslateSites: [{ origin: 'https://example.com/path' }]
   });
-  assert.equal(nonHttp.valid, false);
-  assert.ok(nonHttp.errors.some((e) => e.includes('valid normalized HTTP(S) origin')));
+  assert.equal(unnormalizedObj.valid, false);
+  assert.ok(unnormalizedObj.errors.some((e) => e.includes('valid normalized HTTP(S) origin')));
+
+  // Rejects invalid mode
+  const invalidMode = validateSettings({
+    ...valid,
+    autoTranslateSites: [{ origin: 'https://example.com', mode: 'fast-forward' }]
+  });
+  assert.equal(invalidMode.valid, false);
+  assert.ok(invalidMode.errors.some((e) => e.includes('mode must be')));
+
+  // Rejects non-boolean autoStart
+  const invalidAutoStart = validateSettings({
+    ...valid,
+    autoTranslateSites: [{ origin: 'https://example.com', autoStart: 1 }]
+  });
+  assert.equal(invalidAutoStart.valid, false);
+  assert.ok(invalidAutoStart.errors.some((e) => e.includes('autoStart must be a boolean')));
 
   // Rejects duplicates
   const dupes = validateSettings({
     ...valid,
-    autoTranslateSites: ['https://example.com', 'https://example.com']
+    autoTranslateSites: ['https://example.com', { origin: 'https://example.com' }]
   });
   assert.equal(dupes.valid, false);
   assert.ok(dupes.errors.some((e) => e.includes('duplicate')));
@@ -467,7 +557,10 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
   });
 
   assert.equal(merged.model, 'new-model');
-  assert.deepEqual(merged.autoTranslateSites, ['https://auto1.com', 'https://auto2.com']);
+  assert.deepEqual(merged.autoTranslateSites, [
+    { origin: 'https://auto1.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
+    { origin: 'https://auto2.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+  ]);
 
   // Updating autoTranslateSites partially preserves other fields
   const updatedAuto = migrateSettings({
@@ -475,6 +568,8 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
     autoTranslateSites: ['https://auto3.com']
   });
   assert.equal(updatedAuto.model, 'new-model');
-  assert.deepEqual(updatedAuto.autoTranslateSites, ['https://auto3.com']);
+  assert.deepEqual(updatedAuto.autoTranslateSites, [
+    { origin: 'https://auto3.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+  ]);
 });
 

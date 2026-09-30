@@ -48,30 +48,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tabButtons = Array.from(document.querySelectorAll('.tab-btn[role="tab"]'));
   const tabPanels = {
     'tab-translate': document.getElementById('tabpanel-translate'),
+    'tab-auto': document.getElementById('tabpanel-auto'),
     'tab-connect': document.getElementById('tabpanel-connect')
   };
 
   // Tab 1 Elements ("Dịch")
   const selectSrcLang = document.getElementById('select-src-lang');
   const selectTgtLang = document.getElementById('select-tgt-lang');
-  const modeScroll = document.getElementById('mode-scroll');
-  const modeFull = document.getElementById('mode-full');
   const siteOriginBadge = document.getElementById('site-origin-badge');
   const toggleSiteConsent = document.getElementById('toggle-site-consent');
   const btnOverrideInherit = document.getElementById('btn-override-inherit');
   const btnOverrideOn = document.getElementById('btn-override-on');
   const btnOverrideOff = document.getElementById('btn-override-off');
+  const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
+  const btnSaveTranslate = document.getElementById('btn-save-translate') || document.getElementById('btn-save-general');
+  const configMessageTranslate = document.getElementById('config-message-translate') || document.getElementById('config-message-general');
+
+  // Tab 2 Elements ("Tự động")
   const btnAddCurrentSite = document.getElementById('btn-add-current-site');
   const inputAutoSite = document.getElementById('input-auto-site');
   const btnAddCustomSite = document.getElementById('btn-add-custom-site');
   const autoSiteError = document.getElementById('auto-site-error');
   const autoSitesList = document.getElementById('auto-sites-list');
-  const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
-  const activeUrlText = document.getElementById('active-url-text');
-  const btnSaveTranslate = document.getElementById('btn-save-translate') || document.getElementById('btn-save-general');
-  const configMessageTranslate = document.getElementById('config-message-translate') || document.getElementById('config-message-general');
+  const btnSaveAuto = document.getElementById('btn-save-auto');
+  const configMessageAuto = document.getElementById('config-message-auto');
 
-  // Tab 2 Elements ("Kết nối")
+  // Tab 3 Elements ("Kết nối")
   const inputBaseUrl = document.getElementById('input-base-url');
   const inputApiKey = document.getElementById('input-api-key');
   const btnToggleKey = document.getElementById('btn-toggle-key');
@@ -281,7 +283,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Active Tab Discovery
   async function resolveActiveTab() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (typeof window !== 'undefined' && window.__testActiveTab) {
+        activeTab = window.__testActiveTab;
+        return true;
+      }
+      let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
+        const allHttpTabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+        const activeHttp = allHttpTabs.find((t) => t.active) || allHttpTabs[0];
+        if (activeHttp) {
+          tab = activeHttp;
+        }
+      }
       activeTab = tab;
       if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
         if (btnTranslate) btnTranslate.disabled = true;
@@ -298,6 +311,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {
       return false;
     }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.__setTestActiveTab = async (tab) => {
+      activeTab = tab;
+      await loadConsent();
+      checkTabStatus();
+      evaluateActionReadiness();
+    };
   }
 
   // Action Readiness Evaluation
@@ -842,18 +864,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (resp && resp.settings) {
           savedSettings = { ...resp.settings };
           if (inputBaseUrl) inputBaseUrl.value = resp.settings.baseURL || 'http://localhost:8080/v1';
-          if (activeUrlText) activeUrlText.textContent = resp.settings.baseURL || 'http://localhost:8080/v1';
 
           if (selectSrcLang && resp.settings.sourceLanguage) selectSrcLang.value = resp.settings.sourceLanguage;
           if (selectTgtLang && resp.settings.targetLanguage) selectTgtLang.value = resp.settings.targetLanguage;
 
           if (resp.settings.translationMode) {
             currentMode = resp.settings.translationMode;
-            if (currentMode === 'full' && modeFull) {
-              modeFull.checked = true;
-            } else if (modeScroll) {
-              modeScroll.checked = true;
-            }
           }
 
           if (checkboxWidgetVisible && typeof resp.settings.widgetVisible === 'boolean') {
@@ -874,9 +890,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
           }
 
-          renderFallbackRows();
-          renderAllModelDropdowns();
-          renderAutoSitesChips();
+          try { renderFallbackRows(); } catch (e) { try { console.error('[popup] renderFallbackRows failed:', e && e.message); } catch {} }
+          try { renderAllModelDropdowns(); } catch (e) { try { console.error('[popup] renderAllModelDropdowns failed:', e && e.message); } catch {} }
+          try { renderAutoSites(); } catch (e) { try { console.error('[popup] renderAutoSites failed:', e && e.message); } catch {} }
         }
         resolve();
       });
@@ -1171,7 +1187,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       savedSettings = { ...savedSettings, ...partialSettings };
       fallbacks = cleanFallbacks;
-      if (activeUrlText) activeUrlText.textContent = rawUrl;
 
       // Handle Primary API key
       const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
@@ -1249,14 +1264,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Tab 1 Save Action: Partial Save (Languages, Mode, Widget Visibility)
+  // Tab 1 Save Action: Partial Save (Languages, Widget Visibility)
   if (btnSaveTranslate) {
     btnSaveTranslate.addEventListener('click', async () => {
-      const selectedMode = modeFull && modeFull.checked ? 'full' : 'scroll-follow';
       const partialSettings = {
         sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
         targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
-        translationMode: selectedMode,
         widgetVisible: Boolean(checkboxWidgetVisible ? checkboxWidgetVisible.checked : true)
       };
 
@@ -1271,13 +1284,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Non-optimistic revert
         if (selectSrcLang) selectSrcLang.value = savedSettings.sourceLanguage || 'auto';
         if (selectTgtLang) selectTgtLang.value = savedSettings.targetLanguage || 'vi';
-        if (modeFull && modeScroll) {
-          if (savedSettings.translationMode === 'full') {
-            modeFull.checked = true;
-          } else {
-            modeScroll.checked = true;
-          }
-        }
         if (checkboxWidgetVisible) {
           checkboxWidgetVisible.checked = savedSettings.widgetVisible !== false;
         }
@@ -1286,26 +1292,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       savedSettings = { ...savedSettings, ...partialSettings };
-      currentMode = selectedMode;
       setConfigMsg(configMessageTranslate, 'Đã lưu cài đặt dịch!');
-
-      // Best-effort notify active tab content script of new mode
-      if (activeTab && activeTab.id) {
-        chrome.tabs.sendMessage(activeTab.id, {
-          action: 'CONTENT_SET_MODE',
-          mode: selectedMode
-        }, () => {
-          if (chrome.runtime.lastError) {
-            // Content script not yet injected or tab inactive
-          }
-        });
-      }
-
       await checkTabStatus();
     });
   }
 
-  // Auto-Translate Sites Management
+  // Tab 2 Auto-Translate Sites Management
   function showAutoSiteError(msg) {
     if (!autoSiteError) return;
     autoSiteError.textContent = msg;
@@ -1318,7 +1310,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     autoSiteError.style.display = 'none';
   }
 
-  function renderAutoSitesChips() {
+  function renderAutoSites() {
     if (!autoSitesList) return;
     autoSitesList.innerHTML = '';
 
@@ -1330,27 +1322,76 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    for (const site of autoTranslateSites) {
-      const chip = document.createElement('div');
-      chip.className = 'site-chip';
-      chip.setAttribute('role', 'listitem');
+    autoTranslateSites.forEach((siteObj, idx) => {
+      const site = typeof siteObj === 'string'
+        ? { origin: siteObj, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+        : siteObj;
+
+      const card = document.createElement('div');
+      card.className = 'auto-site-card';
+      card.setAttribute('role', 'listitem');
+      card.dataset.origin = site.origin;
+
+      // Row 1: Main controls (Origin chip + Mode mini-select + AutoStart toggle + Delete button)
+      const mainRow = document.createElement('div');
+      mainRow.className = 'auto-site-row-main';
 
       const originSpan = document.createElement('span');
       originSpan.className = 'chip-origin';
-      originSpan.title = site;
-      originSpan.textContent = site;
+      originSpan.title = site.origin;
+      originSpan.textContent = site.origin;
 
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'btn-chip-remove';
-      removeBtn.setAttribute('aria-label', `Xoá ${site} khỏi danh sách tự động dịch`);
-      removeBtn.title = 'Xoá';
-      removeBtn.textContent = '×';
+      const controlsDiv = document.createElement('div');
+      controlsDiv.className = 'auto-site-controls';
 
-      removeBtn.addEventListener('click', async () => {
+      // Mini Mode Select
+      const modeSelect = document.createElement('select');
+      modeSelect.className = 'select-mini auto-site-mode';
+      modeSelect.id = `select-site-mode-${idx}`;
+      modeSelect.setAttribute('aria-label', `Chế độ dịch cho ${site.origin}`);
+      modeSelect.title = 'Chế độ dịch';
+      modeSelect.innerHTML = `
+        <option value="inherit">Theo chung</option>
+        <option value="scroll-follow">Đuổi scroll</option>
+        <option value="full">Toàn trang</option>
+      `;
+      modeSelect.value = site.mode || 'inherit';
+      modeSelect.addEventListener('change', () => {
+        site.mode = modeSelect.value;
+      });
+
+      // AutoStart Toggle
+      const toggleLabel = document.createElement('label');
+      toggleLabel.className = 'mini-toggle';
+      toggleLabel.title = 'Tự động dịch khi mở trang';
+      toggleLabel.setAttribute('aria-label', `Tự động dịch khi mở ${site.origin}`);
+
+      const toggleInput = document.createElement('input');
+      toggleInput.type = 'checkbox';
+      toggleInput.id = `toggle-site-autostart-${idx}`;
+      toggleInput.checked = site.autoStart !== false;
+      toggleInput.addEventListener('change', () => {
+        site.autoStart = toggleInput.checked;
+      });
+
+      const toggleSlider = document.createElement('span');
+      toggleSlider.className = 'mini-toggle-slider';
+      toggleLabel.appendChild(toggleInput);
+      toggleLabel.appendChild(toggleSlider);
+
+      // Delete Button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'btn-site-delete';
+      deleteBtn.id = `btn-delete-site-${idx}`;
+      deleteBtn.title = `Xoá ${site.origin}`;
+      deleteBtn.setAttribute('aria-label', `Xoá ${site.origin}`);
+      deleteBtn.innerHTML = SVG_ICONS.trash;
+
+      deleteBtn.addEventListener('click', async () => {
         hideAutoSiteError();
-        const updatedList = autoTranslateSites.filter((s) => s !== site);
-        removeBtn.disabled = true;
+        const updatedList = autoTranslateSites.filter((s) => (s.origin || s) !== site.origin);
+        deleteBtn.disabled = true;
 
         const saveResp = await new Promise((resolve) => {
           chrome.runtime.sendMessage({
@@ -1362,19 +1403,103 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (chrome.runtime.lastError || !saveResp || saveResp.error) {
           const err = saveResp?.error || chrome.runtime.lastError;
           showAutoSiteError('Lỗi xoá trang: ' + (err?.message || 'Không thể lưu'));
-          removeBtn.disabled = false;
+          deleteBtn.disabled = false;
           return;
         }
 
         autoTranslateSites = updatedList;
-        savedSettings.autoTranslateSites = [...updatedList];
-        renderAutoSitesChips();
+        savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
+        renderAutoSites();
       });
 
-      chip.appendChild(originSpan);
-      chip.appendChild(removeBtn);
-      autoSitesList.appendChild(chip);
-    }
+      controlsDiv.appendChild(modeSelect);
+      controlsDiv.appendChild(toggleLabel);
+      controlsDiv.appendChild(deleteBtn);
+
+      mainRow.appendChild(originSpan);
+      mainRow.appendChild(controlsDiv);
+
+      // Row 2: Per-site language override
+      const subRow = document.createElement('div');
+      subRow.className = 'auto-site-row-sub';
+
+      const langLabel = document.createElement('span');
+      langLabel.className = 'auto-site-lang-label';
+      langLabel.textContent = 'Ngôn ngữ:';
+
+      const srcSelect = document.createElement('select');
+      srcSelect.className = 'select-mini auto-site-lang-src';
+      srcSelect.id = `select-site-src-${idx}`;
+      srcSelect.setAttribute('aria-label', `Ngôn ngữ nguồn cho ${site.origin}`);
+      srcSelect.title = 'Ngôn ngữ nguồn';
+      srcSelect.innerHTML = `
+        <option value="">Theo chung</option>
+        <option value="auto">Tự động (auto)</option>
+        <option value="zh">Tiếng Trung (zh)</option>
+        <option value="en">Tiếng Anh (en)</option>
+        <option value="ja">Tiếng Nhật (ja)</option>
+        <option value="ko">Tiếng Hàn (ko)</option>
+      `;
+      srcSelect.value = site.sourceLanguage || '';
+      srcSelect.addEventListener('change', () => {
+        site.sourceLanguage = srcSelect.value || null;
+      });
+
+      const arrowSpan = document.createElement('span');
+      arrowSpan.textContent = '→';
+
+      const tgtSelect = document.createElement('select');
+      tgtSelect.className = 'select-mini auto-site-lang-tgt';
+      tgtSelect.id = `select-site-tgt-${idx}`;
+      tgtSelect.setAttribute('aria-label', `Ngôn ngữ đích cho ${site.origin}`);
+      tgtSelect.title = 'Ngôn ngữ đích';
+      tgtSelect.innerHTML = `
+        <option value="">Theo chung</option>
+        <option value="vi">Tiếng Việt (vi)</option>
+        <option value="en">Tiếng Anh (en)</option>
+        <option value="zh">Tiếng Trung (zh)</option>
+      `;
+      tgtSelect.value = site.targetLanguage || '';
+      tgtSelect.addEventListener('change', () => {
+        site.targetLanguage = tgtSelect.value || null;
+      });
+
+      subRow.appendChild(langLabel);
+      subRow.appendChild(srcSelect);
+      subRow.appendChild(arrowSpan);
+      subRow.appendChild(tgtSelect);
+
+      card.appendChild(mainRow);
+      card.appendChild(subRow);
+
+      autoSitesList.appendChild(card);
+    });
+  }
+
+  // Tab 2 Save Action
+  if (btnSaveAuto) {
+    btnSaveAuto.addEventListener('click', async () => {
+      hideAutoSiteError();
+      btnSaveAuto.disabled = true;
+
+      const saveResp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'SAVE_SETTINGS',
+          settings: { autoTranslateSites }
+        }, resolve);
+      });
+      btnSaveAuto.disabled = false;
+
+      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+        const err = saveResp?.error || chrome.runtime.lastError;
+        showAutoSiteError('Lỗi lưu: ' + (err?.message || 'Không thể lưu'));
+        if (configMessageAuto) setConfigMsg(configMessageAuto, 'Lỗi lưu cấu hình', true);
+        return;
+      }
+
+      savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(autoTranslateSites));
+      if (configMessageAuto) setConfigMsg(configMessageAuto, 'Đã lưu cấu hình tự động!');
+    });
   }
 
   async function handleAddCustomSite() {
@@ -1391,7 +1516,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    if (autoTranslateSites.includes(norm)) {
+    if (autoTranslateSites.some((s) => (s.origin || s) === norm)) {
       showAutoSiteError(`Trang ${norm} đã có trong danh sách.`);
       return;
     }
@@ -1402,7 +1527,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (btnAddCustomSite) btnAddCustomSite.disabled = true;
-    const updatedList = [...autoTranslateSites, norm];
+    const newEntry = { origin: norm, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
+    const updatedList = [...autoTranslateSites, newEntry];
 
     const saveResp = await new Promise((resolve) => {
       chrome.runtime.sendMessage({
@@ -1419,9 +1545,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     autoTranslateSites = updatedList;
-    savedSettings.autoTranslateSites = [...updatedList];
+    savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
     if (inputAutoSite) inputAutoSite.value = '';
-    renderAutoSitesChips();
+    renderAutoSites();
   }
 
   if (btnAddCustomSite) {
@@ -1451,7 +1577,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      if (autoTranslateSites.includes(curOrigin)) {
+      if (autoTranslateSites.some((s) => (s.origin || s) === curOrigin)) {
         showAutoSiteError(`Trang ${curOrigin} đã có trong danh sách.`);
         return;
       }
@@ -1507,7 +1633,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       // 2. Add to autoTranslateSites and save
-      const updatedList = [...autoTranslateSites, curOrigin];
+      const newEntry = { origin: curOrigin, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
+      const updatedList = [...autoTranslateSites, newEntry];
       const saveResp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({
           action: 'SAVE_SETTINGS',
@@ -1523,8 +1650,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       autoTranslateSites = updatedList;
-      savedSettings.autoTranslateSites = [...updatedList];
-      renderAutoSitesChips();
+      savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
+      renderAutoSites();
     });
   }
 
@@ -1552,17 +1679,23 @@ document.addEventListener('DOMContentLoaded', async () => {
           return;
         }
 
+        const curOrigin = activeTab?.url ? normalizeOrigin(activeTab.url) : null;
+        const matchingSite = curOrigin ? autoTranslateSites.find((s) => (s.origin || s) === curOrigin) : null;
+        const effectiveSiteMode = (matchingSite && matchingSite.mode && matchingSite.mode !== 'inherit')
+          ? matchingSite.mode
+          : (savedSettings.translationMode || currentMode || 'scroll-follow');
+
         const currentSettings = {
           baseURL: inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || 'http://localhost:8080/v1'),
           model: selectModel?.value || savedSettings.model || DEFAULT_MODEL,
           sourceLanguage: selectSrcLang?.value || savedSettings.sourceLanguage || 'auto',
           targetLanguage: selectTgtLang?.value || savedSettings.targetLanguage || 'vi',
-          translationMode: currentMode
+          translationMode: effectiveSiteMode
         };
 
         chrome.tabs.sendMessage(
           activeTab.id,
-          { action: 'CONTENT_START_TRANSLATION', settings: currentSettings, mode: currentMode },
+          { action: 'CONTENT_START_TRANSLATION', settings: currentSettings, mode: effectiveSiteMode },
           (resp) => {
             stopPolling();
             if (chrome.runtime.lastError) {
