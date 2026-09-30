@@ -505,6 +505,125 @@ details[open] .config-summary {
   color: #f87171;
 }
 
+/* Consent Card & Controls */
+.consent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.consent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.consent-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.site-origin-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  padding: 2px 7px;
+  border-radius: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.consent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.consent-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.consent-toggle-label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.consent-toggle-label.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tab-override-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.override-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.btn-group-override {
+  display: flex;
+  background: rgba(13, 19, 33, 0.85);
+  border: 1px solid var(--border-hairline);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+  flex: 1;
+}
+
+.btn-override {
+  flex: 1;
+  padding: 4px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+  outline: none;
+}
+
+.btn-override:hover:not(:disabled) {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.btn-override.active {
+  background: rgba(59, 130, 246, 0.25);
+  color: #ffffff;
+  font-weight: 600;
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.btn-override:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Footer Telemetry */
 .footer {
   display: flex;

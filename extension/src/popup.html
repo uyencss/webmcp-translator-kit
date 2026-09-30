@@ -29,6 +29,28 @@
       <div class="status-sub" id="status-detail"></div>
     </section>
 
+    <!-- Consent section -->
+    <section class="section consent-card" id="consent-card">
+      <div class="consent-header">
+        <span class="consent-title">Quyền dịch</span>
+        <span class="site-origin-badge" id="site-origin-badge">--</span>
+      </div>
+      <div class="consent-row">
+        <label class="consent-toggle-label" for="toggle-site-consent">
+          <input type="checkbox" id="toggle-site-consent" />
+          <span class="toggle-text">Bật dịch cho site này</span>
+        </label>
+      </div>
+      <div class="consent-row tab-override-row">
+        <span class="override-label">Tab này:</span>
+        <div class="btn-group-override" role="group" aria-label="Tab consent override">
+          <button type="button" class="btn-override active" id="btn-override-inherit" data-val="inherit" title="Theo cài đặt site">Theo site</button>
+          <button type="button" class="btn-override" id="btn-override-on" data-val="on" title="Bật tab này">Bật tab này</button>
+          <button type="button" class="btn-override" id="btn-override-off" data-val="off" title="Tắt tab này">Tắt tab này</button>
+        </div>
+      </div>
+    </section>
+
     <!-- Actions -->
     <section class="section actions-card">
       <button id="btn-translate" class="btn btn-primary" disabled>

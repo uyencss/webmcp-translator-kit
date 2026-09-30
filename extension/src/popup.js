@@ -21,6 +21,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnTranslate = document.getElementById('btn-translate');
   const btnRestore = document.getElementById('btn-restore');
 
+  const toggleSiteConsent = document.getElementById('toggle-site-consent');
+  const siteOriginBadge = document.getElementById('site-origin-badge');
+  const btnOverrideInherit = document.getElementById('btn-override-inherit');
+  const btnOverrideOn = document.getElementById('btn-override-on');
+  const btnOverrideOff = document.getElementById('btn-override-off');
+
   const inputBaseUrl = document.getElementById('input-base-url');
   const inputApiKey = document.getElementById('input-api-key');
   const btnToggleKey = document.getElementById('btn-toggle-key');
@@ -37,6 +43,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   let activeTab = null;
   let hasStoredKey = false;
   let pollInterval = null;
+
+  let currentConsent = {
+    siteOrigin: null,
+    siteEnabled: false,
+    tabOverride: null,
+    effective: 'off'
+  };
 
   function startPolling() {
     if (pollInterval) return;
@@ -102,12 +115,98 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnTranslate.disabled = true;
         btnRestore.disabled = true;
         updateStatus('unsupported', 'Trang hệ thống Chrome không hỗ trợ dịch.');
+        if (toggleSiteConsent) toggleSiteConsent.disabled = true;
+        if (btnOverrideInherit) btnOverrideInherit.disabled = true;
+        if (btnOverrideOn) btnOverrideOn.disabled = true;
+        if (btnOverrideOff) btnOverrideOff.disabled = true;
+        if (siteOriginBadge) siteOriginBadge.textContent = 'Không hỗ trợ';
         return false;
       }
       return true;
     } catch {
       return false;
     }
+  }
+
+  // Load consent state for current active tab
+  async function loadConsent() {
+    if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
+      if (toggleSiteConsent) toggleSiteConsent.disabled = true;
+      if (btnOverrideInherit) btnOverrideInherit.disabled = true;
+      if (btnOverrideOn) btnOverrideOn.disabled = true;
+      if (btnOverrideOff) btnOverrideOff.disabled = true;
+      if (siteOriginBadge) siteOriginBadge.textContent = 'Không hỗ trợ';
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: 'GET_CONSENT', tabId: activeTab.id }, (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+          if (siteOriginBadge) siteOriginBadge.textContent = '--';
+          resolve(null);
+          return;
+        }
+
+        currentConsent = resp;
+        if (siteOriginBadge) siteOriginBadge.textContent = resp.siteOrigin || '--';
+        if (toggleSiteConsent) {
+          toggleSiteConsent.disabled = !resp.siteOrigin;
+          toggleSiteConsent.checked = Boolean(resp.siteEnabled);
+        }
+
+        if (btnOverrideInherit && btnOverrideOn && btnOverrideOff) {
+          btnOverrideInherit.disabled = !resp.siteOrigin;
+          btnOverrideOn.disabled = !resp.siteOrigin;
+          btnOverrideOff.disabled = !resp.siteOrigin;
+
+          btnOverrideInherit.classList.toggle('active', resp.tabOverride === null || resp.tabOverride === undefined);
+          btnOverrideOn.classList.toggle('active', resp.tabOverride === 'on');
+          btnOverrideOff.classList.toggle('active', resp.tabOverride === 'off');
+        }
+
+        resolve(resp);
+      });
+    });
+  }
+
+  // Helper to set tab override
+  async function updateTabOverride(val) {
+    if (!activeTab || !activeTab.id) return;
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'SET_TAB_OVERRIDE',
+        tabId: activeTab.id,
+        value: val
+      }, resolve);
+    });
+    await loadConsent();
+  }
+
+  // Site toggle event listener
+  if (toggleSiteConsent) {
+    toggleSiteConsent.addEventListener('change', async () => {
+      if (!currentConsent.siteOrigin) return;
+      toggleSiteConsent.disabled = true;
+      await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: currentConsent.siteOrigin,
+          enabled: toggleSiteConsent.checked
+        }, resolve);
+      });
+      await loadConsent();
+    });
+  }
+
+  // Tab override buttons event listeners
+  if (btnOverrideInherit) {
+    btnOverrideInherit.addEventListener('click', () => updateTabOverride(null));
+  }
+  if (btnOverrideOn) {
+    btnOverrideOn.addEventListener('click', () => updateTabOverride('on'));
+  }
+  if (btnOverrideOff) {
+    btnOverrideOff.addEventListener('click', () => updateTabOverride('off'));
   }
 
   // Query background settings
@@ -200,7 +299,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       const code = err.code || 'ERROR';
       const msg = err.message || '';
       if (code === 'TIMEOUT') {
-        return `[TIMEOUT] ${msg || 'Quá thời gian chờ'}${metaStr}. Gợi ý: chọn model nhanh hơn (do/glm-5.3-flash) hoặc giảm số node.`;
+        return `[TIMEOUT] ${msg || 'Quá thời gian chờ'}${metaStr}. Gợi ý: chọn model nhanh hơn hoặc giảm số node.`;
+      }
+      if (code === 'OPT_IN_REQUIRED') {
+        return `[OPT_IN_REQUIRED] Chưa bật quyền dịch cho site này. Vui lòng bật "Bật dịch cho site này" ở trên.`;
+      }
+      if (code === 'SITE_NOT_ALLOWED') {
+        return `[SITE_NOT_ALLOWED] Trang web này không hỗ trợ dịch hoặc URL không hợp lệ.`;
+      }
+      if (code === 'KEY_ACCESS_UNAVAILABLE') {
+        return `[KEY_ACCESS_UNAVAILABLE] Lỗi bảo mật bộ nhớ extension. Vui lòng thử lại.`;
+      }
+      if (code === 'CONSENT_STATE_UNAVAILABLE') {
+        return `[CONSENT_STATE_UNAVAILABLE] Không thể đọc trạng thái consent.`;
+      }
+      if (code === 'PERMISSION_REQUIRED') {
+        return `[PERMISSION_REQUIRED] Cần cấp quyền để thực hiện thao tác này.`;
       }
       return `[${code}] ${msg}${metaStr}`;
     }
@@ -367,11 +481,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!activeTab || !activeTab.id) return;
 
     btnTranslate.disabled = true;
-    updateStatus('translating', 'Đang quét toàn bộ DOM và dịch...');
+    updateStatus('translating', 'Đang chuẩn bị dịch...');
     startPolling();
 
     try {
-      // Inject content.js if not yet injected
+      // 1. Check consent: if effective is OFF, auto-enable site first
+      const consent = await loadConsent();
+      if (consent && consent.effective === 'off' && consent.siteOrigin) {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: consent.siteOrigin,
+            enabled: true
+          }, resolve);
+        });
+        // If tab was explicitly off, reset override to null so site setting applies
+        if (consent.tabOverride === 'off') {
+          await new Promise((resolve) => {
+            chrome.runtime.sendMessage({
+              action: 'SET_TAB_OVERRIDE',
+              tabId: activeTab.id,
+              value: null
+            }, resolve);
+          });
+        }
+        await loadConsent();
+      }
+
+      // 2. Inject content.js if not yet injected
       await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
         files: ['content.js']
@@ -446,6 +583,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   const tabOk = await resolveActiveTab();
   if (tabOk) {
+    await loadConsent();
     if (hasStoredKey) {
       refreshModels().catch(() => {});
     }

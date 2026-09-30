@@ -236,8 +236,12 @@ async function runSingleAttempt() {
     }
 
     // Configure extension with fake 9router via Service Worker storage
+    const fixtureOrigin = `http://127.0.0.1:${FAKE_PORT}`;
+    const fixtureUrl = `http://127.0.0.1:${FAKE_PORT}/fixture.html`;
+
     await cdp.evaluate(`
       (async () => {
+        const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
         await self.__translatorSw.dispatchMessage({
           action: 'SAVE_SETTINGS',
           settings: {
@@ -246,16 +250,20 @@ async function runSingleAttempt() {
             sourceLanguage: 'auto',
             targetLanguage: 'vi'
           }
-        });
+        }, popupSender);
         await self.__translatorSw.dispatchMessage({
           action: 'SET_KEY',
           key: 'fake-test-key'
-        });
+        }, popupSender);
+        await self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: true
+        }, popupSender);
       })()
     `, swSessionId);
 
     // Open Chinese fixture tab
-    const fixtureUrl = `http://127.0.0.1:${FAKE_PORT}/fixture.html`;
     const tabTarget = await cdp.send('Target.createTarget', { url: fixtureUrl });
     const attachTabRes = await cdp.send('Target.attachToTarget', {
       targetId: tabTarget.targetId,
@@ -273,7 +281,7 @@ async function runSingleAttempt() {
         const { callId, payload } = JSON.parse(msg.params.payload);
         try {
           const swRes = await cdp.evaluate(
-            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)})`,
+            `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)}, { frameId: 0, url: ${JSON.stringify(fixtureUrl)}, tab: { id: 1, url: ${JSON.stringify(fixtureUrl)} } })`,
             swSessionId
           );
           await cdp.evaluate(
@@ -414,6 +422,10 @@ async function runSingleAttempt() {
             targetLanguage: 'vi',
             model: '${DEFAULT_MODEL}'
           }
+        }, {
+          frameId: 0,
+          url: '${fixtureUrl}',
+          tab: { id: 1, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
 
@@ -495,6 +507,10 @@ async function runSingleAttempt() {
             targetLanguage: 'vi',
             model: '${DEFAULT_MODEL}'
           }
+        }, {
+          frameId: 0,
+          url: '${fixtureUrl}',
+          tab: { id: 1, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
       const elapsed = Date.now() - t0;
@@ -672,6 +688,130 @@ async function runSingleAttempt() {
       record('T10', 'Chunk recovery: retry + split, no abort', false, e.message);
     }
 
+    // Test 11: Storage access level TRUSTED_CONTEXTS
+    try {
+      const accessLevel = await cdp.evaluate(`
+        (async () => {
+          if (typeof chrome.storage?.local?.getAccessLevel === 'function') {
+            return await chrome.storage.local.getAccessLevel();
+          }
+          return 'NOT_IMPLEMENTED';
+        })()
+      `, swSessionId, true);
+      assert.equal(accessLevel, 'TRUSTED_CONTEXTS', `Expected TRUSTED_CONTEXTS, got ${accessLevel}`);
+      record('T11', 'Storage access level TRUSTED_CONTEXTS', true, `Access level: ${accessLevel}`);
+    } catch (e) {
+      record('T11', 'Storage access level TRUSTED_CONTEXTS', false, e.message);
+    }
+
+    // Test 12: Forged payload ignored & sender enforced
+    try {
+      const forgedPayload = {
+        tabId: 99,
+        frameId: 0,
+        origin: 'https://evil.example',
+        items: [{ id: 'T12-1', revision: 0, text: '伪造测试' }],
+        sourceLanguage: 'auto',
+        targetLanguage: 'vi',
+        model: DEFAULT_MODEL
+      };
+
+      // 12a: Sender frameId 1 !== 0 -> PERMISSION_REQUIRED
+      const res12a = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: ${JSON.stringify(forgedPayload)}
+        }, { frameId: 1 })
+      `, swSessionId, true);
+      assert.equal(res12a?.error?.code, 'PERMISSION_REQUIRED', `Expected PERMISSION_REQUIRED, got ${res12a?.error?.code}`);
+
+      // 12b: Sender frameId 0 but non-opted site -> OPT_IN_REQUIRED
+      const notOptedSender = {
+        frameId: 0,
+        url: 'https://not-opted.example/page',
+        tab: { id: 1, url: 'https://not-opted.example/page' }
+      };
+      const res12b = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: ${JSON.stringify(forgedPayload)}
+        }, ${JSON.stringify(notOptedSender)})
+      `, swSessionId, true);
+      assert.equal(res12b?.error?.code, 'OPT_IN_REQUIRED', `Expected OPT_IN_REQUIRED, got ${res12b?.error?.code}`);
+
+      // 12c: After SET_SITE_ENABLED for that origin -> allowed to call provider
+      const popupSenderStr = JSON.stringify({ url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: 'https://not-opted.example',
+          enabled: true
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+
+      const res12c = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: ${JSON.stringify(forgedPayload)}
+        }, ${JSON.stringify(notOptedSender)})
+      `, swSessionId, true);
+      assert.ok(res12c && !res12c.error, `Expected successful translation after opt-in, got ${JSON.stringify(res12c)}`);
+      assert.ok(Array.isArray(res12c.results) && res12c.results.length === 1, 'Expected 1 result item');
+
+      record('T12', 'Forged payload ignored & sender enforced', true, 'frameId check, opt-in check, and authorized dispatch all passed');
+    } catch (e) {
+      record('T12', 'Forged payload ignored & sender enforced', false, e.message);
+    }
+
+    // Test 13: Fail-closed key hygiene & self-recovery
+    try {
+      const popupSenderStr = JSON.stringify({ url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+
+      // 13a: Monkey-patch setAccessLevel to throw
+      await cdp.evaluate(`
+        self.__origSetAccessLevel = chrome.storage.local.setAccessLevel;
+        chrome.storage.local.setAccessLevel = () => { throw new Error('injected storage access failure'); };
+        self.__translatorSw._resetStorageAccessStateForTest();
+      `, swSessionId, true);
+
+      // 13b: Privileged call LIST_MODELS must fail with KEY_ACCESS_UNAVAILABLE
+      const failRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'LIST_MODELS'
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+
+      assert.equal(failRes?.error?.code, 'KEY_ACCESS_UNAVAILABLE', `Expected KEY_ACCESS_UNAVAILABLE, got ${failRes?.error?.code}`);
+
+      // 13c: Restore function, reset test state, and retry -> should succeed
+      await cdp.evaluate(`
+        chrome.storage.local.setAccessLevel = self.__origSetAccessLevel;
+        delete self.__origSetAccessLevel;
+        self.__translatorSw._resetStorageAccessStateForTest();
+      `, swSessionId, true);
+
+      const okRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'LIST_MODELS'
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+
+      assert.ok(okRes && Array.isArray(okRes.models) && !okRes.error, `Expected models array after recovery, got ${JSON.stringify(okRes)}`);
+
+      record('T13', 'Fail-closed key & recovery', true, 'Refused with KEY_ACCESS_UNAVAILABLE on failure, recovered on retry');
+    } catch (e) {
+      // Clean up monkey-patch if failed
+      try {
+        await cdp.evaluate(`
+          if (self.__origSetAccessLevel) {
+            chrome.storage.local.setAccessLevel = self.__origSetAccessLevel;
+            delete self.__origSetAccessLevel;
+          }
+        `, swSessionId, true);
+      } catch {}
+      record('T13', 'Fail-closed key & recovery', false, e.message);
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -704,7 +844,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 10;
+  return allPass && testResults.length >= 13;
 }
 
 async function main() {

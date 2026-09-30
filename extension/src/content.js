@@ -301,10 +301,34 @@
       return { applied: 0, failed: 0 };
     }
 
+    const NON_RETRYABLE_CODES = new Set([
+      'OPT_IN_REQUIRED',
+      'SITE_NOT_ALLOWED',
+      'PERMISSION_REQUIRED',
+      'KEY_ACCESS_UNAVAILABLE',
+      'CONSENT_STATE_UNAVAILABLE',
+      'MISSING_CONFIG',
+      'CONSENT_DENIED',
+      'INVALID_SCHEMA',
+      'CAP_EXCEEDED',
+      'MODEL_NOT_ALLOWED'
+    ]);
+
+    function isNonRetryable(err) {
+      if (!err) return false;
+      if (NON_RETRYABLE_CODES.has(err.code)) return true;
+      if (err.retryable === false && err.code !== 'TIMEOUT') return true;
+      return false;
+    }
+
     // 1. Initial sendChunk
     let resp = await sendChunk(items, settings);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
+    }
+
+    if (resp && resp.error && isNonRetryable(resp.error)) {
+      return { applied: 0, failed: items.length, error: resp.error, fatal: true };
     }
 
     if (resp && Array.isArray(resp.results)) {
@@ -430,6 +454,10 @@
           lastTranslateStatus.totalApplied = totalApplied;
           lastTranslateStatus.totalFailed = totalFailed;
           lastTranslateStatus.chunksDone = chunksDone;
+
+          if (chunkRes.fatal) {
+            break;
+          }
         }
       }
 
