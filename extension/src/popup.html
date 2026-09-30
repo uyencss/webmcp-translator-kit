@@ -25,7 +25,7 @@
             <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
           </svg>
         </span>
-        <span class="badge" id="slice-badge">Direct</span>
+        <span class="badge" id="slice-badge" title="Chế độ dịch trực tiếp qua 9router API">Direct</span>
       </div>
     </header>
 
@@ -143,7 +143,7 @@
           <label class="toggle-switch-label" for="toggle-site-consent">
             <input type="checkbox" id="toggle-site-consent" aria-label="Bật dịch cho site này" />
             <span class="toggle-slider"></span>
-            <span class="toggle-text" id="toggle-site-consent-text">Bật dịch cho site này</span>
+            <span class="toggle-text" id="toggle-site-consent-text">Bật dịch site này</span>
           </label>
         </div>
         <div class="compact-row tab-override-row">
@@ -184,7 +184,7 @@
         <label class="toggle-switch-label" for="checkbox-widget-visible">
           <input type="checkbox" id="checkbox-widget-visible" checked />
           <span class="toggle-slider"></span>
-          <span class="toggle-text">Hiện icon nổi (widget) trên trang</span>
+          <span class="toggle-text">Hiện icon nổi trên trang</span>
         </label>
       </div>
 
@@ -217,7 +217,7 @@
       <!-- Primary connection section -->
       <div class="card-compact primary-connect-card">
         <div class="compact-header">
-          <span class="field-title">Primary Provider</span>
+          <span class="field-title">Chính</span>
           <span class="key-status-indicator" id="key-status-indicator">Chưa lưu key</span>
         </div>
 
@@ -273,14 +273,14 @@
       <div class="card-compact fallbacks-card">
         <div class="compact-header">
           <div class="fallbacks-title-group">
-            <span class="field-title">Fallbacks</span>
+            <span class="field-title">Dự phòng</span>
             <span class="sub-hint" title="Tối đa 2 fallback models/providers khi primary gặp lỗi 5xx">(tối đa 2)</span>
           </div>
           <button type="button" id="btn-add-fallback" class="btn btn-xs btn-outline" title="Thêm fallback row" aria-label="Thêm fallback row">
             <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
             </svg>
-            <span>Thêm fallback</span>
+            <span>Thêm dự phòng</span>
           </button>
         </div>
 
@@ -305,7 +305,7 @@
     <footer class="footer">
       <span>WebMCP Translator</span>
       <span class="footer-dot">•</span>
-      <span class="footer-mode" id="footer-status-summary">Ready</span>
+      <span class="footer-mode" id="footer-status-summary">v0.1.0</span>
     </footer>
   </div>
 

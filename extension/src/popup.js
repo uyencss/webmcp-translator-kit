@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (statusText) statusText.textContent = shortText;
     if (statusDetail) statusDetail.textContent = fullDetail;
     if (statusStrip) statusStrip.title = fullDetail;
-    if (footerStatusSummary) footerStatusSummary.textContent = shortText;
+    if (footerStatusSummary) footerStatusSummary.textContent = 'v0.1.0';
   }
 
   // Toast / Status Message Helpers
@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (btnOverrideInherit) btnOverrideInherit.disabled = true;
         if (btnOverrideOn) btnOverrideOn.disabled = true;
         if (btnOverrideOff) btnOverrideOff.disabled = true;
-        if (siteOriginBadge) siteOriginBadge.textContent = 'Không hỗ trợ';
+        if (siteOriginBadge) { siteOriginBadge.textContent = '--'; siteOriginBadge.classList.add('unsupported'); }
         return false;
       }
       return true;
@@ -346,7 +346,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (btnOverrideInherit) btnOverrideInherit.disabled = true;
       if (btnOverrideOn) btnOverrideOn.disabled = true;
       if (btnOverrideOff) btnOverrideOff.disabled = true;
-      if (siteOriginBadge) siteOriginBadge.textContent = 'Không hỗ trợ';
+      if (siteOriginBadge) { siteOriginBadge.textContent = '--'; siteOriginBadge.classList.add('unsupported'); }
       return null;
     }
 
@@ -356,13 +356,13 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (resp && resp.error && resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
             showKeyAccessBanner();
           }
-          if (siteOriginBadge) siteOriginBadge.textContent = '--';
+          if (siteOriginBadge) { siteOriginBadge.textContent = '--'; siteOriginBadge.classList.add('unsupported'); }
           resolve(null);
           return;
         }
 
         currentConsent = resp;
-        if (siteOriginBadge) siteOriginBadge.textContent = resp.siteOrigin || '--';
+        if (siteOriginBadge) { siteOriginBadge.textContent = resp.siteOrigin || '--'; siteOriginBadge.classList.remove('unsupported'); }
         if (toggleSiteConsent) {
           toggleSiteConsent.disabled = !resp.siteOrigin;
           toggleSiteConsent.checked = Boolean(resp.siteEnabled);
@@ -504,10 +504,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Group 2: Currently Selected
     if (selectedVal && !added.has(selectedVal)) {
       const curGroup = document.createElement('optgroup');
-      curGroup.label = 'Model đang chọn (đã lưu)';
+      curGroup.label = 'Đã lưu ★';
       const opt = document.createElement('option');
       opt.value = selectedVal;
-      opt.textContent = `${selectedVal} (đã lưu)`;
+      opt.textContent = selectedVal;
       curGroup.appendChild(opt);
       selectEl.appendChild(curGroup);
       added.add(selectedVal);
@@ -612,7 +612,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!Array.isArray(fallbacks) || fallbacks.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'auto-sites-empty';
-      emptyEl.textContent = 'Chưa có fallback provider nào.';
+      emptyEl.textContent = 'Chưa có dự phòng nào.';
       fallbackListEl.appendChild(emptyEl);
       if (btnAddFallback) btnAddFallback.disabled = false;
       return;

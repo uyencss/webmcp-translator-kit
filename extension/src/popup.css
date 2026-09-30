@@ -290,6 +290,16 @@ body {
   box-shadow: none !important;
 }
 
+.btn-primary:disabled,
+.btn-secondary:disabled {
+  opacity: 1;
+  background: #17181d;
+  border-color: var(--border-hairline);
+  color: #7d828c;
+  box-shadow: none;
+  filter: none;
+}
+
 .btn-primary {
   background: var(--accent-blue);
   color: #ffffff;
@@ -328,11 +338,8 @@ body {
    ========================================================================== */
 .tab-list {
   display: flex;
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: 8px;
-  padding: 2px;
-  gap: 3px;
+  gap: 4px;
+  padding: 0 2px;
 }
 
 .tab-btn {
@@ -360,11 +367,12 @@ body {
 }
 
 .tab-btn.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: #ffffff;
+  background: transparent;
+  color: var(--accent-cyan);
   font-weight: 600;
-  border-color: rgba(59, 130, 246, 0.35);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  border-color: transparent;
+  box-shadow: inset 0 -2px 0 var(--accent-blue);
+  border-radius: 6px 6px 0 0;
 }
 
 .tab-btn:focus-visible {
@@ -395,10 +403,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: 8px;
-  padding: 8px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border-hairline);
+  border-radius: 0;
+  padding: 8px 2px 2px;
+}
+
+.compact-header .btn {
+  flex: none;
 }
 
 .compact-header {
@@ -419,7 +432,7 @@ body {
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .form-row {
@@ -436,19 +449,21 @@ label,
 .field-title {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-muted);
+  color: #9ba1a9;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .sub-label {
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 10.5px;
+  color: #858b94;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .sub-hint {
   font-size: 10px;
-  color: var(--text-muted);
+  color: #858b94;
   cursor: help;
 }
 
@@ -460,6 +475,7 @@ select {
   padding: 4px 8px;
   font-family: var(--font-mono);
   font-size: 11.5px;
+  text-overflow: ellipsis;
   border: 1px solid var(--border-hairline);
   border-radius: 8px;
   background-color: var(--surface-input);
@@ -470,7 +486,7 @@ select {
 }
 
 input::placeholder {
-  color: #52525b;
+  color: #757b84;
   font-family: var(--font-sans);
 }
 
@@ -711,6 +727,14 @@ select optgroup {
   background-color: #ffffff;
 }
 
+.toggle-switch-label,
+.toggle-switch-label .toggle-text,
+.segmented-btn,
+.segmented-btn .segmented-content {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .toggle-switch-label input:focus-visible + .toggle-slider {
   box-shadow: 0 0 0 2px var(--accent-ring);
 }
@@ -728,6 +752,12 @@ select optgroup {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.site-origin-badge.unsupported {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-hairline);
 }
 
 .tab-override-row {
@@ -808,7 +838,7 @@ select optgroup {
 
 .auto-sites-empty {
   font-size: 11px;
-  color: var(--text-muted);
+  color: #9aa0a8;
   font-style: italic;
   padding: 2px 0;
 }
@@ -865,7 +895,10 @@ select optgroup {
 }
 
 .active-url-label {
-  color: var(--text-muted);
+  color: #858b94;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
 }
 
 .chip-active-url {
@@ -880,12 +913,14 @@ select optgroup {
   font-size: 10.5px;
   color: var(--text-secondary);
   max-width: 220px;
+  min-width: 0;
 }
 
 .chip-active-url .url-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 /* ==========================================================================
@@ -938,10 +973,19 @@ select optgroup {
   gap: 4px;
 }
 
+.tab-panel > .card-compact:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
 .key-status-indicator {
-  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-secondary);
+}
+
+#select-src-lang,
+#select-tgt-lang {
+  font-family: var(--font-sans);
 }
 
 /* Config Feedback Messages & Actions */
@@ -959,6 +1003,10 @@ select optgroup {
   min-height: 14px;
   line-height: 1.3;
   transition: opacity 0.15s ease;
+}
+
+.config-message:empty {
+  display: none;
 }
 
 .config-message.success {
