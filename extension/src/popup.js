@@ -340,6 +340,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (code === 'PERMISSION_REQUIRED') {
         return `[PERMISSION_REQUIRED] Cần cấp quyền để thực hiện thao tác này.`;
       }
+      if (code === 'RATE_LIMITED') {
+        const scope = err.details?.scope || 'tab';
+        const retrySec = Math.ceil((err.details?.retryAfterMs || 0) / 1000);
+        return `[RATE_LIMITED] ${scope} · thử lại sau ${retrySec}s`;
+      }
+      if (code === 'RATE_STATE_UNAVAILABLE') {
+        return `[RATE_STATE_UNAVAILABLE] Không thể đọc hoặc ghi bộ đếm giới hạn tốc độ.`;
+      }
       return `[${code}] ${msg}${metaStr}`;
     }
 

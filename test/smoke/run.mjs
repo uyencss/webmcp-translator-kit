@@ -143,6 +143,7 @@ async function runSingleAttempt() {
 
   function record(id, name, pass, detail = '') {
     testResults.push({ id, name, pass, detail });
+    console.log(`[${id}] ${pass ? 'PASS' : 'FAIL'} - ${name}: ${detail}`);
   }
 
   try {
@@ -222,16 +223,22 @@ async function runSingleAttempt() {
     console.log(`Attached to Service Worker targetId=${swTarget.targetId}, sessionId=${swSessionId}`);
 
     // Enable runtime domain on SW and wait briefly for execution context
+    console.log('[DEBUG] Sending Runtime.enable...');
     await cdp.send('Runtime.enable', {}, swSessionId);
+    console.log('[DEBUG] Sending Runtime.runIfWaitingForDebugger...');
     await cdp.send('Runtime.runIfWaitingForDebugger', {}, swSessionId);
+    console.log('[DEBUG] Sleeping 150ms...');
     await sleep(150);
 
     // Test 1: Load extension & SW responsive
     try {
+      console.log('[DEBUG] Evaluating PING...');
       const pingRes = await cdp.evaluate('self.__translatorSw.dispatchMessage({ action: "PING" })', swSessionId);
+      console.log('[DEBUG] PING result:', JSON.stringify(pingRes));
       assert.ok(pingRes && pingRes.ok === true && pingRes.version === '0.1.0', 'PING response valid: ' + JSON.stringify(pingRes));
       record('T1', 'Load extension & SW responsive', true, `Version: ${pingRes.version}`);
     } catch (e) {
+      console.log('[DEBUG] PING error:', e.message);
       record('T1', 'Load extension & SW responsive', false, e.message);
     }
 
@@ -963,6 +970,231 @@ async function runSingleAttempt() {
       record('T15', 'Permission check on TRANSLATE_BATCH', false, e.message);
     }
 
+    // Test 16: Queued batch executes after retryAfterMs
+    try {
+      fakeServer.clearLog();
+      await cdp.evaluate(`(async () => {
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+        await self.__translatorSw._resetRateStateForTest();
+        self.__translatorSw._setTestRateLimits({
+          tab: { maxBatches: 1, maxSourceCodePoints: 100000 },
+          site: { maxBatches: 1, maxSourceCodePoints: 100000 },
+          windowSeconds: 2
+        });
+      })()`, swSessionId);
+
+      const senderStr = JSON.stringify({
+        frameId: 0,
+        url: fixtureUrl,
+        tab: { id: 1, url: fixtureUrl }
+      });
+
+      // Batch 1: should succeed immediately
+      const b1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'T16-1', revision: 0, text: '批次1' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, ${senderStr})
+      `, swSessionId, true);
+
+      assert.ok(b1 && !b1.error && Array.isArray(b1.results), 'Batch 1 must succeed immediately: ' + JSON.stringify(b1));
+
+      // Batch 2: dispatched immediately, should be queued in SW and complete after >= 1.5s
+      const t0 = Date.now();
+      const b2 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'T16-2', revision: 0, text: '批次2' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, ${senderStr})
+      `, swSessionId, true);
+      const elapsed = Date.now() - t0;
+
+      assert.ok(b2 && !b2.error && Array.isArray(b2.results), 'Batch 2 must succeed after queue delay: ' + JSON.stringify(b2));
+      assert.ok(elapsed >= 1500, `Expected elapsed >= 1500ms for queued batch, got ${elapsed}ms`);
+
+      const logInfo = await fetchJson(FAKE_PORT, '/__admin/get-log');
+      const reqCount = Array.isArray(logInfo?.log) ? logInfo.log.length : 0;
+      assert.equal(reqCount, 2, `Expected exactly 2 requests received by fake server, got ${reqCount}`);
+
+      record('T16', 'Queued batch executes after retryAfterMs', true, `Elapsed: ${(elapsed / 1000).toFixed(1)}s, ${reqCount} requests, queue completed OK`);
+    } catch (e) {
+      record('T16', 'Queued batch executes after retryAfterMs', false, e.message);
+    }
+
+    // Test 17: Queue full -> RATE_LIMITED
+    try {
+      fakeServer.clearLog();
+      await cdp.evaluate(`(async () => {
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+        await self.__translatorSw._resetRateStateForTest();
+        self.__translatorSw._setTestRateLimits({
+          tab: { maxBatches: 1, maxSourceCodePoints: 100000 },
+          site: { maxBatches: 1, maxSourceCodePoints: 100000 },
+          windowSeconds: 2
+        });
+        self.__translatorSw._setTestMaxQueue(1);
+      })()`, swSessionId);
+
+      const senderStr = JSON.stringify({
+        frameId: 0,
+        url: fixtureUrl,
+        tab: { id: 1, url: fixtureUrl }
+      });
+
+      // Dispatch 3 batches in parallel.
+      // Batch 1: admitted immediately.
+      // Batch 2: enqueued (queue length becomes 1 == maxQueue).
+      // Batch 3: queue full -> returns typed RATE_LIMITED immediately!
+      const results = await cdp.evaluate(`
+        Promise.all([
+          self.__translatorSw.dispatchMessage({
+            action: 'TRANSLATE_BATCH',
+            payload: { items: [{ id: 'T17-1', revision: 0, text: '并發1' }], sourceLanguage: 'auto', targetLanguage: 'vi', model: '${DEFAULT_MODEL}' }
+          }, ${senderStr}),
+          self.__translatorSw.dispatchMessage({
+            action: 'TRANSLATE_BATCH',
+            payload: { items: [{ id: 'T17-2', revision: 0, text: '并發2' }], sourceLanguage: 'auto', targetLanguage: 'vi', model: '${DEFAULT_MODEL}' }
+          }, ${senderStr}),
+          self.__translatorSw.dispatchMessage({
+            action: 'TRANSLATE_BATCH',
+            payload: { items: [{ id: 'T17-3', revision: 0, text: '并發3' }], sourceLanguage: 'auto', targetLanguage: 'vi', model: '${DEFAULT_MODEL}' }
+          }, ${senderStr})
+        ])
+      `, swSessionId, true);
+
+      assert.ok(Array.isArray(results) && results.length === 3, 'Expected 3 results from parallel dispatches');
+
+      const rateLimitedItem = results.find((r) => r?.error?.code === 'RATE_LIMITED');
+      assert.ok(rateLimitedItem, 'At least 1 batch must return RATE_LIMITED when queue is full: ' + JSON.stringify(results));
+
+      const details = rateLimitedItem.error.details;
+      assert.ok(details, 'RATE_LIMITED must contain details');
+      assert.ok(details.scope === 'tab' || details.scope === 'site', `Expected valid scope, got ${details.scope}`);
+      assert.ok(typeof details.retryAfterMs === 'number' && details.retryAfterMs > 0, `Expected retryAfterMs > 0, got ${details.retryAfterMs}`);
+      assert.ok(typeof details.limit === 'number' && details.limit > 0, 'limit should be positive');
+      assert.ok(typeof details.used === 'number', 'used should be number');
+      assert.ok(details.metric === 'batches' || details.metric === 'code_points', `metric should be batches or code_points, got ${details.metric}`);
+
+      // The other batches should have succeeded
+      const okItems = results.filter((r) => !r.error && Array.isArray(r.results));
+      assert.ok(okItems.length >= 1, `Expected at least 1 successful batch, got ${okItems.length}`);
+
+      record('T17', 'Queue full -> RATE_LIMITED', true, `Code: RATE_LIMITED, Scope: ${details.scope}, Metric: ${details.metric}, RetryAfterMs: ${details.retryAfterMs}`);
+    } catch (e) {
+      record('T17', 'Queue full -> RATE_LIMITED', false, e.message);
+    }
+
+    // Test 18: RATE_STATE_UNAVAILABLE on session storage error
+    try {
+      fakeServer.clearLog();
+      await cdp.evaluate(`(async () => {
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+        self.__translatorSw._setTestRateLimits(null);
+        self.__translatorSw._setTestMaxQueue(null);
+        await self.__translatorSw._resetRateStateForTest();
+      })()`, swSessionId);
+
+      const senderStr = JSON.stringify({
+        frameId: 0,
+        url: fixtureUrl,
+        tab: { id: 1, url: fixtureUrl }
+      });
+
+      // 18a. Monkey-patch chrome.storage.session.set to throw
+      await cdp.evaluate(`
+        self.__origSessionSet = chrome.storage.session.set;
+        chrome.storage.session.set = () => { throw new Error('injected session storage write failure'); };
+      `, swSessionId);
+
+      const failRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'T18-fail', revision: 0, text: '存储失败' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, ${senderStr})
+      `, swSessionId, true);
+
+      assert.ok(failRes && failRes.error, 'Expected error on storage failure: ' + JSON.stringify(failRes));
+      assert.equal(failRes.error.code, 'RATE_STATE_UNAVAILABLE', `Expected RATE_STATE_UNAVAILABLE, got ${failRes.error.code}`);
+      assert.equal(failRes.error.retryable, false, 'RATE_STATE_UNAVAILABLE must not be retryable');
+      assert.ok(failRes.error.details?.scope, 'details must include scope');
+      assert.ok(failRes.error.details?.targetId, 'details must include targetId');
+
+      // 18b. Restore session storage set function
+      await cdp.evaluate(`
+        chrome.storage.session.set = self.__origSessionSet;
+        delete self.__origSessionSet;
+      `, swSessionId);
+
+      // Verify counter was not reset midway and subsequent calls succeed
+      const okRes1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'T18-ok1', revision: 0, text: '恢复后第一批' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, ${senderStr})
+      `, swSessionId, true);
+
+      assert.ok(okRes1 && !okRes1.error && Array.isArray(okRes1.results), 'Expected success after restoring storage: ' + JSON.stringify(okRes1));
+
+      const okRes2 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'T18-ok2', revision: 0, text: '恢复后第二批' }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, ${senderStr})
+      `, swSessionId, true);
+
+      assert.ok(okRes2 && !okRes2.error && Array.isArray(okRes2.results), 'Expected second call after restoring storage to succeed: ' + JSON.stringify(okRes2));
+
+      record('T18', 'RATE_STATE_UNAVAILABLE fail-closed & recovery', true, 'Fails closed on storage error, recovers when restored, counters intact');
+    } catch (e) {
+      try {
+        await cdp.evaluate(`
+          if (self.__origSessionSet) {
+            chrome.storage.session.set = self.__origSessionSet;
+            delete self.__origSessionSet;
+          }
+        `, swSessionId);
+      } catch {}
+      record('T18', 'RATE_STATE_UNAVAILABLE fail-closed & recovery', false, e.message);
+    } finally {
+      // Reset rate limiting test hooks to clean state
+      try {
+        await cdp.evaluate(`(async () => {
+          self.__translatorSw._setTestRateLimits(null);
+          self.__translatorSw._setTestRateWindowSeconds(null);
+          self.__translatorSw._setTestMaxQueue(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()`, swSessionId);
+      } catch {}
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -995,7 +1227,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 15;
+  return allPass && testResults.length >= 18;
 }
 
 async function main() {

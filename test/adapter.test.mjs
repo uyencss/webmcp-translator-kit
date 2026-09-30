@@ -48,6 +48,33 @@ test('Case 1: listModels ok, cache hit, invalidation on baseURL/apiKey change', 
     const res4 = await router.listModels();
     assert.ok(Array.isArray(res4.models));
     assert.equal(fake.getLog().length, 3, 'Expected new request after apiKey change');
+
+    // Review A2 finding: listModels after TTL (using injectable now) -> re-queries provider (cache miss)
+    let simulatedNow = 1000;
+    const ttlRouter = createDirect9Router({
+      baseURL,
+      apiKey: 'test-key-ttl',
+      model: 'ag/gemini-3.1-pro-low',
+      listModelsTtlMs: 300000,
+      now: () => simulatedNow,
+      ...fastOptions
+    });
+    fake.clearLog();
+    const ttlRes1 = await ttlRouter.listModels();
+    assert.ok(Array.isArray(ttlRes1.models));
+    assert.equal(fake.getLog().length, 1, 'Initial call should hit provider');
+
+    // Call before TTL -> cache hit
+    simulatedNow += 200000; // 200s < 300s TTL
+    const ttlRes2 = await ttlRouter.listModels();
+    assert.deepEqual(ttlRes2, ttlRes1);
+    assert.equal(fake.getLog().length, 1, 'Call before TTL should use cache');
+
+    // Call after TTL -> cache miss, re-fetch from provider
+    simulatedNow += 150000; // total 350s > 300s TTL
+    const ttlRes3 = await ttlRouter.listModels();
+    assert.ok(Array.isArray(ttlRes3.models));
+    assert.equal(fake.getLog().length, 2, 'Call after TTL should re-query provider');
   } finally {
     await fake.stop();
   }
@@ -383,6 +410,18 @@ test('Case 8: Model pinning & no fallback', async () => {
     assert.equal(log.length, 1);
     const sentPayload = JSON.parse(log[0].body);
     assert.equal(sentPayload.model, 'pinned-explicit-model-v2', 'Sent model must match requested model');
+
+    // Case 8 supplement (Review A2 finding): caller does not pass model -> adapter defaults to config.model
+    fake.clearLog();
+    const resDefaultModel = await router.translateBatch({ items });
+    assert.ok(!resDefaultModel.error);
+    assert.equal(resDefaultModel.requestedModel, 'default-config-model');
+    assert.equal(resDefaultModel.actualModel, 'default-config-model');
+    assert.equal(resDefaultModel.model, 'default-config-model');
+    const log2 = fake.getLog();
+    assert.equal(log2.length, 1);
+    const sent2 = JSON.parse(log2[0].body);
+    assert.equal(sent2.model, 'default-config-model', 'Sent model must match config.model when omitted');
   } finally {
     await fake.stop();
   }

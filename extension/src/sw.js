@@ -13,6 +13,15 @@ import {
   originToMatchPattern,
   calculateReconcileDiff
 } from './permissions.mjs';
+import {
+  countCodePoints,
+  createLimitState,
+  prune,
+  evaluate,
+  record,
+  resolveLimits,
+  DEFAULT_RATE_LIMITS
+} from './rate-limits.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
@@ -33,12 +42,18 @@ function _resetStorageAccessStateForTest() {
 // ============================================================================
 let _testMode = false;
 const _testPermissionOverrides = new Map();
+let _testRateLimits = null;
+let _testRateWindowSeconds = null;
+let _testMaxQueue = null;
 
 // TEST-ONLY: Activate test mode for automated test suites
 function _setTestMode(enabled) {
   _testMode = Boolean(enabled);
   if (!_testMode) {
     _testPermissionOverrides.clear();
+    _testRateLimits = null;
+    _testRateWindowSeconds = null;
+    _testMaxQueue = null;
   }
 }
 
@@ -49,6 +64,38 @@ function _setTestPermission(origin, granted) {
   if (norm) {
     _testPermissionOverrides.set(norm, Boolean(granted));
   }
+}
+
+function _setTestRateLimits(limits) {
+  _testRateLimits = limits;
+}
+
+function _setTestRateWindowSeconds(sec) {
+  _testRateWindowSeconds = typeof sec === 'number' ? sec : null;
+}
+
+function _setTestMaxQueue(n) {
+  _testMaxQueue = typeof n === 'number' ? n : null;
+}
+
+async function _resetRateStateForTest() {
+  for (const queue of tabQueues.values()) {
+    for (const entry of queue) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.resolve(createTypedError('ABORTED', 'Rate state reset for test', false, { reason: 'Test reset' }));
+    }
+  }
+  tabQueues.clear();
+  tabEpochs.clear();
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      const all = await chrome.storage.session.get(null);
+      const toRemove = Object.keys(all).filter((k) => k.startsWith('rate:'));
+      if (toRemove.length > 0) {
+        await chrome.storage.session.remove(toRemove);
+      }
+    }
+  } catch {}
 }
 
 /**
@@ -159,10 +206,250 @@ async function getStoredTabOverrides() {
   return res.tab_overrides || {};
 }
 
-// Clean tab overrides when tab closes
+// Rate limit storage helpers (session storage)
+async function getRateState(scope, targetId) {
+  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
+    throw createTypedError('RATE_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false, {
+      scope,
+      targetId: String(targetId),
+      reason: 'chrome.storage.session is undefined'
+    });
+  }
+  const key = `rate:${scope}:${targetId}`;
+  try {
+    const res = await chrome.storage.session.get([key]);
+    return res[key] || createLimitState();
+  } catch (err) {
+    throw createTypedError('RATE_STATE_UNAVAILABLE', 'Failed to read rate state from storage', false, {
+      scope,
+      targetId: String(targetId),
+      reason: err?.message || String(err)
+    });
+  }
+}
+
+async function setRateStates(tabId, tabState, siteOrigin, siteState) {
+  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
+    throw createTypedError('RATE_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false, {
+      scope: 'tab',
+      targetId: String(tabId),
+      reason: 'chrome.storage.session is undefined'
+    });
+  }
+  const tabKey = `rate:tab:${tabId}`;
+  const siteKey = `rate:site:${siteOrigin}`;
+  try {
+    await chrome.storage.session.set({
+      [tabKey]: tabState,
+      [siteKey]: siteState
+    });
+  } catch (err) {
+    throw createTypedError('RATE_STATE_UNAVAILABLE', 'Failed to write rate state to storage', false, {
+      scope: 'tab',
+      targetId: String(tabId),
+      reason: err?.message || String(err)
+    });
+  }
+}
+
+// Admission Mutex & In-memory Bounded Queue
+let admissionChain = Promise.resolve();
+
+function runInAdmissionChain(fn) {
+  const next = admissionChain.then(fn, fn);
+  admissionChain = next.catch(() => {});
+  return next;
+}
+
+const DEFAULT_MAX_QUEUE_PER_TAB = 8;
+const tabQueues = new Map(); // tabId -> Array of QueueEntry
+const tabEpochs = new Map(); // tabId -> current epoch number
+
+function getMaxQueue() {
+  return (_testMode && typeof _testMaxQueue === 'number') ? _testMaxQueue : DEFAULT_MAX_QUEUE_PER_TAB;
+}
+
+function removeEntryFromQueue(entry) {
+  const queue = tabQueues.get(entry.tabId);
+  if (!queue) return;
+  const idx = queue.indexOf(entry);
+  if (idx !== -1) {
+    queue.splice(idx, 1);
+  }
+  if (queue.length === 0) {
+    tabQueues.delete(entry.tabId);
+  }
+}
+
+async function checkAdmission(tabId, origin, cost) {
+  return runInAdmissionChain(async () => {
+    const tabState = await getRateState('tab', tabId);
+    const siteState = await getRateState('site', origin);
+
+    const settings = await getStoredSettings();
+    let limits = resolveLimits(settings.rateLimits);
+    if (_testMode && _testRateLimits) {
+      limits = resolveLimits(_testRateLimits);
+    }
+    if (_testMode && typeof _testRateWindowSeconds === 'number' && _testRateWindowSeconds > 0) {
+      limits.windowSeconds = _testRateWindowSeconds;
+    }
+    limits.tab.windowSeconds = limits.windowSeconds;
+    limits.site.windowSeconds = limits.windowSeconds;
+
+    const now = Date.now();
+    prune(tabState, now, limits.windowSeconds);
+    prune(siteState, now, limits.windowSeconds);
+
+    const tabEval = evaluate(tabState, cost, limits.tab, now, limits.windowSeconds);
+    const siteEval = evaluate(siteState, cost, limits.site, now, limits.windowSeconds);
+
+    if (tabEval.allowed && siteEval.allowed) {
+      record(tabState, cost, now);
+      record(siteState, cost, now);
+      await setRateStates(tabId, tabState, origin, siteState);
+      return { allowed: true };
+    }
+
+    let scope, limit, used, metric, retryAfterMs;
+    if (!tabEval.allowed && (!siteEval.allowed ? tabEval.retryAfterMs >= siteEval.retryAfterMs : true)) {
+      scope = 'tab';
+      metric = tabEval.exceeded === 'codePoints' ? 'code_points' : 'batches';
+      limit = metric === 'batches' ? limits.tab.maxBatches : limits.tab.maxSourceCodePoints;
+      used = metric === 'batches' ? tabEval.used.batches : tabEval.used.codePoints;
+      retryAfterMs = tabEval.retryAfterMs;
+    } else {
+      scope = 'site';
+      metric = siteEval.exceeded === 'codePoints' ? 'code_points' : 'batches';
+      limit = metric === 'batches' ? limits.site.maxBatches : limits.site.maxSourceCodePoints;
+      used = metric === 'batches' ? siteEval.used.batches : siteEval.used.codePoints;
+      retryAfterMs = siteEval.retryAfterMs;
+    }
+
+    const targetId = scope === 'tab' ? String(tabId) : origin;
+    const rateLimitedError = createTypedError(
+      'RATE_LIMITED',
+      `Local 60s sliding window quota exceeded for ${scope}`,
+      false,
+      { scope, targetId, limit, used, retryAfterMs, metric }
+    );
+
+    return {
+      allowed: false,
+      rateLimitedError,
+      retryAfterMs,
+      scope
+    };
+  });
+}
+
+function scheduleQueueEntry(entry, delayMs) {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+  }
+  entry.timer = setTimeout(async () => {
+    entry.timer = null;
+    const queue = tabQueues.get(entry.tabId);
+    if (!queue || !queue.includes(entry)) {
+      return;
+    }
+
+    try {
+      await ensureStorageAccess();
+      const sites = await getStoredSites();
+      const tabOverrides = await getStoredTabOverrides();
+      const siteEnabled = Boolean(sites[entry.origin]);
+      const tabOverride = tabOverrides[String(entry.tabId)] || null;
+      const effective = getEffectivePolicy({ tabOverride, siteEnabled });
+
+      if (effective !== 'on') {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'OPT_IN_REQUIRED',
+          'Translation is disabled (tab explicit OFF, site OFF, or default OFF)',
+          false,
+          {
+            tabId: entry.tabId,
+            origin: entry.origin,
+            scope: tabOverride ? 'tab' : 'site',
+            effectiveConsent: 'off'
+          }
+        ));
+        return;
+      }
+
+      const hasPerm = await permissionContains(entry.origin);
+      if (!hasPerm) {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'PERMISSION_REQUIRED',
+          'Host permission not granted for site origin',
+          false,
+          {
+            origin: entry.origin,
+            permissionType: 'host'
+          }
+        ));
+        return;
+      }
+
+      // Re-check epoch: if tab epoch changed during queue wait, abort with ABORTED
+      if (entry.epoch !== undefined && tabEpochs.has(entry.tabId) && entry.epoch !== tabEpochs.get(entry.tabId)) {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'ABORTED',
+          'Pending translation cancelled by new epoch',
+          false,
+          { reason: 'Epoch changed during queue wait' }
+        ));
+        return;
+      }
+
+      entry.attempts++;
+      const admission = await checkAdmission(entry.tabId, entry.origin, entry.cost);
+      if (admission.allowed) {
+        removeEntryFromQueue(entry);
+        const result = await translateBatch(entry.payload || {});
+        entry.resolve(result);
+        return;
+      }
+
+      if (entry.attempts >= 3) {
+        removeEntryFromQueue(entry);
+        entry.resolve(admission.rateLimitedError);
+        return;
+      }
+
+      scheduleQueueEntry(entry, admission.retryAfterMs);
+    } catch (err) {
+      removeEntryFromQueue(entry);
+      if (err && err.error) {
+        entry.resolve(err);
+      } else {
+        entry.resolve(createTypedError(
+          'RATE_STATE_UNAVAILABLE',
+          err?.message || 'Error evaluating queue admission',
+          false,
+          { scope: 'tab', targetId: String(entry.tabId), reason: err?.message || 'Storage error' }
+        ));
+      }
+    }
+  }, Math.max(10, delayMs));
+}
+
+// Clean tab overrides and rate queues/state when tab closes
 if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'function') {
   chrome.tabs.onRemoved.addListener(async (tabId) => {
     try {
+      tabEpochs.delete(tabId);
+      const queue = tabQueues.get(tabId);
+      if (queue && queue.length > 0) {
+        for (const entry of queue) {
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'Tab closed' }));
+        }
+        tabQueues.delete(tabId);
+      }
       if (!chrome.storage || !chrome.storage.session) return;
       const res = await chrome.storage.session.get(['tab_overrides']);
       const overrides = res.tab_overrides || {};
@@ -171,6 +458,7 @@ if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typ
         delete overrides[key];
         await chrome.storage.session.set({ tab_overrides: overrides });
       }
+      await chrome.storage.session.remove([`rate:tab:${tabId}`]);
     } catch {
       // Ignore cleanup error
     }
@@ -661,6 +949,36 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         return { ok: true };
       }
 
+      case 'CANCEL_PENDING': {
+        const tabId = (sender && sender.tab && typeof sender.tab.id === 'number')
+          ? sender.tab.id
+          : (typeof message.tabId === 'number' ? message.tabId : null);
+
+        if (!tabId) {
+          return { ok: true, cancelled: 0 };
+        }
+
+        const nextEpoch = typeof message.epoch === 'number' ? message.epoch : ((tabEpochs.get(tabId) || 0) + 1);
+        tabEpochs.set(tabId, nextEpoch);
+
+        const queue = tabQueues.get(tabId);
+        let cancelledCount = 0;
+        if (queue && queue.length > 0) {
+          cancelledCount = queue.length;
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Pending translation cancelled by new epoch',
+              false,
+              { reason: 'Pending translation cancelled by new epoch' }
+            ));
+          }
+          tabQueues.delete(tabId);
+        }
+        return { ok: true, cancelled: cancelledCount };
+      }
+
       case 'TRANSLATE_BATCH': {
         // 1. Fail-closed storage access verification
         await ensureStorageAccess();
@@ -729,7 +1047,52 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // 5. Dispatch batch (payload items only; metadata completely ignored)
+        // 5. Calculate cost (Unicode code points, NOT UTF-16 length)
+        const items = message.payload?.items || [];
+        const totalCodePoints = items.reduce((sum, it) => sum + countCodePoints(it?.text), 0);
+        const cost = { batches: 1, codePoints: totalCodePoints };
+
+        // 6. Admission check inside mutex (throws typed RATE_STATE_UNAVAILABLE on storage failure)
+        const admission = await checkAdmission(sender.tab.id, origin, cost);
+
+        if (!admission.allowed) {
+          const tabId = sender.tab.id;
+          let queue = tabQueues.get(tabId);
+          if (!queue) {
+            queue = [];
+            tabQueues.set(tabId, queue);
+          }
+
+          if (queue.length >= getMaxQueue()) {
+            return admission.rateLimitedError;
+          }
+
+          const reqEpoch = typeof message.epoch === 'number' ? message.epoch : (tabEpochs.get(sender.tab.id) || 0);
+          if (!tabEpochs.has(sender.tab.id)) {
+            tabEpochs.set(sender.tab.id, reqEpoch);
+          }
+
+          // Enqueue and defer response
+          return new Promise((resolve, reject) => {
+            const entry = {
+              id: 'req_' + Math.random().toString(36).slice(2),
+              tabId,
+              origin,
+              epoch: reqEpoch,
+              cost,
+              payload: message.payload,
+              sender,
+              resolve,
+              reject,
+              timer: null,
+              attempts: 0
+            };
+            queue.push(entry);
+            scheduleQueueEntry(entry, admission.retryAfterMs);
+          });
+        }
+
+        // 7. Dispatch batch (payload items only; metadata completely ignored)
         return await translateBatch(message.payload || {});
       }
 
@@ -776,6 +1139,10 @@ self.__translatorSw = {
   _resetStorageAccessStateForTest,
   _setTestMode,
   _setTestPermission,
+  _setTestRateLimits,
+  _setTestRateWindowSeconds,
+  _setTestMaxQueue,
+  _resetRateStateForTest,
   reconcilePermissions,
   permissionContains,
   translateBatch,

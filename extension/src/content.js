@@ -269,11 +269,12 @@
   }
 
   // Send chunk wrapper
-  function sendChunk(items, settings = {}) {
+  function sendChunk(items, settings = {}, chunkEpoch = epoch) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
         {
           action: 'TRANSLATE_BATCH',
+          epoch: chunkEpoch,
           payload: {
             items,
             sourceLanguage: settings.sourceLanguage || 'auto',
@@ -307,6 +308,8 @@
       'PERMISSION_REQUIRED',
       'KEY_ACCESS_UNAVAILABLE',
       'CONSENT_STATE_UNAVAILABLE',
+      'RATE_STATE_UNAVAILABLE',
+      'RATE_LIMITED',
       'MISSING_CONFIG',
       'CONSENT_DENIED',
       'INVALID_SCHEMA',
@@ -322,12 +325,16 @@
     }
 
     // 1. Initial sendChunk
-    let resp = await sendChunk(items, settings);
+    let resp = await sendChunk(items, settings, targetEpoch);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
     }
 
     if (resp && resp.error && isNonRetryable(resp.error)) {
+      if (resp.error.code === 'RATE_LIMITED') {
+        const retrySec = Math.ceil((resp.error.details?.retryAfterMs || 0) / 1000);
+        console.warn(`[WebMCP Translator] Quota exceeded (${resp.error.details?.scope || 'tab'}): retry after ${retrySec}s`);
+      }
       return { applied: 0, failed: items.length, error: resp.error, fatal: true };
     }
 
@@ -342,7 +349,7 @@
       return { cancelled: true, applied: 0, failed: 0 };
     }
 
-    resp = await sendChunk(items, settings);
+    resp = await sendChunk(items, settings, targetEpoch);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
     }
@@ -391,6 +398,13 @@
     const currentEpoch = epoch;
     const startTime = Date.now();
     const targetModel = settings.model || 'ag/gemini-3.1-pro-low';
+
+    // Cancel pending queue in SW for this tab before starting new epoch (fire-and-forget)
+    try {
+      chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch: currentEpoch }, () => {
+        if (chrome.runtime.lastError) { /* ignore */ }
+      });
+    } catch {}
 
     try {
       const items = collect(document.body, false);
