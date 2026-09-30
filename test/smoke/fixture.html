@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Smoke Test Fixture</title>
+  <style>
+    .hidden-block { display: none; }
+    #content { padding: 20px; font-family: sans-serif; }
+    button { padding: 8px 16px; margin: 10px 0; cursor: pointer; }
+    #spacer { height: 1800px; }
+    #below-fold { padding: 20px; font-family: sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="content">
+    <h1 id="title">欢迎使用翻译系统</h1>
+    <p id="desc">这是一个针对 Chrome 扩展的集成验证页面。</p>
+
+    <!-- F1: Button with SVG icon and click listener -->
+    <button id="fav" type="button">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <circle cx="6" cy="6" r="5" fill="gray"/>
+      </svg>
+      <span>收藏</span>
+    </button>
+
+    <!-- Skip List elements -->
+    <div id="skip-area">
+      <code>const codeBlock = '保留代码';</code>
+      <pre>function preFormatted() { return '保持原样'; }</pre>
+      <input id="input-skip" type="text" value="输入框内容" />
+      <textarea id="textarea-skip">多行文本输入</textarea>
+      <div id="hidden-skip" class="hidden-block">隐藏内容不可见</div>
+    </div>
+
+    <!-- Extra items to ensure >= 24 text nodes for batch recovery tests -->
+    <div id="fixture-items">
+      <p class="fi">测试文本项 01</p>
+      <p class="fi">测试文本项 02</p>
+      <p class="fi">测试文本项 03</p>
+      <p class="fi">测试文本项 04</p>
+      <p class="fi">测试文本项 05</p>
+      <p class="fi">测试文本项 06</p>
+      <p class="fi">测试文本项 07</p>
+      <p class="fi">测试文本项 08</p>
+      <p class="fi">测试文本项 09</p>
+      <p class="fi">测试文本项 10</p>
+      <p class="fi">测试文本项 11</p>
+      <p class="fi">测试文本项 12</p>
+      <p class="fi">测试文本项 13</p>
+      <p class="fi">测试文本项 14</p>
+      <p class="fi">测试文本项 15</p>
+      <p class="fi">测试文本项 16</p>
+      <p class="fi">测试文本项 17</p>
+      <p class="fi">测试文本项 18</p>
+      <p class="fi">测试文本项 19</p>
+      <p class="fi">测试文本项 20</p>
+    </div>
+  </div>
+
+  <!-- Tall spacer (>= 1600px) and below-the-fold content -->
+  <div id="spacer"></div>
+  <div id="below-fold">
+    <p id="bf-p1">折叠线下段落一</p>
+    <p id="bf-p2">折叠线下段落二</p>
+  </div>
+
+  <script>
+    window.__clicks = 0;
+    document.getElementById('fav').addEventListener('click', function () {
+      window.__clicks++;
+    });
+    window.__fixture = {
+      getClicks: function () { return window.__clicks; },
+      getFavText: function () { return document.querySelector('#fav span').textContent; },
+      getCodeText: function () { return document.querySelector('code').textContent; },
+      getPreText: function () { return document.querySelector('pre').textContent; },
+      getInputValue: function () { return document.getElementById('input-skip').value; },
+      getTextareaValue: function () { return document.getElementById('textarea-skip').value; },
+      getHiddenText: function () { return document.getElementById('hidden-skip').textContent; },
+      getTitleText: function () { return document.getElementById('title').textContent; },
+      getDescText: function () { return document.getElementById('desc').textContent; },
+      getBfP1Text: function () { return document.getElementById('bf-p1').textContent; },
+      getBfP2Text: function () { return document.getElementById('bf-p2').textContent; }
+    };
+  </script>
+</body>
+</html>

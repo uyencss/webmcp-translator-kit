@@ -9,7 +9,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test test/",
+    "test": "node --test 'test/**/*.test.mjs'",
+    "test:smoke": "node scripts/build.mjs && node test/smoke/run.mjs",
+    "test:smoke:real": "node scripts/build.mjs && node test/smoke/real.mjs",
     "check:contract": "node contract/check.mjs",
     "check:closure": "node scripts/check-closure.mjs"
   }
