@@ -1,4 +1,4 @@
-// WebMCP Translator Kit — Content Script (DOM Scanner & Patcher)
+// WebMCP Translator Kit — Content Script (DOM Scanner, Scroll-Follow Engine, Floating Widget)
 // Top Frame only, ISOLATED World
 
 (function () {
@@ -10,24 +10,37 @@
     SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, CODE: 1, PRE: 1,
     TEXTAREA: 1, INPUT: 1, SELECT: 1, OPTION: 1
   };
+  const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, article, td, blockquote';
   const PATCH_MIN_INTERVAL_MS = 200;
   const PATCH_GROUP_SIZE = 64;
   const MAX_BATCH_ITEMS = 64;
   const MAX_BATCH_BYTES = 24576; // 24 KiB
-  const throttle = { maxConcurrentRequests: 2 };
+  const MAX_IN_FLIGHT_BATCHES = 2; // ≤2 batch in-flight concurrency limit
+  const SCROLL_DEBOUNCE_MS = 250;
+  const throttle = {
+    maxConcurrentRequests: 2,
+    debounceMinMs: 200,
+    debounceMaxMs: 300
+  };
 
   const documentId = 'doc_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
   let epoch = 0;
   let idCounter = 1;
+  let currentMode = 'full'; // 'full' | 'scroll-follow'
 
   const nodeToRec = new WeakMap();
   const idToRec = new Map();
   const restoreKept = new Map();
 
+  // Pending set tracking active in-flight items by key: `${id}:${revision}:${epoch}`
+  const pendingSet = new Set();
+
   let isTranslating = false;
   let activeRunToken = 0;
   let lastTranslateStatus = {
     state: 'idle',
+    mode: 'full',
+    watching: false,
     totalCollected: 0,
     totalApplied: 0,
     totalFailed: 0,
@@ -37,6 +50,8 @@
     bytesTotal: 0,
     error: null,
     model: null,
+    actualModel: null,
+    fallbackIndex: 0,
     elapsedMs: 0
   };
 
@@ -64,6 +79,7 @@
 
     let cur = parent;
     while (cur && cur.nodeType === 1) {
+      if (cur.id === '__wmt-widget-host' || (cur.hasAttribute && cur.hasAttribute('data-wmt-ignore'))) return false;
       if (SKIP_TAGS[cur.tagName]) return false;
       if (cur.isContentEditable) return false;
       if (cur.tagName === 'INPUT' || cur.tagName === 'TEXTAREA') return false;
@@ -116,6 +132,9 @@
 
   function collect(root, filterViewport = false) {
     root = root || document.body || document.documentElement;
+    if (root.id === '__wmt-widget-host' || (root.hasAttribute && root.hasAttribute('data-wmt-ignore'))) {
+      return [];
+    }
     const out = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
     let tn;
@@ -208,7 +227,28 @@
     return { applied, skipped };
   }
 
+  // Restore DOM nodes: epoch++ + CANCEL_PENDING + stop active sessions + clear pending
   function restore() {
+    // 1. Advance epoch to immediately drop in-flight / late-arriving responses
+    epoch++;
+    const cancelEpoch = epoch;
+
+    // 2. Fire-and-forget CANCEL_PENDING to Service Worker
+    try {
+      chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch: cancelEpoch }, () => {
+        if (chrome.runtime.lastError) { /* ignore */ }
+      });
+    } catch {}
+
+    // 3. Stop both scroll-follow session and full translation runs
+    stopScrollFollowSession(false);
+    isTranslating = false;
+    activeRunToken++;
+
+    // 4. Clear pending tracking set
+    pendingSet.clear();
+
+    // 5. Restore original text nodes
     let restored = 0;
     const skipped = [];
     const seen = new Set();
@@ -238,6 +278,9 @@
 
     idToRec.forEach(handle);
     restoreKept.forEach(handle);
+
+    lastTranslateStatus.state = 'restored';
+    lastTranslateStatus.totalRestored = restored;
     return { restored, skipped };
   }
 
@@ -392,6 +435,10 @@
     }
 
     if (resp && Array.isArray(resp.results)) {
+      if (resp.actualModel) {
+        lastTranslateStatus.actualModel = resp.actualModel;
+        lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+      }
       const patchResult = await applyBatchThrottled(resp.results, targetEpoch);
       return { applied: patchResult.applied, failed: 0 };
     }
@@ -419,6 +466,10 @@
     }
 
     if (resp && Array.isArray(resp.results)) {
+      if (resp.actualModel) {
+        lastTranslateStatus.actualModel = resp.actualModel;
+        lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+      }
       const patchResult = await applyBatchThrottled(resp.results, targetEpoch);
       return { applied: patchResult.applied, failed: 0 };
     }
@@ -454,10 +505,17 @@
     };
   }
 
-  // Full page translate execution
+  // ============================================================================
+  // Full Page Translate Execution
+  // ============================================================================
   async function executeTranslation(settings = {}) {
     if (isTranslating && !settings.force) return { alreadyRunning: true };
+
+    // Stop scroll-follow session before starting full page translation
+    stopScrollFollowSession(true);
+
     isTranslating = true;
+    currentMode = 'full';
     const runToken = ++activeRunToken;
     const finishRun = () => { if (activeRunToken === runToken) isTranslating = false; };
     epoch++;
@@ -479,6 +537,8 @@
 
       lastTranslateStatus = {
         state: 'translating',
+        mode: 'full',
+        watching: false,
         totalCollected: items.length,
         totalApplied: 0,
         totalFailed: 0,
@@ -488,6 +548,8 @@
         bytesTotal,
         error: null,
         model: targetModel,
+        actualModel: targetModel,
+        fallbackIndex: 0,
         elapsedMs: 0
       };
 
@@ -565,7 +627,7 @@
       lastTranslateStatus.totalFailed = totalFailed;
       lastTranslateStatus.model = targetModel;
 
-      // Nếu có lỗi fatal (như DROPPED_ON_RESTART hoặc ABORTED) hoặc toàn bộ chunk thất bại -> trả về lỗi
+      // Handle fatal or fully failed run
       if ((totalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'Tất cả các chunk đều thất bại' };
@@ -606,19 +668,944 @@
     }
   }
 
-  // Runtime message handler for Popup & Tests
+  // ============================================================================
+  // Scroll-Follow Engine
+  // ============================================================================
+  const scrollSession = {
+    active: false,
+    watching: false,
+    epoch: 0,
+    inFlight: 0,
+    mainObserver: null,
+    secondaryObservers: [],
+    mutationObserver: null,
+    scrollListener: null,
+    readyBlocks: new Set(),
+    debounceTimer: null,
+    retryTimer: null,
+    settings: {}
+  };
+
+  function scheduleScrollFlush() {
+    if (!scrollSession.active) return;
+    if (scrollSession.debounceTimer) return;
+    const delay = throttle.debounceMinMs || SCROLL_DEBOUNCE_MS;
+    scrollSession.debounceTimer = setTimeout(() => {
+      scrollSession.debounceTimer = null;
+      flushReadyBlocks();
+    }, delay);
+  }
+
+  async function flushReadyBlocks() {
+    if (!scrollSession.active) return;
+    // Dispatch ≤2 batch in-flight; batch 3 waits in readySet
+    if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
+
+    const H = window.innerHeight || 800;
+    const topBound = -2 * H;
+    const bottomBound = 3 * H;
+
+    const candidateRecs = [];
+    const seenRecIds = new Set();
+
+    for (const block of scrollSession.readyBlocks) {
+      if (!block || !block.isConnected) {
+        scrollSession.readyBlocks.delete(block);
+        continue;
+      }
+      let rect;
+      try {
+        rect = block.getBoundingClientRect();
+      } catch {
+        continue;
+      }
+      // Check block within [-2H, 3H] viewport bounds
+      if (rect.bottom < topBound || rect.top > bottomBound) {
+        continue;
+      }
+
+      const blockCenterY = rect.top + rect.height / 2;
+      const distToViewport = Math.abs(blockCenterY - H / 2);
+
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      let tn;
+      while ((tn = walker.nextNode())) {
+        if (!eligibleTextNode(tn)) continue;
+        const rec = ensureRec(tn);
+        refreshIfExternallyModified(rec);
+        if (rec.translated !== null && tn.nodeValue === rec.translated) continue;
+
+        // Skip pending items by (id, revision, epoch)
+        const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+        if (pendingSet.has(pendingKey)) continue;
+
+        if (!seenRecIds.has(rec.id)) {
+          seenRecIds.add(rec.id);
+          candidateRecs.push({
+            id: rec.id,
+            text: tn.nodeValue,
+            revision: rec.revision,
+            documentId,
+            dist: distToViewport
+          });
+        }
+      }
+    }
+
+    if (candidateRecs.length === 0) {
+      if (scrollSession.inFlight === 0 && lastTranslateStatus.state === 'translating') {
+        lastTranslateStatus.state = 'done';
+      }
+      return;
+    }
+
+    // Sort by distance to viewport center
+    candidateRecs.sort((a, b) => a.dist - b.dist);
+
+    const items = candidateRecs.map((c) => ({
+      id: c.id,
+      text: c.text,
+      revision: c.revision,
+      documentId: c.documentId
+    }));
+
+    const chunks = chunkItems(items);
+
+    while (scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES && chunks.length > 0) {
+      const chunk = chunks.shift();
+      if (!chunk || chunk.length === 0) break;
+
+      const chunkEpoch = epoch;
+      const batchPendingKeys = [];
+      for (const it of chunk) {
+        const key = `${it.id}:${it.revision}:${chunkEpoch}`;
+        pendingSet.add(key);
+        batchPendingKeys.push(key);
+      }
+
+      scrollSession.inFlight++;
+      dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch);
+    }
+  }
+
+  async function dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch) {
+    try {
+      const res = await translateChunkWithRecovery(
+        chunk,
+        {
+          sourceLanguage: scrollSession.settings.sourceLanguage || 'auto',
+          targetLanguage: scrollSession.settings.targetLanguage || 'vi',
+          model: scrollSession.settings.model || 'ag/gemini-3.1-pro-low',
+          configRevision: scrollSession.settings.configRevision
+        },
+        0,
+        chunkEpoch
+      );
+
+      if (epoch !== chunkEpoch || !scrollSession.active) {
+        return;
+      }
+
+      if (res.applied) {
+        lastTranslateStatus.totalApplied += res.applied;
+      }
+      if (res.failed) {
+        lastTranslateStatus.totalFailed += res.failed;
+      }
+
+      // Handle RATE_LIMITED with single timer + jitter (no spin)
+      if (res.error && res.error.code === 'RATE_LIMITED') {
+        const retryAfterMs = (res.error.details?.retryAfterMs || 2000) + Math.floor(Math.random() * 100) + 50;
+        if (!scrollSession.retryTimer) {
+          scrollSession.retryTimer = setTimeout(() => {
+            scrollSession.retryTimer = null;
+            flushReadyBlocks();
+          }, retryAfterMs);
+        }
+      } else if (res.error && res.error.code === 'DROPPED_ON_RESTART') {
+        // Terminal for this batch, do not auto-replay; nodes remain unpatched and can be re-triggered
+      }
+    } catch (err) {
+      // Non-fatal error during scroll dispatch
+    } finally {
+      // Clear pending set in finally
+      for (const k of batchPendingKeys) {
+        pendingSet.delete(k);
+      }
+      scrollSession.inFlight = Math.max(0, scrollSession.inFlight - 1);
+      if (scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+        scheduleScrollFlush();
+      }
+    }
+  }
+
+  function startScrollFollowSession(settings = {}) {
+    // Stop any running full translation
+    isTranslating = false;
+    activeRunToken++;
+
+    stopScrollFollowSession(false);
+
+    currentMode = 'scroll-follow';
+    scrollSession.active = true;
+    scrollSession.watching = true;
+    scrollSession.settings = settings || {};
+    scrollSession.epoch = epoch;
+
+    lastTranslateStatus.mode = 'scroll-follow';
+    lastTranslateStatus.watching = true;
+    lastTranslateStatus.state = 'translating';
+    lastTranslateStatus.model = settings.model || 'ag/gemini-3.1-pro-low';
+
+    // 1 IntersectionObserver for block containers with root:null, rootMargin: '200% 0px 200% 0px', threshold: 0
+    scrollSession.mainObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          scrollSession.readyBlocks.add(entry.target);
+        } else {
+          scrollSession.readyBlocks.delete(entry.target);
+        }
+      }
+      scheduleScrollFlush();
+    }, {
+      root: null,
+      rootMargin: '200% 0px 200% 0px',
+      threshold: 0
+    });
+
+    // Lazily observe candidate block containers
+    const blocks = document.querySelectorAll(BLOCK_SELECTOR);
+    for (const b of blocks) {
+      if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
+      scrollSession.mainObserver.observe(b);
+    }
+
+    // Detect nested scroll roots: maximum 2 secondary roots
+    const candidateRoots = document.querySelectorAll('div, section, main, article');
+    let secondaryRootsCount = 0;
+    for (const el of candidateRoots) {
+      if (secondaryRootsCount >= 2) break;
+      if (el.closest && (el.closest('#__wmt-widget-host') || el.closest('[data-wmt-ignore]'))) continue;
+      try {
+        const cs = window.getComputedStyle(el);
+        if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 50) {
+          const secObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) {
+                scrollSession.readyBlocks.add(entry.target);
+              } else {
+                scrollSession.readyBlocks.delete(entry.target);
+              }
+            }
+            scheduleScrollFlush();
+          }, {
+            root: el,
+            rootMargin: '200% 0px 200% 0px',
+            threshold: 0
+          });
+          const childBlocks = el.querySelectorAll(BLOCK_SELECTOR);
+          for (const cb of childBlocks) {
+            secObserver.observe(cb);
+          }
+          scrollSession.secondaryObservers.push(secObserver);
+          secondaryRootsCount++;
+        }
+      } catch {}
+    }
+
+    // Fallback scroll listener for rapid scroll updates
+    scrollSession.scrollListener = () => scheduleScrollFlush();
+    window.addEventListener('scroll', scrollSession.scrollListener, { passive: true });
+
+    // MutationObserver to gather newly added blocks (ignoring detached) + debounce
+    scrollSession.mutationObserver = new MutationObserver((mutations) => {
+      let hasNew = false;
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1) {
+            if (node.id === '__wmt-widget-host' || (node.hasAttribute && node.hasAttribute('data-wmt-ignore'))) continue;
+            if (node.matches && node.matches(BLOCK_SELECTOR)) {
+              scrollSession.mainObserver?.observe(node);
+              hasNew = true;
+            }
+            if (node.querySelectorAll) {
+              const sub = node.querySelectorAll(BLOCK_SELECTOR);
+              for (const s of sub) {
+                scrollSession.mainObserver?.observe(s);
+                hasNew = true;
+              }
+            }
+          }
+        }
+      }
+      if (hasNew) scheduleScrollFlush();
+    });
+
+    scrollSession.mutationObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+
+    scheduleScrollFlush();
+  }
+
+  function stopScrollFollowSession(updateStatus = true) {
+    if (scrollSession.mainObserver) {
+      scrollSession.mainObserver.disconnect();
+      scrollSession.mainObserver = null;
+    }
+    for (const obs of scrollSession.secondaryObservers) {
+      obs.disconnect();
+    }
+    scrollSession.secondaryObservers = [];
+    if (scrollSession.mutationObserver) {
+      scrollSession.mutationObserver.disconnect();
+      scrollSession.mutationObserver = null;
+    }
+    if (scrollSession.scrollListener) {
+      window.removeEventListener('scroll', scrollSession.scrollListener);
+      scrollSession.scrollListener = null;
+    }
+    if (scrollSession.debounceTimer) {
+      clearTimeout(scrollSession.debounceTimer);
+      scrollSession.debounceTimer = null;
+    }
+    if (scrollSession.retryTimer) {
+      clearTimeout(scrollSession.retryTimer);
+      scrollSession.retryTimer = null;
+    }
+    scrollSession.readyBlocks.clear();
+    scrollSession.active = false;
+    scrollSession.watching = false;
+    scrollSession.inFlight = 0;
+
+    if (updateStatus) {
+      lastTranslateStatus.watching = false;
+    }
+  }
+
+  // ============================================================================
+  // Floating Widget (Shadow DOM in content.js)
+  // ============================================================================
+  function initFloatingWidget() {
+    // Only inject on HTTP(S) pages
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+    if (document.getElementById('__wmt-widget-host')) return;
+
+    const host = document.createElement('div');
+    host.id = '__wmt-widget-host';
+    host.setAttribute('data-wmt-ignore', 'true');
+    host.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;line-height:normal;';
+
+    // Attach closed Shadow DOM
+    const shadow = host.attachShadow({ mode: 'closed' });
+
+    const style = document.createElement('style');
+    style.textContent = `
+      :host {
+        all: initial;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-size: 13px;
+        color: #1f2937;
+      }
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      .wmt-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: #2563eb;
+        color: #ffffff;
+        border: none;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+        cursor: grab;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        touch-action: none;
+        user-select: none;
+        transition: transform 0.15s ease, background-color 0.2s;
+        outline: none;
+      }
+      .wmt-btn:hover {
+        background: #1d4ed8;
+      }
+      .wmt-btn:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 2px;
+      }
+      .wmt-btn:active {
+        cursor: grabbing;
+      }
+      .wmt-badge {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 2px solid #ffffff;
+        background: #9ca3af;
+      }
+      .wmt-badge.active {
+        background: #10b981;
+      }
+      .wmt-panel {
+        position: absolute;
+        bottom: 54px;
+        right: 0;
+        width: 280px;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        border: 1px solid #e5e7eb;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        animation: wmtFadeIn 0.15s ease-out;
+      }
+      @keyframes wmtFadeIn {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .wmt-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #f3f4f6;
+        padding-bottom: 8px;
+      }
+      .wmt-title {
+        font-weight: 600;
+        font-size: 14px;
+        color: #111827;
+      }
+      .wmt-close {
+        background: transparent;
+        border: none;
+        color: #9ca3af;
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 2px 4px;
+        border-radius: 4px;
+      }
+      .wmt-close:hover {
+        color: #374151;
+        background: #f3f4f6;
+      }
+      .wmt-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .wmt-status-tag {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        background: #f3f4f6;
+        color: #4b5563;
+      }
+      .wmt-status-tag.on {
+        background: #d1fae5;
+        color: #065f46;
+      }
+      .wmt-switch-btn {
+        width: 100%;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        color: #374151;
+        transition: background 0.15s;
+      }
+      .wmt-switch-btn:hover {
+        background: #f9fafb;
+      }
+      .wmt-switch-btn.active {
+        background: #ef4444;
+        color: #ffffff;
+        border-color: #ef4444;
+      }
+      .wmt-mode-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        background: #f9fafb;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid #f3f4f6;
+      }
+      .wmt-mode-label {
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .wmt-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .wmt-action-btn {
+        flex: 1;
+        padding: 7px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        border: none;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .wmt-btn-primary {
+        background: #2563eb;
+        color: #ffffff;
+      }
+      .wmt-btn-primary:hover {
+        background: #1d4ed8;
+      }
+      .wmt-btn-secondary {
+        background: #f3f4f6;
+        color: #374151;
+        border: 1px solid #e5e7eb;
+      }
+      .wmt-btn-secondary:hover {
+        background: #e5e7eb;
+      }
+      .wmt-hint {
+        font-size: 11px;
+        color: #6b7280;
+        text-align: center;
+        line-height: 1.3;
+      }
+      .wmt-warning {
+        font-size: 11px;
+        color: #dc2626;
+        background: #fef2f2;
+        padding: 6px;
+        border-radius: 4px;
+        line-height: 1.3;
+      }
+    `;
+
+    const container = document.createElement('div');
+    container.innerHTML = `
+      <button class="wmt-btn" id="wmt-fab" aria-label="WebMCP Translator" title="WebMCP Translator" tabindex="0">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m5 8 6 6"/>
+          <path d="m4 14 6-6 2-3"/>
+          <path d="M2 5h12"/>
+          <path d="M7 2h1"/>
+          <path d="m22 22-5-10-5 10"/>
+          <path d="M14 18h6"/>
+        </svg>
+        <span class="wmt-badge" id="wmt-badge"></span>
+      </button>
+      <div class="wmt-panel" id="wmt-panel" style="display: none;">
+        <div class="wmt-header">
+          <span class="wmt-title">WebMCP Translator</span>
+          <button class="wmt-close" id="wmt-close" aria-label="Đóng panel">✕</button>
+        </div>
+        <div class="wmt-row">
+          <span>Trạng thái:</span>
+          <span class="wmt-status-tag" id="wmt-status-tag">Đang tắt</span>
+        </div>
+        <button class="wmt-switch-btn" id="wmt-toggle-tab">Bật dịch tab này</button>
+        <div class="wmt-mode-group">
+          <label class="wmt-mode-label">
+            <input type="radio" name="wmt-mode" value="scroll-follow" checked />
+            Dịch đuổi theo scroll
+          </label>
+          <label class="wmt-mode-label">
+            <input type="radio" name="wmt-mode" value="full" />
+            Dịch toàn trang
+          </label>
+        </div>
+        <div class="wmt-actions">
+          <button class="wmt-action-btn wmt-btn-primary" id="wmt-action-translate">Dịch ngay</button>
+          <button class="wmt-action-btn wmt-btn-secondary" id="wmt-action-restore">Khôi phục</button>
+        </div>
+        <div id="wmt-warn-msg" class="wmt-warning" style="display:none;"></div>
+        <div class="wmt-hint">Mở popup để cấu hình key/quyền/model</div>
+      </div>
+    `;
+
+    shadow.appendChild(style);
+    shadow.appendChild(container);
+
+    const fab = container.querySelector('#wmt-fab');
+    const panel = container.querySelector('#wmt-panel');
+    const badge = container.querySelector('#wmt-badge');
+    const statusTag = container.querySelector('#wmt-status-tag');
+    const toggleTabBtn = container.querySelector('#wmt-toggle-tab');
+    const closeBtn = container.querySelector('#wmt-close');
+    const translateBtn = container.querySelector('#wmt-action-translate');
+    const restoreBtn = container.querySelector('#wmt-action-restore');
+    const modeRadios = container.querySelectorAll('input[name="wmt-mode"]');
+    const warnMsg = container.querySelector('#wmt-warn-msg');
+
+    let isPanelOpen = false;
+    let widgetState = {
+      effective: 'off',
+      siteEnabled: false,
+      tabOverride: null,
+      permission: true,
+      mode: 'scroll-follow',
+      widgetVisible: true,
+      position: null,
+      hasKey: true
+    };
+
+    function setPanelVisibility(open) {
+      isPanelOpen = open;
+      panel.style.display = isPanelOpen ? 'flex' : 'none';
+    }
+
+    function applyState(st) {
+      if (!st) return;
+      widgetState = { ...widgetState, ...st };
+
+      // Visibility
+      if (widgetState.widgetVisible === false) {
+        host.style.display = 'none';
+        return;
+      }
+      host.style.display = 'block';
+
+      // Effective Consent
+      const isEffectiveOn = widgetState.effective === 'on';
+      badge.classList.toggle('active', isEffectiveOn);
+      statusTag.textContent = isEffectiveOn ? 'Đang bật' : 'Đang tắt';
+      statusTag.classList.toggle('on', isEffectiveOn);
+
+      toggleTabBtn.textContent = isEffectiveOn ? 'Tắt dịch tab này' : 'Bật dịch tab này';
+      toggleTabBtn.classList.toggle('active', isEffectiveOn);
+
+      // Mode
+      const activeMode = widgetState.mode || 'scroll-follow';
+      currentMode = activeMode;
+      modeRadios.forEach((r) => {
+        r.checked = r.value === activeMode;
+      });
+
+      // Position
+      if (widgetState.position && typeof widgetState.position.x === 'number' && typeof widgetState.position.y === 'number') {
+        const x = Math.max(0, Math.min(window.innerWidth - 60, widgetState.position.x));
+        const y = Math.max(0, Math.min(window.innerHeight - 60, widgetState.position.y));
+        host.style.left = x + 'px';
+        host.style.top = y + 'px';
+        host.style.right = 'auto';
+        host.style.bottom = 'auto';
+      }
+
+      // Warnings
+      if (!widgetState.permission) {
+        warnMsg.textContent = 'Thiếu quyền host! Mở popup để cấp quyền.';
+        warnMsg.style.display = 'block';
+      } else if (!widgetState.hasKey) {
+        warnMsg.textContent = 'Chưa cấu hình API key! Mở popup để nhập key.';
+        warnMsg.style.display = 'block';
+      } else {
+        warnMsg.style.display = 'none';
+      }
+    }
+
+    function queryState() {
+      chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (resp) => {
+        if (!chrome.runtime.lastError && resp && !resp.error) {
+          applyState(resp);
+        }
+      });
+    }
+
+    // Drag implementation using Pointer Events
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let initialHostLeft = 0;
+    let initialHostTop = 0;
+    let pointerCapturedId = null;
+
+    fab.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      isDragging = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = host.getBoundingClientRect();
+      initialHostLeft = rect.left;
+      initialHostTop = rect.top;
+      pointerCapturedId = e.pointerId;
+      try {
+        fab.setPointerCapture(e.pointerId);
+      } catch {}
+    });
+
+    fab.addEventListener('pointermove', (e) => {
+      if (pointerCapturedId === null) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      if (!isDragging && Math.hypot(dx, dy) > 5) {
+        isDragging = true;
+      }
+      if (isDragging) {
+        requestAnimationFrame(() => {
+          const clampedX = Math.max(0, Math.min(window.innerWidth - 50, initialHostLeft + dx));
+          const clampedY = Math.max(0, Math.min(window.innerHeight - 50, initialHostTop + dy));
+          host.style.left = clampedX + 'px';
+          host.style.top = clampedY + 'px';
+          host.style.right = 'auto';
+          host.style.bottom = 'auto';
+        });
+      }
+    });
+
+    function finishDrag(e) {
+      if (pointerCapturedId === null) return;
+      try {
+        fab.releasePointerCapture(pointerCapturedId);
+      } catch {}
+      pointerCapturedId = null;
+
+      if (isDragging) {
+        const rect = host.getBoundingClientRect();
+        const clampedX = Math.max(0, Math.min(window.innerWidth - 50, rect.left));
+        const clampedY = Math.max(0, Math.min(window.innerHeight - 50, rect.top));
+        chrome.runtime.sendMessage({
+          action: 'WIDGET_SET_POSITION',
+          x: clampedX,
+          y: clampedY
+        });
+      } else {
+        setPanelVisibility(!isPanelOpen);
+      }
+      isDragging = false;
+    }
+
+    fab.addEventListener('pointerup', finishDrag);
+    fab.addEventListener('pointercancel', (e) => {
+      if (pointerCapturedId !== null) {
+        try { fab.releasePointerCapture(pointerCapturedId); } catch {}
+        pointerCapturedId = null;
+      }
+      isDragging = false;
+    });
+
+    // Keyboard navigation: Enter/Space toggles panel, Escape closes panel/drag, Arrows move
+    fab.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setPanelVisibility(!isPanelOpen);
+      } else if (e.key === 'Escape') {
+        if (isPanelOpen) {
+          e.preventDefault();
+          setPanelVisibility(false);
+        }
+      } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        const rect = host.getBoundingClientRect();
+        let curX = rect.left;
+        let curY = rect.top;
+        const step = 10;
+        if (e.key === 'ArrowUp') curY -= step;
+        if (e.key === 'ArrowDown') curY += step;
+        if (e.key === 'ArrowLeft') curX -= step;
+        if (e.key === 'ArrowRight') curX += step;
+        const clampedX = Math.max(0, Math.min(window.innerWidth - 50, curX));
+        const clampedY = Math.max(0, Math.min(window.innerHeight - 50, curY));
+        host.style.left = clampedX + 'px';
+        host.style.top = clampedY + 'px';
+        host.style.right = 'auto';
+        host.style.bottom = 'auto';
+      }
+    });
+
+    fab.addEventListener('keyup', (e) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        const rect = host.getBoundingClientRect();
+        chrome.runtime.sendMessage({
+          action: 'WIDGET_SET_POSITION',
+          x: Math.round(rect.left),
+          y: Math.round(rect.top)
+        });
+      }
+    });
+
+    closeBtn.addEventListener('click', () => setPanelVisibility(false));
+
+    // Tab ON/OFF toggle: sends WIDGET_SET_ENABLED
+    toggleTabBtn.addEventListener('click', () => {
+      const targetEnabled = widgetState.effective !== 'on';
+      chrome.runtime.sendMessage({
+        action: 'WIDGET_SET_ENABLED',
+        enabled: targetEnabled
+      }, (resp) => {
+        if (chrome.runtime.lastError) return;
+        if (resp && resp.error) {
+          if (resp.error.code === 'PERMISSION_REQUIRED') {
+            warnMsg.textContent = 'Cần cấp quyền host! Hãy mở popup để cấp quyền.';
+            warnMsg.style.display = 'block';
+          }
+          return;
+        }
+        applyState(resp);
+        if (!targetEnabled) {
+          // Turning OFF stops session & cancels queue; does not auto-restore text
+          stopScrollFollowSession(true);
+          try {
+            chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
+              if (chrome.runtime.lastError) {}
+            });
+          } catch {}
+        }
+      });
+    });
+
+    // Mode Selector: sends WIDGET_SET_MODE
+    modeRadios.forEach((r) => {
+      r.addEventListener('change', () => {
+        if (r.checked) {
+          const selectedMode = r.value;
+          chrome.runtime.sendMessage({
+            action: 'WIDGET_SET_MODE',
+            mode: selectedMode
+          }, (resp) => {
+            if (!chrome.runtime.lastError && resp && !resp.error) {
+              currentMode = selectedMode;
+              lastTranslateStatus.mode = selectedMode;
+              if (selectedMode === 'scroll-follow' && widgetState.effective === 'on') {
+                startScrollFollowSession();
+              } else if (selectedMode === 'full') {
+                stopScrollFollowSession(true);
+              }
+            }
+          });
+        }
+      });
+    });
+
+    // Translate Now Button
+    translateBtn.addEventListener('click', () => {
+      setPanelVisibility(false);
+      if (currentMode === 'scroll-follow') {
+        startScrollFollowSession();
+      } else {
+        executeTranslation();
+      }
+    });
+
+    // Restore Button
+    restoreBtn.addEventListener('click', () => {
+      setPanelVisibility(false);
+      restore();
+    });
+
+    // Focus & Visibility re-query
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') queryState();
+    });
+    window.addEventListener('focus', () => queryState());
+
+    // Window resize viewport clamp
+    window.addEventListener('resize', () => {
+      const rect = host.getBoundingClientRect();
+      const clampedX = Math.max(0, Math.min(window.innerWidth - 50, rect.left));
+      const clampedY = Math.max(0, Math.min(window.innerHeight - 50, rect.top));
+      if (clampedX !== rect.left || clampedY !== rect.top) {
+        host.style.left = clampedX + 'px';
+        host.style.top = clampedY + 'px';
+        host.style.right = 'auto';
+        host.style.bottom = 'auto';
+      }
+    });
+
+    // Append to document.documentElement
+    document.documentElement.appendChild(host);
+    queryState();
+
+    // Listen for push notifications
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
+        applyState(msg);
+      }
+    });
+  }
+
+  // ============================================================================
+  // Runtime Message Handler for Popup, SW & Tests
+  // ============================================================================
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message.action !== 'string') return false;
 
     if (message.action === 'CONTENT_START_TRANSLATION') {
-      executeTranslation(message.settings || {}).then(sendResponse);
-      return true; // async
+      const mode = message.mode || message.settings?.translationMode || 'full';
+      if (mode === 'scroll-follow') {
+        startScrollFollowSession(message.settings || {});
+        sendResponse({
+          ok: true,
+          mode: 'scroll-follow',
+          watching: true,
+          state: 'translating',
+          totalCollected: lastTranslateStatus.totalCollected,
+          totalApplied: lastTranslateStatus.totalApplied,
+          totalFailed: lastTranslateStatus.totalFailed,
+          model: message.settings?.model || lastTranslateStatus.model
+        });
+        return false;
+      } else {
+        executeTranslation(message.settings || {}).then(sendResponse);
+        return true; // async
+      }
+    }
+
+    if (message.action === 'CONTENT_SET_MODE') {
+      const targetMode = message.mode;
+      if (targetMode === 'scroll-follow' || targetMode === 'full') {
+        epoch++;
+        try {
+          chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
+            if (chrome.runtime.lastError) {}
+          });
+        } catch {}
+        stopScrollFollowSession(false);
+        isTranslating = false;
+        activeRunToken++;
+        pendingSet.clear();
+        currentMode = targetMode;
+        lastTranslateStatus.mode = targetMode;
+
+        if (targetMode === 'scroll-follow') {
+          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
+            if (!chrome.runtime.lastError && st && st.effective === 'on') {
+              startScrollFollowSession(st);
+            }
+          });
+        }
+
+        sendResponse({
+          ok: true,
+          mode: targetMode,
+          status: {
+            ...lastTranslateStatus,
+            mode: targetMode,
+            watching: scrollSession.watching
+          }
+        });
+        return false;
+      }
+      sendResponse({ ok: false, error: 'INVALID_MODE' });
+      return false;
     }
 
     if (message.action === 'CONTENT_RESTORE') {
       const res = restore();
-      lastTranslateStatus.state = 'restored';
-      lastTranslateStatus.totalRestored = res.restored;
       sendResponse({ ok: true, ...res });
       return false;
     }
@@ -626,7 +1613,13 @@
     if (message.action === 'CONTENT_GET_STATUS') {
       sendResponse({
         ok: true,
-        status: lastTranslateStatus,
+        status: {
+          ...lastTranslateStatus,
+          mode: currentMode,
+          watching: scrollSession.watching,
+          actualModel: lastTranslateStatus.actualModel || lastTranslateStatus.model,
+          fallbackIndex: lastTranslateStatus.fallbackIndex || 0
+        },
         restorableCount: restoreKept.size,
         documentId,
         epoch
@@ -645,9 +1638,23 @@
     executeTranslation,
     sendChunk,
     translateChunkWithRecovery,
-    getStatus: () => ({ ...lastTranslateStatus, restorable: restoreKept.size }),
+    getStatus: () => ({
+      ...lastTranslateStatus,
+      mode: currentMode,
+      watching: scrollSession.watching,
+      restorable: restoreKept.size
+    }),
     documentId,
     getEpoch: () => epoch,
-    setEpoch: (n) => { epoch = n; }
+    setEpoch: (n) => { epoch = n; },
+    startScrollFollowSession,
+    stopScrollFollowSession
   };
+
+  // Initialize floating widget
+  if (document.documentElement) {
+    initFloatingWidget();
+  } else {
+    document.addEventListener('DOMContentLoaded', initFloatingWidget);
+  }
 })();
