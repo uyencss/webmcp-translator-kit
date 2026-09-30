@@ -719,6 +719,19 @@
     const candidateRecs = [];
     const seenRecIds = new Set();
 
+    if (scrollSession.readyBlocks.size === 0) {
+      const curBlocks = document.querySelectorAll(BLOCK_SELECTOR);
+      for (const b of curBlocks) {
+        if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
+        try {
+          const rect = b.getBoundingClientRect();
+          if (rect.bottom >= topBound && rect.top <= bottomBound) {
+            scrollSession.readyBlocks.add(b);
+          }
+        } catch {}
+      }
+    }
+
     for (const block of scrollSession.readyBlocks) {
       if (!block || !block.isConnected) {
         scrollSession.readyBlocks.delete(block);
@@ -779,6 +792,13 @@
       revision: c.revision,
       documentId: c.documentId
     }));
+
+    // Track unique collected nodes for status (scroll mode collects over time)
+    if (!scrollSession.collectedIds) scrollSession.collectedIds = new Set();
+    for (const c of candidateRecs) {
+      scrollSession.collectedIds.add(c.id);
+    }
+    lastTranslateStatus.totalCollected = scrollSession.collectedIds.size;
 
     const chunks = chunkItems(items);
 
@@ -884,11 +904,20 @@
       threshold: 0
     });
 
-    // Lazily observe candidate block containers
+    // Lazily observe candidate block containers and seed initial readyBlocks in [-2H, 3H]
+    const H = window.innerHeight || 800;
+    const topBound = -2 * H;
+    const bottomBound = 3 * H;
     const blocks = document.querySelectorAll(BLOCK_SELECTOR);
     for (const b of blocks) {
       if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
       scrollSession.mainObserver.observe(b);
+      try {
+        const rect = b.getBoundingClientRect();
+        if (rect.bottom >= topBound && rect.top <= bottomBound) {
+          scrollSession.readyBlocks.add(b);
+        }
+      } catch {}
     }
 
     // Detect nested scroll roots: maximum 2 secondary roots
@@ -925,7 +954,24 @@
     }
 
     // Fallback scroll listener for rapid scroll updates
-    scrollSession.scrollListener = () => scheduleScrollFlush();
+    scrollSession.scrollListener = () => {
+      const curH = window.innerHeight || 800;
+      const curTopBound = -2 * curH;
+      const curBottomBound = 3 * curH;
+      const allBlocks = document.querySelectorAll(BLOCK_SELECTOR);
+      for (const b of allBlocks) {
+        if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
+        try {
+          const rect = b.getBoundingClientRect();
+          if (rect.bottom >= curTopBound && rect.top <= curBottomBound) {
+            scrollSession.readyBlocks.add(b);
+          } else {
+            scrollSession.readyBlocks.delete(b);
+          }
+        } catch {}
+      }
+      scheduleScrollFlush();
+    };
     window.addEventListener('scroll', scrollSession.scrollListener, { passive: true });
 
     // MutationObserver to gather newly added blocks (ignoring detached) + debounce
@@ -1633,6 +1679,12 @@
               startScrollFollowSession(st);
             }
           });
+        } else if (targetMode === 'full') {
+          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
+            if (!chrome.runtime.lastError && st && st.effective === 'on') {
+              executeTranslation(st);
+            }
+          });
         }
 
         sendResponse({
@@ -1690,6 +1742,7 @@
       watching: scrollSession.watching,
       restorable: restoreKept.size
     }),
+    _getWidgetHost: () => document.getElementById('__wmt-widget-host'),
     documentId,
     getEpoch: () => epoch,
     setEpoch: (n) => { epoch = n; },

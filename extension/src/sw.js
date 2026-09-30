@@ -828,12 +828,16 @@ async function reconcilePermissions() {
 // Sender verification helpers
 function isPrivilegedSender(sender) {
   if (!sender) return false;
-  // Content scripts always have sender.tab
-  if (sender.tab) return false;
-  // Chrome extension page has sender.url starting with chrome-extension://
-  if (typeof sender.url === 'string' && sender.url.startsWith('chrome-extension://')) {
+  // Our own extension pages (popup window, or the same page opened as a tab
+  // in tests/automation) are trusted: pages cannot spoof this URL.
+  const extPrefix = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id)
+    ? `chrome-extension://${chrome.runtime.id}`
+    : 'chrome-extension://';
+  if (typeof sender.url === 'string' && sender.url.startsWith(extPrefix)) {
     return true;
   }
+  // Content scripts always have sender.tab
+  if (sender.tab) return false;
   // Internal extension background / test dispatch
   if (sender.id && typeof chrome !== 'undefined' && chrome.runtime && sender.id === chrome.runtime.id && !sender.tab) {
     return true;

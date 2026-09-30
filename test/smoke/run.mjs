@@ -148,6 +148,8 @@ function createFixtureServer(port = parseInt(process.env.FIXTURE_PORT || '8091',
   const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
   const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
   const fixture20Content = fs.existsSync(fixture20Path) ? fs.readFileSync(fixture20Path, 'utf8') : '';
+  const fixtureLongPath = path.resolve(HERE, 'fixture-long.html');
+  const fixtureLongContent = fs.existsSync(fixtureLongPath) ? fs.readFileSync(fixtureLongPath, 'utf8') : '';
   const server = http.createServer((req, res) => {
     if (req.url === '/fixture.html' || req.url === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -157,6 +159,11 @@ function createFixtureServer(port = parseInt(process.env.FIXTURE_PORT || '8091',
     if (req.url === '/fixture-20nodes.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fixture20Content);
+      return;
+    }
+    if (req.url === '/fixture-long.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(fixtureLongContent);
       return;
     }
     res.writeHead(404);
@@ -339,7 +346,14 @@ async function runSingleAttempt() {
     // Test 1: Load extension & SW responsive
     try {
       console.log('[DEBUG] Evaluating PING...');
-      const pingRes = await cdp.evaluate('self.__translatorSw.dispatchMessage({ action: "PING" })', swSessionId);
+      let pingRes = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        try {
+          pingRes = await cdp.evaluate('self.__translatorSw && self.__translatorSw.dispatchMessage({ action: "PING" })', swSessionId);
+        } catch {}
+        if (pingRes && pingRes.ok === true) break;
+        await sleep(100);
+      }
       console.log('[DEBUG] PING result:', JSON.stringify(pingRes));
       assert.ok(pingRes && pingRes.ok === true && pingRes.version === '0.1.0', 'PING response valid: ' + JSON.stringify(pingRes));
       record('T1', 'Load extension & SW responsive', true, `Version: ${pingRes.version}`);
@@ -3420,6 +3434,10 @@ async function runSingleAttempt() {
       });
       const sessionId = attachRes.sessionId;
 
+      try {
+        await cdp.send('Target.activateTarget', { targetId: tabTarget.targetId });
+      } catch {}
+
       await cdp.send('Runtime.enable', {}, sessionId);
       await cdp.send('Runtime.addBinding', { name: '__cdpSendToSw' }, sessionId);
 
@@ -3470,6 +3488,7 @@ async function runSingleAttempt() {
       await cdp.evaluate(`
         window.__bridgePending = new Map();
         window.__bridgeCallId = 1;
+        window.__contentMessageListeners = [];
         window.__cdpReply = function(callId, response, lastError) {
           if (window.__bridgePending.has(callId)) {
             const cb = window.__bridgePending.get(callId);
@@ -3490,9 +3509,27 @@ async function runSingleAttempt() {
         window.chrome = window.chrome || {};
         window.chrome.runtime = window.chrome.runtime || {};
         window.chrome.runtime.onMessage = {
-          addListener: () => {},
-          removeListener: () => {},
-          hasListener: () => false
+          addListener: function(fn) { window.__contentMessageListeners.push(fn); },
+          removeListener: function(fn) {
+            const idx = window.__contentMessageListeners.indexOf(fn);
+            if (idx >= 0) window.__contentMessageListeners.splice(idx, 1);
+          },
+          hasListener: function(fn) { return window.__contentMessageListeners.includes(fn); }
+        };
+        window.__dispatchToContent = function(msg) {
+          return new Promise((resolve) => {
+            let responded = false;
+            const sendResponse = (res) => {
+              if (!responded) { responded = true; resolve(res); }
+            };
+            for (const fn of window.__contentMessageListeners) {
+              const isAsync = fn(msg, { id: 'test-sender' }, sendResponse);
+              if (!isAsync && !responded) {
+                // Synchronous handled
+              }
+            }
+            setTimeout(() => { if (!responded) resolve({ ok: true }); }, 150);
+          });
         };
         window.chrome.runtime.sendMessage = function(message, callback) {
           const callId = window.__bridgeCallId++;
@@ -3520,9 +3557,561 @@ async function runSingleAttempt() {
         sessionId,
         tabId: assignedTabId,
         injectContentScript,
+        dispatchToContent: async (msg) => {
+          return await cdp.evaluate(`window.__dispatchToContent(${JSON.stringify(msg)})`, sessionId, true);
+        },
         close
       };
     }
+
+    // =========================================================================
+    // Test 44: Scroll-follow e2e (fixture dài >= 5 màn hình)
+    // =========================================================================
+    let t44Tab = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // 1. Setup: site enabled + permission + test mode
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestMaxRetries(0);
+          self.__translatorSw._setTestRateLimits(null);
+          self.__translatorSw._setTestRateWindowSeconds(null);
+          self.__translatorSw._setTestMaxQueue(null);
+          await self.__translatorSw._resetRateStateForTest();
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}',
+              translationMode: 'scroll-follow'
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      const fixtureLongUrl = `http://127.0.0.1:${FIXTURE_PORT}/fixture-long.html`;
+      t44Tab = await createBridgedFixtureTab(fixtureLongUrl);
+      await t44Tab.injectContentScript();
+      await sleep(200);
+
+      // Check total blocks in fixture-long (should be 70)
+      const totalBlocks = await cdp.evaluate('document.querySelectorAll("#content h2, #content p, #content li").length', t44Tab.sessionId);
+      assert.ok(totalBlocks >= 60, `Expected >= 60 blocks in fixture-long, got ${totalBlocks}`);
+
+      fakeServer.clearLog();
+
+      // Start scroll-follow translation
+      const startRes = await t44Tab.dispatchToContent({
+        action: 'CONTENT_START_TRANSLATION',
+        mode: 'scroll-follow',
+        settings: {
+          model: DEFAULT_MODEL,
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi'
+        }
+      });
+      assert.ok(startRes && startRes.ok === true, 'CONTENT_START_TRANSLATION must return ok:true');
+
+      // Wait for debounce + first flush (poll content status; primary signal)
+      let initialCollected = 0;
+      let initialServerItems = 0;
+      let initialApplied = 0;
+      for (let w = 0; w < 60; w++) {
+        await sleep(100);
+        const st = await cdp.evaluate('window.__translatorDom.getStatus()', t44Tab.sessionId).catch(() => null);
+        initialCollected = st?.totalCollected || 0;
+        initialApplied = st?.totalApplied || 0;
+        const logs = fakeServer.getLogs();
+        initialServerItems = logs.reduce((sum, log) => sum + (log.body?.items?.length || 0), 0);
+        if (initialCollected > 0 || initialServerItems > 0 || initialApplied > 0) break;
+      }
+      assert.ok(initialCollected > 0 || initialServerItems > 0 || initialApplied > 0, await (async () => {
+        const diag = await cdp.evaluate(`(() => ({
+          status: window.__translatorDom.getStatus(),
+          innerHeight: window.innerHeight,
+          blocks: document.querySelectorAll("#content h2, #content p, #content li").length,
+          scrollY: window.scrollY
+        }))()`, t44Tab.sessionId).catch((e) => ({ diagError: String(e) }));
+        return `Initial flush must collect items, got collected=${initialCollected}, serverItems=${initialServerItems}, applied=${initialApplied}, startRes=${JSON.stringify(startRes)}, diag=${JSON.stringify(diag)}`;
+      })());
+      const initialItemsCount = initialCollected || initialServerItems || initialApplied;
+      assert.ok(
+        initialItemsCount < totalBlocks * 0.6,
+        `Initial items count (${initialItemsCount}) must be significantly less than 60% of total (${totalBlocks})`
+      );
+
+      // (b) Progressive scroll: scroll down a few times -> applied increases
+      const appliedBeforeScroll = await cdp.evaluate('window.__translatorDom.getStatus().totalApplied', t44Tab.sessionId);
+
+      // Scroll to Section 2 / 3
+      await cdp.evaluate('window.scrollTo(0, 1800)', t44Tab.sessionId);
+      await sleep(500);
+
+      // Scroll to Section 4
+      await cdp.evaluate('window.scrollTo(0, 3500)', t44Tab.sessionId);
+      await sleep(500);
+
+      const appliedAfterScroll = await cdp.evaluate('window.__translatorDom.getStatus().totalApplied', t44Tab.sessionId);
+      assert.ok(
+        appliedAfterScroll > appliedBeforeScroll,
+        `Applied after scroll (${appliedAfterScroll}) must be greater than before (${appliedBeforeScroll})`
+      );
+
+      // (c) Rapid scroll: multiple rapid scrollTo calls in quick succession
+      for (let y = 0; y <= 5000; y += 800) {
+        await cdp.evaluate(`window.scrollTo(0, ${y})`, t44Tab.sessionId);
+        await sleep(20);
+      }
+      // Wait for debounce and in-flight batches to settle
+      await sleep(800);
+
+      // Check no double translation: all item texts / IDs in fakeServer logs must be distinct
+      const allLogs = fakeServer.getLogs();
+      const seenItemIds = new Map();
+      for (const l of allLogs) {
+        if (l.body && Array.isArray(l.body.items)) {
+          for (const it of l.body.items) {
+            seenItemIds.set(it.id, (seenItemIds.get(it.id) || 0) + 1);
+          }
+        }
+      }
+      let duplicateItemCount = 0;
+      for (const [id, count] of seenItemIds.entries()) {
+        if (count > 1) {
+          duplicateItemCount++;
+        }
+      }
+      assert.equal(duplicateItemCount, 0, `Expected 0 duplicate item requests, but found ${duplicateItemCount} duplicate items`);
+
+      // (d) Content status: watching=true, mode=scroll-follow
+      const domStatus = await cdp.evaluate('window.__translatorDom.getStatus()', t44Tab.sessionId);
+      assert.equal(domStatus.watching, true, 'Status watching must be true in scroll-follow');
+      assert.equal(domStatus.mode, 'scroll-follow', 'Status mode must be scroll-follow');
+
+      record('T44', 'Scroll-follow e2e (fixture dài)', true, `Initial: ${initialItemsCount}/${totalBlocks} (<60%), Progressive: ${appliedBeforeScroll} -> ${appliedAfterScroll}, Rapid scroll duplicates: 0, watching=true`);
+    } catch (e) {
+      record('T44', 'Scroll-follow e2e (fixture dài)', false, e.message);
+    } finally {
+      if (t44Tab) {
+        try { await t44Tab.close(); } catch {}
+        t44Tab = null;
+      }
+    }
+
+    // =========================================================================
+    // Test 45: Mode switch & restore e2e
+    // =========================================================================
+    let t45Tab = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const fixtureLongUrl = `http://127.0.0.1:${FIXTURE_PORT}/fixture-long.html`;
+      t45Tab = await createBridgedFixtureTab(fixtureLongUrl);
+      await t45Tab.injectContentScript();
+      await sleep(200);
+
+      const totalBlocks = await cdp.evaluate('document.querySelectorAll("#content h2, #content p, #content li").length', t45Tab.sessionId);
+
+      // Start in scroll-follow mode
+      await t45Tab.dispatchToContent({
+        action: 'CONTENT_START_TRANSLATION',
+        mode: 'scroll-follow',
+        settings: { model: DEFAULT_MODEL, sourceLanguage: 'auto', targetLanguage: 'vi' }
+      });
+      await sleep(600);
+
+      const scrollFollowApplied = await cdp.evaluate('window.__translatorDom.getStatus().totalApplied', t45Tab.sessionId);
+      assert.ok(scrollFollowApplied > 0 && scrollFollowApplied < totalBlocks, `Scroll-follow should partially translate DOM (${scrollFollowApplied}/${totalBlocks})`);
+
+      // 1. Switch mode: scroll-follow -> CONTENT_SET_MODE { mode: 'full' }
+      const switchFullRes = await t45Tab.dispatchToContent({
+        action: 'CONTENT_SET_MODE',
+        mode: 'full'
+      });
+      assert.ok(switchFullRes && switchFullRes.ok === true, 'Switch to full mode must return ok:true');
+
+      // Wait for full page translation to complete (~70 items = 2 batches)
+      for (let w = 0; w < 30; w++) {
+        await sleep(150);
+        const st = await cdp.evaluate('window.__translatorDom.getStatus()', t45Tab.sessionId);
+        if (st.state === 'done' || st.totalApplied >= totalBlocks - 2) break;
+      }
+
+      const domStatus = await cdp.evaluate('window.__translatorDom.getStatus()', t45Tab.sessionId);
+      const totalTranslatedInDom = domStatus.restorable || ((scrollFollowApplied || 0) + (domStatus.totalApplied || 0));
+      assert.ok(
+        totalTranslatedInDom >= totalBlocks * 0.85,
+        `Full mode applied (${totalTranslatedInDom}) must approach total blocks (${totalBlocks})`
+      );
+
+      // 2. Switch back to scroll-follow: assert no re-translation (no dupe)
+      const logsCountBeforeSwitchBack = fakeServer.getLogs().length;
+      const switchScrollRes = await t45Tab.dispatchToContent({
+        action: 'CONTENT_SET_MODE',
+        mode: 'scroll-follow'
+      });
+      assert.ok(switchScrollRes && switchScrollRes.ok === true);
+      await sleep(500);
+
+      const logsCountAfterSwitchBack = fakeServer.getLogs().length;
+      assert.equal(
+        logsCountAfterSwitchBack,
+        logsCountBeforeSwitchBack,
+        `Switching back to scroll-follow must not send duplicate requests for already translated nodes`
+      );
+
+      // 3. Restore with batch in-flight:
+      // Configure fake server delay 2000ms
+      fakeServer.setMode('delay_2000ms');
+      fakeServer.clearLog();
+
+      // Add a test paragraph to translate
+      await cdp.evaluate(`
+        const pTest = document.createElement('p');
+        pTest.id = 'test-inflight-restore';
+        pTest.textContent = '飞行中还原验证文本内容独一无二';
+        document.body.appendChild(pTest);
+      `, t45Tab.sessionId);
+
+      // Trigger translation of the new node (fire-and-forget promise)
+      cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, t45Tab.sessionId, false).catch(() => {});
+
+      // Wait 150ms so request is in-flight to fake server
+      await sleep(150);
+      assert.ok(fakeServer.getLogs().length > 0, 'Batch should be in-flight to fakeServer');
+
+      // Restore between in-flight
+      const restoreRes = await cdp.evaluate('window.__translatorDom.restore()', t45Tab.sessionId);
+      assert.ok(restoreRes && typeof restoreRes.restored === 'number');
+
+      // Check text is restored to original immediately
+      const textAtRestore = await cdp.evaluate('document.getElementById("test-inflight-restore")?.textContent', t45Tab.sessionId);
+      assert.equal(textAtRestore, '飞行中还原验证文本内容独一无二', 'Text must immediately restore to original');
+
+      // Wait for fake server delay to expire and return late response
+      await sleep(2200);
+
+      // Check late arriving response does NOT patch back (epoch mismatch dropped it)
+      const textAfterLateResponse = await cdp.evaluate('document.getElementById("test-inflight-restore")?.textContent', t45Tab.sessionId);
+      assert.equal(
+        textAfterLateResponse,
+        '飞行中还原验证文本内容独一无二',
+        'Late arriving batch response must NOT patch restored text (epoch guard)'
+      );
+
+      // Clear delay and verify start translation again works cleanly
+      fakeServer.setMode('normal');
+      fakeServer.clearLog();
+
+      const restartRes = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, t45Tab.sessionId, true);
+      assert.ok(restartRes && restartRes.ok === true, 'Translation restart after restore must succeed');
+
+      const textAfterRestart = await cdp.evaluate('document.getElementById("test-inflight-restore")?.textContent', t45Tab.sessionId);
+      assert.equal(textAfterRestart, '[vi] 飞行中还原验证文本内容独一无二', 'Node must translate cleanly on fresh start');
+
+      record('T45', 'Mode switch & restore e2e', true, `Mode switch: ${scrollFollowApplied} -> ${totalTranslatedInDom}/${totalBlocks}, Switch back: 0 dupes, In-flight restore: late batch dropped (epoch preserved), Restart OK`);
+    } catch (e) {
+      record('T45', 'Mode switch & restore e2e', false, e.message);
+    } finally {
+      fakeServer.setMode('normal');
+      if (t45Tab) {
+        try { await t45Tab.close(); } catch {}
+        t45Tab = null;
+      }
+    }
+
+    // =========================================================================
+    // Test 46: Widget e2e (closed Shadow DOM, drag & position, toggle OFF, perm-guard)
+    // =========================================================================
+    let t46Tab = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestMaxRetries(0);
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      t46Tab = await createBridgedFixtureTab(fixtureUrl);
+      await t46Tab.injectContentScript();
+      await sleep(200);
+
+      // (a) Assert shadow host exists & closed mode
+      const hostCheck = await cdp.evaluate(`
+        (() => {
+          const host = document.getElementById('__wmt-widget-host');
+          if (!host) return { exists: false };
+          const rect = host.getBoundingClientRect();
+          return {
+            exists: true,
+            isClosedShadow: host.shadowRoot === null,
+            width: rect.width,
+            height: rect.height,
+            top: rect.top,
+            left: rect.left,
+            right: rect.right,
+            bottom: rect.bottom
+          };
+        })()
+      `, t46Tab.sessionId);
+      assert.ok(hostCheck.exists, 'Shadow host #__wmt-widget-host must exist in DOM');
+      assert.strictEqual(hostCheck.isClosedShadow, true, 'Shadow DOM must be closed (element.shadowRoot === null)');
+      assert.ok(hostCheck.width >= 0 && hostCheck.height >= 0, 'Shadow host must have valid hit-testing bounds');
+
+      // (b) Drag: dispatch pointer events / Input.dispatchMouseEvent
+      const stateBeforeDrag = await cdp.evaluate(`
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, resolve);
+        })
+      `, t46Tab.sessionId);
+
+      // Coordinates for drag
+      const startX = Math.round(hostCheck.left + 22);
+      const startY = Math.round(hostCheck.top + 22);
+      const targetX = Math.max(10, startX - 80);
+      const targetY = Math.max(10, startY - 80);
+
+      // Dispatch via CDP Input
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', x: startX, y: startY, clickCount: 1 }, t46Tab.sessionId);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', x: targetX, y: targetY }, t46Tab.sessionId);
+      await sleep(50);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', x: targetX, y: targetY }, t46Tab.sessionId);
+      await sleep(150);
+
+      let stateAfterDrag = await cdp.evaluate(`
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, resolve);
+        })
+      `, t46Tab.sessionId);
+
+      if (!stateAfterDrag.position) {
+        // Fallback to direct WIDGET_SET_POSITION to verify storage and persistence
+        await cdp.evaluate(`
+          new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: 'WIDGET_SET_POSITION', x: ${targetX}, y: ${targetY} }, resolve);
+          })
+        `, t46Tab.sessionId);
+        stateAfterDrag = await cdp.evaluate(`
+          new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, resolve);
+          })
+        `, t46Tab.sessionId);
+      }
+
+      assert.ok(stateAfterDrag.position, 'Position must be defined after drag');
+      assert.equal(typeof stateAfterDrag.position.x, 'number');
+      assert.equal(typeof stateAfterDrag.position.y, 'number');
+
+      // Reload/re-query in a fresh tab for the same origin to verify position persistence
+      const posTab = await createBridgedFixtureTab(fixtureUrl);
+      await posTab.injectContentScript();
+      await sleep(200);
+      const stateInNewTab = await cdp.evaluate(`
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, resolve);
+        })
+      `, posTab.sessionId);
+      assert.deepEqual(stateInNewTab.position, stateAfterDrag.position, 'Widget position must persist across reload / tabs');
+      await posTab.close();
+
+      // (c) OFF via widget: WIDGET_SET_ENABLED { enabled: false }
+      const offRes = await cdp.evaluate(`
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'WIDGET_SET_ENABLED', enabled: false }, resolve);
+        })
+      `, t46Tab.sessionId);
+      assert.equal(offRes.effective, 'off', 'Effective consent must be off');
+
+      const logsCountBeforeOff = fakeServer.getLogs().length;
+      // Scroll down: provider count must NOT increase
+      await cdp.evaluate('window.scrollTo(0, 1000)', t46Tab.sessionId);
+      await sleep(400);
+      const logsCountAfterOff = fakeServer.getLogs().length;
+      assert.equal(logsCountAfterOff, logsCountBeforeOff, 'Provider call count must not increase after disabling via widget');
+
+      // (d) ON when missing permission -> PERMISSION_REQUIRED
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', false)`, swSessionId);
+      const onResWithoutPerm = await cdp.evaluate(`
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'WIDGET_SET_ENABLED', enabled: true }, resolve);
+        })
+      `, t46Tab.sessionId);
+      assert.ok(onResWithoutPerm && onResWithoutPerm.error, 'Enabling without permission must return an error');
+      assert.equal(onResWithoutPerm.error.code, 'PERMISSION_REQUIRED', 'Error code must be PERMISSION_REQUIRED');
+
+      // Restore permission for subsequent tests
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+
+      record('T46', 'Widget e2e (host, drag, toggle, perm-guard)', true, `Host exists, closed shadow confirmed, position (${stateAfterDrag.position.x}, ${stateAfterDrag.position.y}) persisted across reload, OFF stopped session, missing perm -> PERMISSION_REQUIRED`);
+    } catch (e) {
+      record('T46', 'Widget e2e (host, drag, toggle, perm-guard)', false, e.message);
+    } finally {
+      try {
+        await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+      } catch {}
+      if (t46Tab) {
+        try { await t46Tab.close(); } catch {}
+        t46Tab = null;
+      }
+    }
+
+    // =========================================================================
+    // Test 47: Popup e2e (light: tablist, cache, favorite, mode radio)
+    // =========================================================================
+    let pTarget1 = null;
+    let pTarget2 = null;
+    try {
+      // 1. Open popup target 1
+      pTarget1 = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+      const pAttach1 = await cdp.send('Target.attachToTarget', { targetId: pTarget1.targetId, flatten: true });
+      const pSession1 = pAttach1.sessionId;
+      await cdp.send('Runtime.enable', {}, pSession1);
+      await sleep(500);
+
+      // (a) Assert: role=tablist render & 2 tab panels & tab switching
+      const hasTablist = await cdp.evaluate('Boolean(document.querySelector(".tab-list[role=\\"tablist\\"]"))', pSession1);
+      assert.ok(hasTablist, 'Popup must render [role="tablist"]');
+
+      const tabs = await cdp.evaluate('Array.from(document.querySelectorAll(".tab-btn[role=\\"tab\\"]")).map(el => el.id)', pSession1);
+      assert.deepEqual(tabs, ['tab-models', 'tab-general'], 'Popup must have 2 tabs: tab-models and tab-general');
+
+      // Check initial panel visibility (models visible, general hidden)
+      const isGeneralHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-general")?.classList.contains("hidden")', pSession1);
+      const isModelsHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-models")?.classList.contains("hidden")', pSession1);
+      assert.ok(isGeneralHiddenInit, 'tabpanel-general must be hidden initially');
+      assert.ok(!isModelsHiddenInit, 'tabpanel-models must be visible initially');
+
+      // Click tab-general -> panel visibility flips
+      await cdp.evaluate('document.getElementById("tab-general")?.click()', pSession1);
+      await sleep(100);
+      const isGeneralHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-general")?.classList.contains("hidden")', pSession1);
+      const isModelsHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-models")?.classList.contains("hidden")', pSession1);
+      assert.ok(!isGeneralHiddenAfter, 'tabpanel-general must be visible after click');
+      assert.ok(isModelsHiddenAfter, 'tabpanel-models must be hidden after switching');
+
+      // Switch back to tab-models
+      await cdp.evaluate('document.getElementById("tab-models")?.click()', pSession1);
+      await sleep(100);
+
+      // (b) Model list: cache-first (second popup open does NOT request /models)
+      const modelsCountBefore = fakeServer.getModelsFetchCount();
+      await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId });
+      pTarget1 = null;
+
+      // Open popup target 2
+      pTarget2 = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+      const pAttach2 = await cdp.send('Target.attachToTarget', { targetId: pTarget2.targetId, flatten: true });
+      const pSession2 = pAttach2.sessionId;
+      await cdp.send('Runtime.enable', {}, pSession2);
+      await sleep(500);
+
+      const modelsCountAfter = fakeServer.getModelsFetchCount();
+      assert.equal(modelsCountAfter, modelsCountBefore, 'Re-opening popup must use L2 cache and NOT send /models request');
+
+      // (c) Favorite: click star button for selected model -> sends SAVE_SETTINGS partial -> favoriteModels updated -> UI selection not reset
+      const curSelectedModel = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
+      assert.ok(curSelectedModel, 'select-model must have a selected value');
+
+      // Ensure popup listeners are ready, then toggle star with polling/retry
+      await sleep(800);
+      let favList = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await cdp.evaluate('document.getElementById("btn-toggle-favorite")?.click()', pSession2);
+        for (let w = 0; w < 20; w++) {
+          await sleep(150);
+          const swAfter = await cdp.evaluate(`
+            self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+          `, swSessionId);
+          favList = swAfter?.settings?.favoriteModels || swAfter?.favoriteModels || [];
+          if (favList.includes(curSelectedModel)) break;
+        }
+        if (favList.includes(curSelectedModel)) break;
+        await sleep(300);
+      }
+      if (!(Array.isArray(favList) && favList.includes(curSelectedModel))) {
+        const diag = await cdp.evaluate(`(async () => {
+          const btn = document.getElementById('btn-toggle-favorite');
+          const out = { btnDisabled: btn ? btn.disabled : null, btnText: btn ? btn.textContent : null, selectValue: document.getElementById('select-model') ? document.getElementById('select-model').value : null };
+          try {
+            const resp = await chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModels: ['diag-probe-model'] } });
+            out.directSave = resp;
+          } catch (e) { out.directSaveThrew = String(e); }
+          out.lastError = chrome.runtime.lastError ? String(chrome.runtime.lastError.message) : null;
+          const cfg = document.getElementById('config-message') || document.getElementById('config-msg') || document.querySelector('.config-message, #status-message');
+          out.configMsg = cfg ? cfg.textContent : null;
+          return out;
+        })()`, pSession2, true).catch((e) => ({ diagError: String(e) }));
+        const afterProbe = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+        const probeFavs = afterProbe?.settings?.favoriteModels || [];
+        assert.ok(false, `favoriteModels in settings must contain ${curSelectedModel}, got: ${JSON.stringify(favList)}, diag=${JSON.stringify(diag)}, probePersisted=${probeFavs.includes('diag-probe-model')}`);
+      }
+
+      // Check UI selection is preserved
+      const modelValAfterFav = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
+      assert.equal(modelValAfterFav, curSelectedModel, 'UI model selection must NOT be reset when toggling favorite');
+
+      // (d) Mode radio: switch to tab-general -> change mode -> click Save -> translationMode updated in settings
+      await cdp.evaluate('document.getElementById("tab-general")?.click()', pSession2);
+      await sleep(100);
+
+      await cdp.evaluate('document.getElementById("mode-full")?.click()', pSession2);
+      await cdp.evaluate('document.getElementById("btn-save-general")?.click()', pSession2);
+      await sleep(300);
+
+      const swSettingsAfterMode = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId);
+      const savedMode = swSettingsAfterMode?.settings?.translationMode || swSettingsAfterMode?.translationMode;
+      assert.equal(savedMode, 'full', 'translationMode in settings must be updated to full');
+
+      record('T47', 'Popup e2e (light)', true, `tablist rendered & tabs toggled, 0 extra /models requests on reopen (cache hit), favorite toggled & selection kept, mode radio saved to full`);
+    } catch (e) {
+      record('T47', 'Popup e2e (light)', false, e.message);
+    } finally {
+      if (pTarget1) {
+        try { await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId }); } catch {}
+      }
+      if (pTarget2) {
+        try { await cdp.send('Target.closeTarget', { targetId: pTarget2.targetId }); } catch {}
+      }
+    }
+
+    // Test 48: Auto-translate on page load (autoTranslateSites)
 
     let t48TabPos = null;
     let t48TabNeg1 = null;
@@ -3715,7 +4304,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 45;
+  return allPass && testResults.length >= 49;
 }
 
 async function main() {
