@@ -2988,10 +2988,20 @@ async function runSingleAttempt() {
     // Test 40: Queue timer navigation check (abort queued batch when tab navigates, zero phantom provider calls)
     let tab40Target = null;
     try {
-      // 1. Create a dedicated real tab on same origin
+      // 1. Create a dedicated real tab on same origin, discovering its real tabId via set difference
+      const tabsBefore40 = await cdp.evaluate(`
+        (async () => {
+          if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+            return await chrome.tabs.query({});
+          }
+          return [];
+        })()
+      `, swSessionId);
+      const knownIdsBefore40 = new Set(Array.isArray(tabsBefore40) ? tabsBefore40.map(t => t.id) : []);
+
       tab40Target = await cdp.send('Target.createTarget', { url: fixtureUrl });
       let tab40Id = null;
-      for (let retries = 0; retries < 25; retries++) {
+      for (let retries = 0; retries < 30; retries++) {
         await sleep(100);
         const tabsAfter = await cdp.evaluate(`
           (async () => {
@@ -3001,18 +3011,14 @@ async function runSingleAttempt() {
             return [];
           })()
         `, swSessionId);
-        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => t.id !== fixtureTabId);
+        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => !knownIdsBefore40.has(t.id));
         if (match?.id) {
           tab40Id = match.id;
           break;
         }
       }
-      assert.ok(tab40Id, 'Tab 40 must be discovered in chrome.tabs');
-
-      // TEST-ONLY: register tab 40 so the queue timer can resolve its URL.
-      try {
-        await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
-      } catch {}
+      assert.ok(tab40Id, 'Tab 40 must be discovered in chrome.tabs as newly created fixture tab');
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
 
       const attachTab40Res = await cdp.send('Target.attachToTarget', {
         targetId: tab40Target.targetId,
@@ -3079,19 +3085,13 @@ async function runSingleAttempt() {
       `, swSessionId, true);
       assert.equal(queueStatus?.queued, true, 'Batch 2 must be queued');
 
-      // 5. Navigate Tab 40 via hash change on same origin (does NOT reload document -> onUpdated does not fire loading)
-      const navUrl = `${fixtureUrl}#t40-hash`;
+      // 5. Navigate Tab 40 via hash change on same origin (R1: same-origin hash change does NOT abort)
       await cdp.evaluate(`location.hash = '#t40-hash'`, tab40SessionId);
-
-      // TEST-ONLY: mirror the navigation into the registry
-      try {
-        await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(navUrl)})`, swSessionId);
-      } catch {}
 
       // Wait for queue timer to fire (> window 2000ms)
       await sleep(2500);
 
-      // 6. Assert Batch 2 SUCCEEDS on same-origin navigation (N1)
+      // 6. Assert Batch 2 SUCCEEDS on same-origin navigation (R1)
       const b2Res = await cdp.evaluate('self.__batch2Promise', swSessionId, true);
       assert.ok(b2Res && Array.isArray(b2Res.results), 'Batch 2 must succeed on same-origin hash change: ' + JSON.stringify(b2Res));
 
@@ -3099,7 +3099,26 @@ async function runSingleAttempt() {
       const logsAfterNav = fakeServer.getLogs();
       assert.equal(logsAfterNav.length, 2, 'Provider call count must increase to 2 (same-origin batch proceeds)');
 
-      // Subcase: full document reload / Page.navigate -> aborted by tabs.onUpdated
+      // Subcase: full document reload / Page.navigate -> aborted on navigation
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+      const bQuota = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40-b-quota', text: '占用配额批次', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${tab40Id}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.ok(bQuota && Array.isArray(bQuota.results), 'Quota consumption batch must succeed');
+      const logsBeforeDocNav = fakeServer.getLogs().length;
+
       await cdp.evaluate(`
         self.__batchDocNavPromise = self.__translatorSw.dispatchMessage({
           action: 'TRANSLATE_BATCH',
@@ -3112,21 +3131,25 @@ async function runSingleAttempt() {
         }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${tab40Id}, url: '${fixtureUrl}' } });
       `, swSessionId, false);
       await sleep(100);
+
+      const qStatus = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'GET_QUEUE_STATUS',
+          tabId: ${tab40Id}
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.equal(qStatus?.queued, true, 'Batch 3 must be queued before navigation');
+
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, null)`, swSessionId);
       await cdp.send('Page.navigate', { url: `${fixtureUrl}?docnav=1` }, tab40SessionId).catch(() => {});
-      await cdp.evaluate(`
-        (async () => {
-          try {
-            await chrome.tabs.update(${tab40Id}, { url: '${fixtureUrl}?docnav=1' });
-          } catch {}
-          await self.__translatorSw._handleTabUpdatedForTest(${tab40Id}, { status: 'loading' });
-        })()
-      `, swSessionId).catch(() => {});
-      await sleep(300);
+      await sleep(500);
       const bDocNavRes = await cdp.evaluate('self.__batchDocNavPromise', swSessionId, true);
       assert.ok(bDocNavRes && bDocNavRes.error, 'Batch must receive error on full document navigation: ' + JSON.stringify(bDocNavRes));
       assert.equal(bDocNavRes.error.code, 'ABORTED', `Expected ABORTED on doc nav, got: ${bDocNavRes.error.code}`);
+      const logsAfterDocNav = fakeServer.getLogs();
+      assert.equal(logsAfterDocNav.length, logsBeforeDocNav, `Provider calls must remain ${logsBeforeDocNav} after doc-nav abort`);
 
-      record('T40', 'Queue timer verifies tab origin (hash change continues)', true, `Batch 2 succeeded on same-origin hash change, provider calls 1 -> 2; doc nav aborted`);
+      record('T40', 'Queue timer verifies tab origin (hash change continues, doc-nav aborts)', true, `Batch 2 succeeded on same-origin hash change, provider calls 1 -> 2; doc nav aborted`);
     } catch (e) {
       record('T40', 'Queue timer verifies tab origin (hash change continues)', false, e.message);
     } finally {
@@ -3227,17 +3250,44 @@ async function runSingleAttempt() {
       } catch {}
     }
 
-    // Test 40c: Queue timer aborts on cross-origin navigation (N1)
+    // Test 40c: Queue timer aborts on cross-origin navigation (N1 / R3 real tab)
     let tab40cTarget = null;
     try {
+      const tabsBefore40c = await cdp.evaluate(`
+        (async () => {
+          if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+            return await chrome.tabs.query({});
+          }
+          return [];
+        })()
+      `, swSessionId);
+      const knownIdsBefore40c = new Set(Array.isArray(tabsBefore40c) ? tabsBefore40c.map(t => t.id) : []);
+
       tab40cTarget = await cdp.send('Target.createTarget', { url: fixtureUrl });
       const tab40cAttach = await cdp.send('Target.attachToTarget', { targetId: tab40cTarget.targetId, flatten: true });
       const tab40cSessionId = tab40cAttach.sessionId;
       await cdp.send('Runtime.enable', {}, tab40cSessionId);
       await cdp.send('Page.enable', {}, tab40cSessionId);
-      await sleep(300);
 
-      const tab40cId = 999943;
+      let tab40cId = null;
+      for (let retries = 0; retries < 30; retries++) {
+        await sleep(100);
+        const tabsAfter = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => !knownIdsBefore40c.has(t.id));
+        if (match?.id) {
+          tab40cId = match.id;
+          break;
+        }
+      }
+      assert.ok(tab40cId, 'Tab 40c must be discovered in chrome.tabs as newly created fixture tab');
+
       await cdp.evaluate(`
         (async () => {
           self.__translatorSw._setTestMode(true);
@@ -3287,12 +3337,11 @@ async function runSingleAttempt() {
 
       await sleep(100);
 
-      // Navigate Tab 40c to a different origin (port)
-      const crossOriginUrl = 'http://127.0.0.1:' + (Number(FIXTURE_PORT) + 10) + '/unregistered-origin';
+      // Navigate Tab 40c to a different origin using SMOKE_PORT
+      const crossOriginUrl = 'http://127.0.0.1:' + SMOKE_PORT + '/';
+      // Unregister so resolveTabPolicy exercises fail-closed real origin / unverifiable URL
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40cId}, null)`, swSessionId);
       await cdp.send('Page.navigate', { url: crossOriginUrl }, tab40cSessionId).catch(() => {});
-      await cdp.evaluate(`
-        self.__translatorSw._registerTestTab(${tab40cId}, ${JSON.stringify(crossOriginUrl)});
-      `, swSessionId);
 
       // Wait for timer to fire
       await sleep(2500);
@@ -4925,15 +4974,40 @@ async function runSingleAttempt() {
       `, swSessionId);
 
       // Create a dedicated tab for waiter-nav
+      const tabsBefore51 = await cdp.evaluate(`
+        (async () => {
+          if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+            return await chrome.tabs.query({});
+          }
+          return [];
+        })()
+      `, swSessionId);
+      const knownIdsBefore51 = new Set(Array.isArray(tabsBefore51) ? tabsBefore51.map(t => t.id) : []);
+
       tab51Target = await cdp.send('Target.createTarget', { url: fixtureUrl });
       const tab51Attach = await cdp.send('Target.attachToTarget', { targetId: tab51Target.targetId, flatten: true });
       const tab51SessionId = tab51Attach.sessionId;
       await cdp.send('Runtime.enable', {}, tab51SessionId);
       await cdp.send('Page.enable', {}, tab51SessionId);
-      await sleep(500);
 
-      const tab51Info = await cdp.evaluate('window.__translatorTabId || null', tab51SessionId).catch(() => null);
-      const tab51Id = typeof tab51Info === 'number' ? tab51Info : 999951;
+      let tab51Id = null;
+      for (let retries = 0; retries < 30; retries++) {
+        await sleep(100);
+        const tabsAfter = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => !knownIdsBefore51.has(t.id));
+        if (match?.id) {
+          tab51Id = match.id;
+          break;
+        }
+      }
+      assert.ok(tab51Id, 'Tab 51 must be discovered in chrome.tabs as newly created fixture tab');
       await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab51Id}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
 
       // Set fake server to hold_5s so requests hang in providerSemaphore for 5s
@@ -4997,18 +5071,12 @@ async function runSingleAttempt() {
 
       await sleep(150);
 
+      // Unregister test tab so resolveTabPolicy exercises fail-closed real navigation
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab51Id}, null)`, swSessionId);
       // Navigate Tab 51 via Page.navigate
       const nav51Url = `${fixtureUrl}?nav=t51`;
       await cdp.send('Page.navigate', { url: nav51Url }, tab51SessionId).catch(() => {});
-      await cdp.evaluate(`
-        (async () => {
-          try {
-            await chrome.tabs.update(${tab51Id}, { url: '${nav51Url}' });
-          } catch {}
-          await self.__translatorSw._handleTabUpdatedForTest(${tab51Id}, { status: 'loading' });
-          self.__translatorSw._registerTestTab(${tab51Id}, ${JSON.stringify(nav51Url)});
-        })()
-      `, swSessionId).catch(() => {});
+      await sleep(500);
 
       // Wait for navigation and waiter resolution
       const resWaiterNav = await cdp.evaluate('self.__t51WaiterNav', swSessionId, true);

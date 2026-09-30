@@ -306,6 +306,10 @@ function _setTestPermission(origin, granted) {
 function _registerTestTab(tabId, url) {
   const id = Number(tabId);
   if (!Number.isFinite(id)) return;
+  if (url === null || url === undefined) {
+    testTabRegistry.delete(id);
+    return;
+  }
   testTabRegistry.set(id, String(url));
 }
 
@@ -788,20 +792,23 @@ function scheduleQueueEntry(entry, delayMs) {
 // Clean tab overrides and rate queues/state when tab closes
 async function handleTabRemoved(tabId) {
   try {
+    const idNum = Number(tabId);
     for (const [reqId, active] of activeBatchControllers.entries()) {
-      if (active.tabId === tabId) {
+      if (active.tabId === tabId || active.tabId === idNum) {
         try { active.controller.abort('tab_closed'); } catch {}
         activeBatchControllers.delete(reqId);
       }
     }
     tabEpochs.delete(tabId);
-    const queue = tabQueues.get(tabId);
+    tabEpochs.delete(idNum);
+    const queue = tabQueues.get(tabId) || tabQueues.get(idNum);
     if (queue && queue.length > 0) {
       for (const entry of queue) {
         if (entry.timer) clearTimeout(entry.timer);
         entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'tab_closed' }));
       }
       tabQueues.delete(tabId);
+      tabQueues.delete(idNum);
     }
     if (!chrome.storage || !chrome.storage.session) return;
     const res = await chrome.storage.session.get(['tab_overrides']);
@@ -811,7 +818,7 @@ async function handleTabRemoved(tabId) {
       delete overrides[key];
       await chrome.storage.session.set({ tab_overrides: overrides });
     }
-    await chrome.storage.session.remove([`rate:tab:${tabId}`]);
+    await chrome.storage.session.remove([`rate:tab:${tabId}`, `rate:tab:${idNum}`]);
   } catch {
     // Ignore cleanup error
   }
@@ -826,27 +833,97 @@ async function handleTabUpdated(tabId, changeInfo, tab) {
   try {
     if (changeInfo && changeInfo.status === 'loading') {
       const idNum = Number(tabId);
+      const info = await resolveTabPolicy(idNum);
+
+      if (!info) {
+        // Tab closed / gone -> delegate to full removal cleanup
+        await handleTabRemoved(idNum);
+        return;
+      }
+
+      if (info.url === null) {
+        // Fail-closed: URL cannot be verified during navigation
+        for (const [reqId, active] of activeBatchControllers.entries()) {
+          if (active.tabId === idNum || active.tabId === tabId) {
+            try { active.controller.abort('navigation'); } catch {}
+            activeBatchControllers.delete(reqId);
+          }
+        }
+        const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
+        if (queue && queue.length > 0) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Tab navigated while translation was queued',
+              false,
+              { reason: 'navigation', tabId: idNum }
+            ));
+          }
+          tabQueues.delete(idNum);
+          tabQueues.delete(tabId);
+        }
+        return;
+      }
+
+      const curOrigin = normalizeOrigin(info.url);
+      if (!curOrigin) {
+        for (const [reqId, active] of activeBatchControllers.entries()) {
+          if (active.tabId === idNum || active.tabId === tabId) {
+            try { active.controller.abort('navigation'); } catch {}
+            activeBatchControllers.delete(reqId);
+          }
+        }
+        const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
+        if (queue && queue.length > 0) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Tab navigated while translation was queued',
+              false,
+              { reason: 'navigation', tabId: idNum }
+            ));
+          }
+          tabQueues.delete(idNum);
+          tabQueues.delete(tabId);
+        }
+        return;
+      }
+
+      // Origin check: abort only controllers and queue entries whose origin does NOT match curOrigin
       for (const [reqId, active] of activeBatchControllers.entries()) {
         if (active.tabId === idNum || active.tabId === tabId) {
-          try { active.controller.abort('navigation'); } catch {}
-          activeBatchControllers.delete(reqId);
+          if (!active.origin || active.origin !== curOrigin) {
+            try { active.controller.abort('navigation'); } catch {}
+            activeBatchControllers.delete(reqId);
+          }
         }
       }
-      const currentEpoch = tabEpochs.get(idNum) || tabEpochs.get(tabId) || 0;
-      tabEpochs.set(idNum, currentEpoch + 1);
+
       const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
       if (queue && queue.length > 0) {
+        const remaining = [];
         for (const entry of queue) {
-          if (entry.timer) clearTimeout(entry.timer);
-          entry.resolve(createTypedError(
-            'ABORTED',
-            'Tab navigated while translation was queued',
-            false,
-            { reason: 'navigation', tabId }
-          ));
+          if (entry.origin !== curOrigin) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Tab navigated while translation was queued',
+              false,
+              { reason: 'navigation', originalOrigin: entry.origin, currentOrigin: curOrigin, tabId: idNum }
+            ));
+          } else {
+            remaining.push(entry);
+          }
         }
-        tabQueues.delete(idNum);
-        tabQueues.delete(tabId);
+        if (remaining.length > 0) {
+          tabQueues.set(idNum, remaining);
+          if (tabId !== idNum) tabQueues.delete(tabId);
+        } else {
+          tabQueues.delete(idNum);
+          tabQueues.delete(tabId);
+        }
       }
     }
   } catch {

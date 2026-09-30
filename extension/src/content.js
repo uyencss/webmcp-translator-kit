@@ -1753,6 +1753,7 @@
   // Fire-and-forget CANCEL_PENDING on navigation / page hide
   window.addEventListener('pagehide', () => {
     try {
+      epoch++;
       if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
         chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
           if (chrome.runtime?.lastError) { /* ignore */ }
