@@ -3099,6 +3099,29 @@ async function runSingleAttempt() {
       const logsAfterNav = fakeServer.getLogs();
       assert.equal(logsAfterNav.length, 2, 'Provider call count must increase to 2 (same-origin batch proceeds)');
 
+      // 7b. pushState on same origin (R1/R3): batch must also continue (no abort).
+      // NOTE: harness mirrors the TRUE new URL into the test registry because
+      // it holds no real host permission (chrome.tabs.get cannot see tab URLs).
+      // The mirror carries the true value; origin comparison logic is real.
+      await cdp.evaluate(`history.pushState({}, '', '?t40push=1')`, tab40SessionId);
+      const pushUrl = `${fixtureUrl}?t40push=1`;
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(pushUrl)})`, swSessionId);
+      await cdp.evaluate(`
+        self.__batch3Promise = self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40-b3', text: '第三批pushState验证', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${pushUrl}', tab: { id: ${tab40Id}, url: '${pushUrl}' } });
+      `, swSessionId, false);
+      await sleep(2600);
+      const b3Res = await cdp.evaluate('self.__batch3Promise', swSessionId, true);
+      assert.ok(b3Res && Array.isArray(b3Res.results), 'Batch 3 must succeed after same-origin pushState: ' + JSON.stringify(b3Res));
+      assert.equal(fakeServer.getLogs().length, 3, 'Provider call count must increase to 3 (pushState batch proceeds)');
+
       // Subcase: full document reload / Page.navigate -> aborted on navigation
       await cdp.evaluate(`
         (async () => {
