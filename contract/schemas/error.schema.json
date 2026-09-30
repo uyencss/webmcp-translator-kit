@@ -1,0 +1,165 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.webmcp.org/translator/contract/v1/error.schema.json",
+  "title": "DirectTranslatorError",
+  "description": "Schema for typed errors returned by Direct Mode translator pipeline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "MISSING_CONFIG",
+        "PERMISSION_REQUIRED",
+        "KEY_ACCESS_UNAVAILABLE",
+        "CONSENT_STATE_UNAVAILABLE",
+        "RATE_STATE_UNAVAILABLE",
+        "RATE_LIMITED",
+        "CAP_EXCEEDED",
+        "SITE_NOT_ALLOWED",
+        "OPT_IN_REQUIRED",
+        "MODEL_NOT_ALLOWED",
+        "NETWORK",
+        "TIMEOUT",
+        "ABORTED",
+        "INVALID_SCHEMA",
+        "DROPPED_ON_RESTART",
+        "HTTP_401",
+        "HTTP_403",
+        "HTTP_404",
+        "HTTP_429",
+        "HTTP_5xx"
+      ],
+      "description": "Standardized machine-readable error code"
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable diagnostic explanation of the error"
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "True if error is eligible for HTTP retry per retry policy"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Typed context payload specific to the error code",
+      "properties": {
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of missing configuration keys"
+        },
+        "origin": {
+          "type": "string",
+          "description": "Target HTTP(S) origin related to permission or site policy"
+        },
+        "permissionType": {
+          "type": "string",
+          "enum": [
+            "host",
+            "site"
+          ],
+          "description": "Type of permission required"
+        },
+        "tabId": {
+          "type": "integer",
+          "description": "Target tab identifier"
+        },
+        "effectiveConsent": {
+          "type": "string",
+          "enum": [
+            "off"
+          ],
+          "description": "Effective consent state resolved by background SW"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "tab",
+            "site"
+          ],
+          "description": "Quota evaluation scope"
+        },
+        "targetId": {
+          "type": "string",
+          "description": "Identifier for the quota scope (tabId string or site origin)"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum allowed quota threshold"
+        },
+        "used": {
+          "type": "number",
+          "description": "Consumed quota amount in current sliding window"
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Recommended wait duration before re-dispatching"
+        },
+        "metric": {
+          "type": "string",
+          "enum": [
+            "batches",
+            "code_points"
+          ],
+          "description": "Metric that exceeded rate limit"
+        },
+        "capType": {
+          "type": "string",
+          "enum": [
+            "items",
+            "requestBytes",
+            "responseBytes"
+          ],
+          "description": "Batch cap dimension that was breached"
+        },
+        "actual": {
+          "type": "number",
+          "description": "Actual measured value that breached the cap"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Detailed failure cause"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Configured timeout in milliseconds"
+        },
+        "schemaErrors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of schema or validation rule violations"
+        },
+        "batchId": {
+          "type": "string",
+          "description": "Unique identifier of the dropped batch"
+        },
+        "status": {
+          "type": "integer",
+          "description": "HTTP status code"
+        },
+        "statusText": {
+          "type": "string",
+          "description": "HTTP status text"
+        }
+      }
+    }
+  }
+}

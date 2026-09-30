@@ -1,0 +1,16 @@
+{
+  "name": "@gyga-browser/webmcp-translator-kit",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./contract": "./contract/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/",
+    "check:contract": "node contract/check.mjs",
+    "check:closure": "node scripts/check-closure.mjs"
+  }
+}

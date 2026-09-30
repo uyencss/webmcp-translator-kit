@@ -1,0 +1,88 @@
+{
+  "version": "webmcp-translator-contract/1",
+  "provider": {
+    "timeoutMs": 60000,
+    "maxRetries": 2,
+    "retryInitialDelayMs": 500,
+    "retryMaxDelayMs": 1000,
+    "retryJitterRatio": 0.2,
+    "listModelsTimeoutMs": 15000,
+    "retryOnTimeout": 1
+  },
+  "batch": {
+    "maxItems": 64,
+    "maxSourceBytesUtf8": 24576,
+    "maxResponseBytes": 65536
+  },
+  "rateLimits": {
+    "windowSeconds": 60,
+    "tab": {
+      "maxBatches": 4,
+      "maxSourceCodePoints": 12000
+    },
+    "site": {
+      "maxBatches": 12,
+      "maxSourceCodePoints": 36000
+    }
+  },
+  "cache": {
+    "translation": {
+      "ttlMs": 600000,
+      "maxEntries": 500,
+      "maxSizeBytes": 2097152
+    },
+    "listModels": {
+      "ttlMs": 300000
+    }
+  },
+  "throttle": {
+    "patchMinIntervalMs": 200,
+    "debounceMinMs": 200,
+    "debounceMaxMs": 300,
+    "maxConcurrentRequests": 2,
+    "patchGroupSize": 64
+  },
+  "adjustments": [
+    {
+      "date": "2026-09-30",
+      "reason": "real-page TIMEOUT incident + batch measurements (glm-5.3-flash 4.3/7.8/13.4s; deepseek-v4.1-flash 15.1/12.6/14.7s for 8/16/32 items)",
+      "changes": [
+        "provider.timeoutMs 20000->45000",
+        "batch.maxItems 32->16",
+        "batch.maxSourceBytesUtf8 16384->12288",
+        "add provider.listModelsTimeoutMs=15000",
+        "add provider.retryOnTimeout=1"
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "reason": "owner: full-DOM scan with fewest requests; below-fold nodes were never translated (viewport filter bug); patch 200ms/node made 34 nodes ~7s slower",
+      "changes": [
+        "provider.timeoutMs 45000->60000",
+        "batch.maxItems 16->64",
+        "batch.maxSourceBytesUtf8 12288->24576",
+        "add throttle.patchGroupSize=64 (patchMinIntervalMs applies between groups, not per node)",
+        "content: collect() no longer viewport-filtered; skip already-applied nodes; chunk concurrency 2"
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "reason": "real-page verification (ixdzs8.com, 425 nodes): one hung chunk (2x60s) aborted the whole run at 192/425 applied",
+      "changes": [
+        "add recovery.contentRetryPerChunk=1",
+        "add recovery.contentRetryDelayMs=800",
+        "add recovery.splitOnFailure=true",
+        "add recovery.splitMaxDepth=2",
+        "add recovery.splitMinItems=8",
+        "content: per-chunk recovery; never abort the run on a single chunk failure; report applied/failed; second click resumes untranslated nodes"
+      ]
+    }
+  ],
+  "recovery": {
+    "contentRetryPerChunk": 1,
+    "contentRetryDelayMs": 800,
+    "splitOnFailure": true,
+    "splitMaxDepth": 2,
+    "splitMinItems": 8
+  }
+}

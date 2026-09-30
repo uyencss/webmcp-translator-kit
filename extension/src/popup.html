@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebMCP Translator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo-title">
+        <span class="icon">🌐</span>
+        <h1>WebMCP Translator</h1>
+      </div>
+      <span class="badge" id="slice-badge">Direct Mode</span>
+    </header>
+
+    <div class="warning-banner">
+      ⚠️ Văn bản trên trang sẽ được gửi tới 9router Base URL đã cấu hình.
+    </div>
+
+    <!-- Status section -->
+    <section class="section status-card">
+      <div class="status-header">
+        <span class="status-label">Trạng thái:</span>
+        <span class="status-val" id="status-text">Đang tải...</span>
+      </div>
+      <div class="status-sub" id="status-detail"></div>
+    </section>
+
+    <!-- Actions -->
+    <section class="section actions-card">
+      <button id="btn-translate" class="btn btn-primary" disabled>
+        ▶ Dịch trang này
+      </button>
+      <button id="btn-restore" class="btn btn-secondary" disabled>
+        ↺ Khôi phục gốc
+      </button>
+    </section>
+
+    <!-- Configuration -->
+    <details class="section config-card" open>
+      <summary class="config-summary">⚙️ Cấu hình 9router</summary>
+      
+      <div class="form-group">
+        <label for="input-base-url">Base URL</label>
+        <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" />
+      </div>
+
+      <div class="form-group">
+        <label for="input-api-key">API Key</label>
+        <div class="input-with-button">
+          <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" />
+          <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện/ẩn key">👁️</button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group flex-1">
+          <label for="select-model">Model</label>
+          <div class="input-with-button">
+            <select id="select-model">
+              <optgroup label="Recommended">
+                <option value="do/deepseek-v4.1-flash" selected>do/deepseek-v4.1-flash</option>
+                <option value="ag/gemini-3.1-pro-low">ag/gemini-3.1-pro-low</option>
+                <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
+                <option value="ag/gemini-3.1-pro-low">ag/gemini-3.1-pro-low</option>
+                <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
+              </optgroup>
+            </select>
+            <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model">🔄</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group flex-1">
+          <label for="select-src-lang">Nguồn</label>
+          <select id="select-src-lang">
+            <option value="auto">Tự động (auto)</option>
+            <option value="zh">Tiếng Trung (zh)</option>
+            <option value="en">Tiếng Anh (en)</option>
+            <option value="ja">Tiếng Nhật (ja)</option>
+            <option value="ko">Tiếng Hàn (ko)</option>
+          </select>
+        </div>
+        <div class="form-group flex-1">
+          <label for="select-tgt-lang">Đích</label>
+          <select id="select-tgt-lang">
+            <option value="vi" selected>Tiếng Việt (vi)</option>
+            <option value="en">Tiếng Anh (en)</option>
+            <option value="zh">Tiếng Trung (zh)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <button id="btn-save-config" class="btn btn-sm btn-success">💾 Lưu cấu hình</button>
+        <button id="btn-delete-key" class="btn btn-sm btn-danger">🗑️ Xoá key</button>
+      </div>
+      <div id="config-message" class="config-message"></div>
+    </details>
+
+    <footer class="footer">
+      <span>Slice P1'/P2' • </span>
+      <span id="key-status-indicator">Key: Chưa lưu</span>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
