@@ -2,7 +2,7 @@
 
 - **Contract Version**: `webmcp-translator-contract/1`
 - **Scope**: MV3 Background Service Worker lifecycle, tab close handling, and browser close/exit semantics.
-- **Normative Reference**: `contract/lifecycle.md`, `contract/consent.md`.
+- **Normative Reference**: `contract/lifecycle.md`, `contract/direct-interface.md` (consent/tab-override policy).
 
 ---
 

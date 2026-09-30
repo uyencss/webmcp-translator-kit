@@ -650,6 +650,19 @@ function scheduleQueueEntry(entry, delayMs) {
         return;
       }
 
+      // Fail closed when the current tab URL cannot be verified (e.g. tab
+      // exists but url is unreadable): never dispatch blindly on a stale origin.
+      if (tabInfo.url === null || tabInfo.url === undefined || tabInfo.url === '') {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'ABORTED',
+          'Tab URL could not be verified before dispatch',
+          false,
+          { reason: 'tab_url_unverifiable', tabId: entry.tabId }
+        ));
+        return;
+      }
+
       const sites = await getStoredSites();
       const tabOverrides = await getStoredTabOverrides();
       const siteEnabled = Boolean(sites[entry.origin]);

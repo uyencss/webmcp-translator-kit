@@ -3083,6 +3083,81 @@ async function runSingleAttempt() {
       } catch {}
     }
 
+    // Test 40b: Queue timer aborts when tab URL is unverifiable (fail-closed, G2-H1)
+    try {
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits({
+            tab: { maxBatches: 1, maxSourceCodePoints: 10000 },
+            site: { maxBatches: 10, maxSourceCodePoints: 50000 },
+            windowSeconds: 2
+          });
+          self.__translatorSw._setTestRateWindowSeconds(2);
+          self.__translatorSw._setTestMaxQueue(10);
+          await self.__translatorSw._resetRateStateForTest();
+          // Simulated tab with EMPTY url: chrome.tabs.get throws for this id,
+          // registry yields url null -> unverifiable branch (no test-mode skip).
+          self.__translatorSw._registerTestTab(999991, '');
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const b40b1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40b-b1', text: '不可验证测试第一批', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 999991, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.ok(b40b1 && Array.isArray(b40b1.results), 'Batch 1 must succeed: ' + JSON.stringify(b40b1));
+      assert.equal(fakeServer.getLogs().length, 1, 'Fake server received Batch 1');
+
+      await cdp.evaluate(`
+        self.__batch40bPromise = self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40b-b2', text: '第二批不可验证', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 999991, url: '${fixtureUrl}' } });
+      `, swSessionId, false);
+
+      await sleep(2600);
+
+      const logs40b = fakeServer.getLogs();
+      assert.equal(logs40b.length, 1, 'Provider call count must not increase (unverifiable tab must not dispatch)');
+
+      const b40b2 = await cdp.evaluate('self.__batch40bPromise', swSessionId, true);
+      assert.ok(b40b2 && b40b2.error, 'Batch 2 must receive error: ' + JSON.stringify(b40b2));
+      assert.equal(b40b2.error.code, 'ABORTED', `Expected ABORTED, got: ${b40b2.error.code}`);
+      assert.equal(b40b2.error.details?.reason, 'tab_url_unverifiable', `Expected tab_url_unverifiable, got: ${b40b2.error.details?.reason}`);
+
+      record('T40b', 'Queue timer aborts on unverifiable tab URL', true, 'ABORTED tab_url_unverifiable, provider calls stayed at 1');
+    } catch (e) {
+      record('T40b', 'Queue timer aborts on unverifiable tab URL', false, e.message);
+    } finally {
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            self.__translatorSw._setTestRateLimits(null);
+            self.__translatorSw._setTestRateWindowSeconds(null);
+            self.__translatorSw._setTestMaxQueue(null);
+            await self.__translatorSw._resetRateStateForTest();
+          })()
+        `, swSessionId);
+      } catch {}
+    }
+
     // Test 41: Model list durable cache (L2) + SW restart persistence + forceRefresh + baseURL invalidation
     try {
       fakeServer.setMode('normal');
@@ -4501,6 +4576,69 @@ async function runSingleAttempt() {
           })()
         `, swSessionId);
       } catch {}
+    }
+
+    // Test 50: Popup error path — SAVE_SETTINGS failure surfaces in real popup UI (G2-M1)
+    // =========================================================================
+    let pTarget50 = null;
+    try {
+      // Force SW storage-access failure (fail-closed KEY_ACCESS_UNAVAILABLE)
+      await cdp.evaluate(`
+        (async () => {
+          self.__t50OrigSetAccessLevel = chrome.storage.local.setAccessLevel;
+          chrome.storage.local.setAccessLevel = async () => { throw new Error('injected T50'); };
+          self.__translatorSw._resetStorageAccessStateForTest();
+        })()
+      `, swSessionId);
+
+      pTarget50 = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+      const pAttach50 = await cdp.send('Target.attachToTarget', { targetId: pTarget50.targetId, flatten: true });
+      const pSession50 = pAttach50.sessionId;
+      await cdp.send('Runtime.enable', {}, pSession50);
+      await sleep(800);
+
+      // Operate the real Save control with a valid baseURL; SW must refuse
+      await cdp.evaluate(`document.getElementById('input-base-url').value = 'http://127.0.0.1:${SMOKE_PORT}/v1'`, pSession50);
+      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
+      await sleep(800);
+
+      const errMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
+      const errCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
+      const bannerVisible = await cdp.evaluate(`getComputedStyle(document.getElementById('key-access-banner')).display !== 'none'`, pSession50).catch(() => false);
+      assert.ok(
+        (errMsg && errCls.includes('error')) || bannerVisible,
+        `Popup must surface SAVE_SETTINGS failure (message error or banner), got msg=${JSON.stringify(errMsg)} cls=${errCls} banner=${bannerVisible}`
+      );
+      assert.ok(!/thành công|saved|success/i.test(errMsg), `Popup must NOT report success on failure, got: ${JSON.stringify(errMsg)}`);
+
+      // Restore SW access; Save again from the same popup -> success path
+      await cdp.evaluate(`
+        (async () => {
+          chrome.storage.local.setAccessLevel = self.__t50OrigSetAccessLevel;
+          self.__translatorSw._resetStorageAccessStateForTest();
+        })()
+      `, swSessionId);
+      await cdp.evaluate(`document.getElementById('btn-save-connect').click()`, pSession50);
+      await sleep(800);
+      const okMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
+      const okCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
+      assert.ok(okMsg && okCls.includes('success'), `Popup must report success after restore, got msg=${JSON.stringify(okMsg)} cls=${okCls}`);
+
+      record('T50', 'Popup error path (fail-closed UI + recovery)', true, `error surfaced, no false success; success after restore`);
+    } catch (e) {
+      record('T50', 'Popup error path (fail-closed UI + recovery)', false, e.message);
+    } finally {
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            if (self.__t50OrigSetAccessLevel) chrome.storage.local.setAccessLevel = self.__t50OrigSetAccessLevel;
+            self.__translatorSw._resetStorageAccessStateForTest();
+          })()
+        `, swSessionId);
+      } catch {}
+      if (pTarget50) {
+        try { await cdp.send('Target.closeTarget', { targetId: pTarget50.targetId }); } catch {}
+      }
     }
 
   } finally {
