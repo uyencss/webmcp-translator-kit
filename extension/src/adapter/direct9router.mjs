@@ -269,8 +269,8 @@ export function createDirect9Router(config = {}) {
 
   async function translateBatch(input = {}) {
     const { items, sourceLanguage = 'auto', targetLanguage = 'vi', model, signal } = input;
-    const baseURL = getBaseURL();
-    const apiKey = getApiKey();
+    const baseURL = normalizeBaseURL(input.baseURL !== undefined ? input.baseURL : getBaseURL());
+    const apiKey = input.apiKey !== undefined ? String(input.apiKey) : getApiKey();
     const targetModel = model || getModel();
 
     // 1. Config check
@@ -708,12 +708,17 @@ export function createDirect9Router(config = {}) {
         // Privacy log hygiene: only log counts and model id, never text
         const actualModel = responseJson.model || 'unknown';
         const elapsedMs = now() - batchStart;
+        let actualBaseURLHost = '';
+        try {
+          actualBaseURLHost = new URL(baseURL).host;
+        } catch {}
 
         return {
           results: verifiedResults,
           requestedModel: targetModel,
           actualModel,
           model: actualModel !== 'unknown' ? actualModel : targetModel,
+          actualBaseURLHost,
           elapsedMs
         };
       } catch (err) {

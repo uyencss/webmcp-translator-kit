@@ -152,8 +152,12 @@ export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
     };
   }
 
-  const nextModel = chain[nextIndex];
-  if (!nextModel || typeof nextModel !== 'string' || !nextModel.trim()) {
+  const nextItem = chain[nextIndex];
+  const nextModel = typeof nextItem === 'string'
+    ? nextItem.trim()
+    : (nextItem && typeof nextItem.model === 'string' ? nextItem.model.trim() : '');
+
+  if (!nextModel) {
     return {
       shouldFallback: false,
       reason: 'INVALID_NEXT_MODEL',
@@ -165,17 +169,71 @@ export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
   return {
     shouldFallback: true,
     nextIndex,
-    nextModel: nextModel.trim()
+    nextModel,
+    nextConfig: typeof nextItem === 'object' ? nextItem : undefined
   };
 }
 
-// Utility to compare arrays
+// Extract hostname/host (no protocol, no key, no path)
+export function extractHost(urlStr) {
+  try {
+    return new URL(urlStr).host;
+  } catch {
+    return '';
+  }
+}
+
+// Pure helper to resolve the full provider chain with inheritance rules
+export function resolveFallbackChain(settings = {}, fallbackApiKeys = {}, primaryKey = '') {
+  const primaryModel = settings.model || DEFAULT_MODEL;
+  const primaryConfig = {
+    id: 'primary',
+    baseURL: settings.baseURL || '',
+    apiKey: primaryKey || '',
+    model: primaryModel
+  };
+
+  const configuredFallbacks = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
+  const fallbackConfigs = [];
+  for (const fb of configuredFallbacks) {
+    if (fb && typeof fb === 'object' && fb.model) {
+      const fbId = typeof fb.id === 'string' && fb.id.trim() ? fb.id.trim() : 'fb1';
+      const fbBaseURL = (typeof fb.baseURL === 'string' && fb.baseURL.trim()) ? fb.baseURL.trim() : primaryConfig.baseURL;
+      const fbApiKey = (fbId && fallbackApiKeys && fallbackApiKeys[fbId]) ? fallbackApiKeys[fbId] : primaryKey;
+      fallbackConfigs.push({
+        id: fbId,
+        baseURL: fbBaseURL,
+        apiKey: fbApiKey,
+        model: fb.model.trim()
+      });
+    }
+  }
+
+  return [primaryConfig, ...fallbackConfigs].slice(0, 3);
+}
+
+// Utility to compare arrays of strings
 function arraysEqual(a, b) {
   if (a === b) return true;
   if (!Array.isArray(a) || !Array.isArray(b)) return false;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+// Deep comparison for fallbacks array to detect config changes
+export function fallbacksEqual(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const itemA = a[i] || {};
+    const itemB = b[i] || {};
+    if (itemA.id !== itemB.id) return false;
+    if ((itemA.baseURL || '') !== (itemB.baseURL || '')) return false;
+    if (itemA.model !== itemB.model) return false;
   }
   return true;
 }
@@ -1046,10 +1104,18 @@ async function translateBatch(input = {}) {
   await ensureStorageAccess();
   const settings = await getStoredSettings();
   const apiKey = await getStoredApiKey();
-  routerConfig.baseURL = settings.baseURL;
-  routerConfig.apiKey = apiKey;
-  routerConfig.model = input.model || settings.model || DEFAULT_MODEL;
-  return await router.translateBatch(input);
+  const baseURL = input.baseURL || settings.baseURL;
+  const key = input.apiKey !== undefined ? input.apiKey : apiKey;
+  const model = input.model || settings.model || DEFAULT_MODEL;
+  routerConfig.baseURL = baseURL;
+  routerConfig.apiKey = key;
+  routerConfig.model = model;
+  return await router.translateBatch({
+    ...input,
+    baseURL,
+    apiKey: key,
+    model
+  });
 }
 
 // Semaphore-guarded batch translation with fallback chain & cache population strictly under actualModel
@@ -1124,20 +1190,29 @@ async function executeBatchTranslation({
   }
 
   const storedSettings = await getStoredSettings();
-  const primaryModel = storedSettings.model || payload.model || DEFAULT_MODEL;
-  const configuredFallbacks = Array.isArray(storedSettings.fallbackModels) ? storedSettings.fallbackModels : [];
-  const chain = [primaryModel, ...configuredFallbacks].filter((m) => typeof m === 'string' && m.trim()).slice(0, 3);
-  const requestedModel = chain[0] || DEFAULT_MODEL;
+  const primaryKey = await getStoredApiKey();
+  let storedFbKeys = {};
+  try {
+    const fbKeysRes = await chrome.storage.local.get(['fallback_api_keys']);
+    storedFbKeys = fbKeysRes.fallback_api_keys || {};
+  } catch {}
+
+  const chain = resolveFallbackChain(storedSettings, storedFbKeys, primaryKey);
+  const requestedModel = chain[0]?.model || DEFAULT_MODEL;
 
   let currentMisses = [...misses];
   let currentHits = [...hits];
   let finalProviderRes = null;
   let actualModel = requestedModel;
+  let actualBaseURL = chain[0]?.baseURL || storedSettings.baseURL || '';
   let fallbackIndex = 0;
 
   try {
     for (let attemptIndex = 0; attemptIndex < chain.length && attemptIndex < 3; attemptIndex++) {
-      const currentModel = chain[attemptIndex];
+      const currentConfig = chain[attemptIndex];
+      const currentModel = currentConfig.model;
+      const currentBaseURL = currentConfig.baseURL;
+      const currentApiKey = currentConfig.apiKey;
 
       // Re-verify signal and config revision before each attempt
       if (signal?.aborted) {
@@ -1161,10 +1236,10 @@ async function executeBatchTranslation({
         };
       }
 
-      // Check cache for this specific model attempt
+      // Check cache for this specific attempt
       if (attemptIndex > 0) {
         const attemptCacheContext = {
-          baseURL: storedSettings.baseURL || '',
+          baseURL: currentBaseURL || '',
           model: currentModel,
           sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
           targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
@@ -1196,6 +1271,7 @@ async function executeBatchTranslation({
         // If all misses hit cache for this fallback model, complete without provider call
         if (currentMisses.length === 0) {
           actualModel = currentModel;
+          actualBaseURL = currentBaseURL;
           fallbackIndex = attemptIndex;
           finalProviderRes = { ok: true, results: [] };
           break;
@@ -1206,6 +1282,8 @@ async function executeBatchTranslation({
       try {
         attemptRes = await translateBatch({
           ...payload,
+          baseURL: currentBaseURL,
+          apiKey: currentApiKey,
           model: currentModel,
           items: currentMisses.map((m) => m.item),
           signal
@@ -1216,12 +1294,13 @@ async function executeBatchTranslation({
 
       if (attemptRes && !attemptRes.error && Array.isArray(attemptRes.results)) {
         actualModel = currentModel;
+        actualBaseURL = currentBaseURL;
         fallbackIndex = attemptIndex;
         finalProviderRes = attemptRes;
 
-        // Populate cache strictly under actualModel
+        // Populate cache strictly under actualModel and actualBaseURL
         const actualCacheContext = {
-          baseURL: storedSettings.baseURL || '',
+          baseURL: actualBaseURL || '',
           model: actualModel,
           sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
           targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
@@ -1306,12 +1385,15 @@ async function executeBatchTranslation({
     merged[h.index] = h.result;
   }
 
+  const actualBaseURLHost = extractHost(actualBaseURL);
+
   return {
     ...finalProviderRes,
     results: merged,
     requestedModel,
     actualModel,
     fallbackIndex,
+    actualBaseURLHost,
     configRevision: batchConfigRevision,
     currentConfigRevision: configRevision
   };
@@ -1356,7 +1438,20 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
         const settings = await getStoredSettings();
         const hasKey = Boolean(await getStoredApiKey());
-        return { settings, hasKey, configRevision };
+        let storedFbKeys = {};
+        try {
+          const res = await chrome.storage.local.get(['fallback_api_keys']);
+          storedFbKeys = res.fallback_api_keys || {};
+        } catch {}
+        const fallbackKeyPresence = {};
+        if (Array.isArray(settings.fallbacks)) {
+          for (const fb of settings.fallbacks) {
+            if (fb && fb.id) {
+              fallbackKeyPresence[fb.id] = Boolean(storedFbKeys[fb.id]);
+            }
+          }
+        }
+        return { settings, hasKey, fallbackKeyPresence, configRevision };
       }
 
       case 'SAVE_SETTINGS': {
@@ -1383,6 +1478,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           };
         }
 
+        // Backward-compatibility: if legacy fallbackModels is passed in patch without fallbacks
+        if (Array.isArray(patch.fallbackModels) && !('fallbacks' in patch)) {
+          mergedRaw.fallbacks = patch.fallbackModels.filter(Boolean).map((m, i) => ({ id: `fb${i + 1}`, model: m }));
+          delete mergedRaw.fallbackModels;
+        }
+
         const validation = validateSettings(mergedRaw);
         if (!validation.valid) {
           return createTypedError('INVALID_SCHEMA', 'Invalid settings: ' + (validation.errors || []).join('; '), false, {
@@ -1399,7 +1500,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           oldSettings.sourceLanguage !== migrated.sourceLanguage ||
           oldSettings.targetLanguage !== migrated.targetLanguage ||
           oldSettings.translationMode !== migrated.translationMode ||
-          !arraysEqual(oldSettings.fallbackModels, migrated.fallbackModels)
+          !fallbacksEqual(oldSettings.fallbacks, migrated.fallbacks)
         );
 
         if (configChanged) {
@@ -1429,6 +1530,24 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (oldSettings.baseURL !== migrated.baseURL) {
           await chrome.storage.local.remove(['modelListCache']);
         }
+
+        // Prune orphan fallback keys when a fallback is removed
+        try {
+          const resFbKeys = await chrome.storage.local.get(['fallback_api_keys']);
+          const currentFbKeys = resFbKeys.fallback_api_keys || {};
+          const activeFbIds = new Set((migrated.fallbacks || []).map((fb) => fb.id));
+          let fbKeysPruned = false;
+          const nextFbKeys = { ...currentFbKeys };
+          for (const id of Object.keys(nextFbKeys)) {
+            if (!activeFbIds.has(id)) {
+              delete nextFbKeys[id];
+              fbKeysPruned = true;
+            }
+          }
+          if (fbKeysPruned) {
+            await chrome.storage.local.set({ fallback_api_keys: nextFbKeys });
+          }
+        } catch {}
 
         await chrome.storage.local.set({ settings: migrated });
         if (migrated.baseURL) routerConfig.baseURL = migrated.baseURL;
@@ -1500,6 +1619,96 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         return { ok: true, configRevision };
       }
 
+      case 'SET_FALLBACK_KEY': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'SET_FALLBACK_KEY is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        const fbId = typeof message.id === 'string' ? message.id.trim() : '';
+        if (!fbId) {
+          return createTypedError('INVALID_SCHEMA', 'Fallback id is required', false, { id: message.id });
+        }
+        const key = typeof message.key === 'string' ? message.key.trim() : '';
+        if (!key) {
+          return createTypedError('INVALID_SCHEMA', 'Fallback key must be a non-empty string', false);
+        }
+
+        await ensureStorageAccess();
+        const settings = await getStoredSettings();
+        const exists = Array.isArray(settings.fallbacks) && settings.fallbacks.some((fb) => fb && fb.id === fbId);
+        if (!exists) {
+          return createTypedError('INVALID_SCHEMA', `Fallback id "${fbId}" does not exist in settings`, false, { id: fbId });
+        }
+
+        configRevision++;
+        translationCache.clear();
+        for (const [reqId, active] of activeBatchControllers.entries()) {
+          try { active.controller.abort('credential_changed'); } catch {}
+        }
+        activeBatchControllers.clear();
+        for (const [tabId, queue] of tabQueues.entries()) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Translation request aborted due to credential change',
+              false,
+              { reason: 'Credential changed' }
+            ));
+          }
+        }
+        tabQueues.clear();
+
+        const res = await chrome.storage.local.get(['fallback_api_keys']);
+        const fbKeys = res.fallback_api_keys || {};
+        fbKeys[fbId] = key;
+        await chrome.storage.local.set({ fallback_api_keys: fbKeys });
+
+        return { ok: true, configRevision };
+      }
+
+      case 'DELETE_FALLBACK_KEY': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'DELETE_FALLBACK_KEY is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        const fbId = typeof message.id === 'string' ? message.id.trim() : '';
+        if (!fbId) {
+          return createTypedError('INVALID_SCHEMA', 'Fallback id is required', false, { id: message.id });
+        }
+
+        await ensureStorageAccess();
+        configRevision++;
+        translationCache.clear();
+        for (const [reqId, active] of activeBatchControllers.entries()) {
+          try { active.controller.abort('credential_changed'); } catch {}
+        }
+        activeBatchControllers.clear();
+        for (const [tabId, queue] of tabQueues.entries()) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Translation request aborted due to credential removal',
+              false,
+              { reason: 'Credential removed' }
+            ));
+          }
+        }
+        tabQueues.clear();
+
+        const res = await chrome.storage.local.get(['fallback_api_keys']);
+        const fbKeys = res.fallback_api_keys || {};
+        if (fbId in fbKeys) {
+          delete fbKeys[fbId];
+          await chrome.storage.local.set({ fallback_api_keys: fbKeys });
+        }
+
+        return { ok: true, configRevision };
+      }
+
       case 'DELETE_KEY': {
         if (!isPrivilegedSender(sender)) {
           return createTypedError('PERMISSION_REQUIRED', 'DELETE_KEY is only permitted from extension UI', false, {
@@ -1525,8 +1734,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
-        // Invalidate model list cache on key removal
-        await chrome.storage.local.remove(['modelListCache', 'api_key']);
+        // Invalidate model list cache on key removal, and remove all fallback keys
+        await chrome.storage.local.remove(['modelListCache', 'api_key', 'fallback_api_keys']);
         routerConfig.apiKey = '';
         return { ok: true, configRevision };
       }
@@ -2058,6 +2267,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             requestedModel: primaryModel,
             actualModel: primaryModel,
             fallbackIndex: 0,
+            actualBaseURLHost: extractHost(storedSettings.baseURL || ''),
             configRevision: batchConfigRevision,
             currentConfigRevision: configRevision
           };

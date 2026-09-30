@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveFallbackPlan,
+  resolveFallbackChain,
+  extractHost,
   STOP_ERROR_CODES,
   FALLBACK_ELIGIBLE_CODES
 } from '../extension/src/sw.js';
@@ -120,4 +122,102 @@ test('fallback: resolveFallbackPlan handles both typed error envelope and flat E
   assert.equal(plan.shouldFallback, true);
   assert.equal(plan.nextIndex, 1);
   assert.equal(plan.nextModel, 'model-fb1');
+});
+
+test('fallback: resolveFallbackChain (a) inherits baseURL and key from primary when missing in fallback', () => {
+  const settings = {
+    baseURL: 'https://primary.example.com/v1',
+    model: 'primary-model',
+    fallbacks: [
+      { id: 'fb1', model: 'fallback-model-1' }
+    ]
+  };
+  const primaryKey = 'sk-primary-key';
+  const fbKeys = {};
+
+  const chain = resolveFallbackChain(settings, fbKeys, primaryKey);
+
+  assert.equal(chain.length, 2);
+  // Attempt 0: Primary
+  assert.deepEqual(chain[0], {
+    id: 'primary',
+    baseURL: 'https://primary.example.com/v1',
+    apiKey: 'sk-primary-key',
+    model: 'primary-model'
+  });
+  // Attempt 1: Inherits baseURL and apiKey from primary
+  assert.deepEqual(chain[1], {
+    id: 'fb1',
+    baseURL: 'https://primary.example.com/v1',
+    apiKey: 'sk-primary-key',
+    model: 'fallback-model-1'
+  });
+});
+
+test('fallback: resolveFallbackChain (b) uses custom baseURL and distinct fallback apiKey when provided', () => {
+  const settings = {
+    baseURL: 'https://primary.example.com/v1',
+    model: 'primary-model',
+    fallbacks: [
+      { id: 'fb1', baseURL: 'https://custom-fallback.example.com/v1', model: 'fb-model-1' }
+    ]
+  };
+  const primaryKey = 'sk-primary-key';
+  const fbKeys = {
+    fb1: 'sk-fallback-1-key'
+  };
+
+  const chain = resolveFallbackChain(settings, fbKeys, primaryKey);
+
+  assert.equal(chain.length, 2);
+  assert.deepEqual(chain[1], {
+    id: 'fb1',
+    baseURL: 'https://custom-fallback.example.com/v1',
+    apiKey: 'sk-fallback-1-key',
+    model: 'fb-model-1'
+  });
+});
+
+test('fallback: resolveFallbackChain (c) uses custom baseURL but inherits primary key when fallback key is not set', () => {
+  const settings = {
+    baseURL: 'https://primary.example.com/v1',
+    model: 'primary-model',
+    fallbacks: [
+      { id: 'fb1', baseURL: 'https://custom-fallback.example.com/v1', model: 'fb-model-1' }
+    ]
+  };
+  const primaryKey = 'sk-primary-key';
+  const fbKeys = {}; // No key for fb1
+
+  const chain = resolveFallbackChain(settings, fbKeys, primaryKey);
+
+  assert.equal(chain.length, 2);
+  assert.deepEqual(chain[1], {
+    id: 'fb1',
+    baseURL: 'https://custom-fallback.example.com/v1',
+    apiKey: 'sk-primary-key', // Inherited from primary
+    model: 'fb-model-1'
+  });
+});
+
+test('fallback: resolveFallbackPlan works seamlessly with object chain configs', () => {
+  const objectChain = [
+    { id: 'primary', baseURL: 'https://p.com', apiKey: 'k1', model: 'model-primary' },
+    { id: 'fb1', baseURL: 'https://fb.com', apiKey: 'k2', model: 'model-fb1' }
+  ];
+
+  const err = { error: { code: 'HTTP_5xx', message: 'Server error' } };
+  const plan = resolveFallbackPlan(err, objectChain, 0);
+
+  assert.equal(plan.shouldFallback, true);
+  assert.equal(plan.nextIndex, 1);
+  assert.equal(plan.nextModel, 'model-fb1');
+  assert.deepEqual(plan.nextConfig, objectChain[1]);
+});
+
+test('fallback: extractHost extracts host and port correctly, stripping path and protocol', () => {
+  assert.equal(extractHost('http://localhost:8080/v1'), 'localhost:8080');
+  assert.equal(extractHost('https://api.openai.com/v1/chat'), 'api.openai.com');
+  assert.equal(extractHost('http://127.0.0.1:9789/custom/v1'), '127.0.0.1:9789');
+  assert.equal(extractHost('invalid-url'), '');
 });

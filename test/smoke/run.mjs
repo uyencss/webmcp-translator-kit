@@ -198,6 +198,15 @@ async function runSingleAttempt() {
   fakeServer.getModelsFetchCount = () => modelsFetchCount;
   fakeServer.clearModelsFetchCount = () => { modelsFetchCount = 0; };
 
+  let detailedLogs = [];
+  fakeServer.getDetailedLogs = () => detailedLogs;
+  fakeServer.clearDetailedLogs = () => { detailedLogs = []; };
+  const origClearLog = fakeServer.clearLog.bind(fakeServer);
+  fakeServer.clearLog = () => {
+    origClearLog();
+    detailedLogs = [];
+  };
+
   const origListeners = fakeServer.server.listeners('request').slice();
   fakeServer.server.removeAllListeners('request');
   fakeServer.server.on('request', (req, res) => {
@@ -207,8 +216,20 @@ async function runSingleAttempt() {
       modelsFetchCount++;
     }
 
+    if (pathname.endsWith('/chat/completions') && req.method === 'POST') {
+      detailedLogs.push({
+        method: req.method,
+        url: req.url,
+        pathname,
+        host: req.headers.host,
+        authorization: req.headers.authorization,
+        headers: { ...req.headers },
+        time: Date.now()
+      });
+    }
+
     const mode = fakeServer.getMode();
-    if (mode === 'fail_first_model_500' || mode === 'http_401') {
+    if (req.method === 'POST' && (mode === 'fail_first_model_500' || mode === 'http_401')) {
       const origWriteHead = res.writeHead.bind(res);
       const origEnd = res.end.bind(res);
       let capturedStatus = 200;
@@ -3162,7 +3183,7 @@ async function runSingleAttempt() {
       fakeServer.clearLog();
       fakeServer.setMode('normal');
 
-      // Configure primary model + fallbackModels
+      // Configure primary model + fallbacks
       const fbPrimaryModel = 'ag/gemini-3.1-pro-low';
       const fbSecondaryModel = 'ag/gemini-3.8-flash';
 
@@ -3176,7 +3197,7 @@ async function runSingleAttempt() {
             settings: {
               baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
               model: '${fbPrimaryModel}',
-              fallbackModels: ['${fbSecondaryModel}']
+              fallbacks: [{ id: 'fb1', model: '${fbSecondaryModel}' }]
             }
           }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
         })()
@@ -3201,6 +3222,7 @@ async function runSingleAttempt() {
       assert.equal(res42_success.actualModel, fbSecondaryModel, `Expected actualModel ${fbSecondaryModel}, got: ${res42_success.actualModel}`);
       assert.equal(res42_success.fallbackIndex, 1, `Expected fallbackIndex 1, got: ${res42_success.fallbackIndex}`);
       assert.equal(res42_success.requestedModel, fbPrimaryModel, `Expected requestedModel ${fbPrimaryModel}, got: ${res42_success.requestedModel}`);
+      assert.equal(res42_success.actualBaseURLHost, `127.0.0.1:${SMOKE_PORT}`, `Expected actualBaseURLHost 127.0.0.1:${SMOKE_PORT}, got: ${res42_success.actualBaseURLHost}`);
 
       const logsFallback = fakeServer.getLogs();
       assert.equal(logsFallback.length, 2, `Fake server must receive exactly 2 requests (primary fail 500 + fb1 ok), got: ${logsFallback.length}`);
@@ -3254,7 +3276,7 @@ async function runSingleAttempt() {
             translationMode: 'scroll-follow',
             widgetVisible: true,
             favoriteModels: ['fav-test-model'],
-            fallbackModels: ['ag/gemini-3.8-flash']
+            fallbacks: [{ id: 'fb1', model: 'ag/gemini-3.8-flash' }]
           }
         }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
       `, swSessionId, true);
@@ -3283,7 +3305,7 @@ async function runSingleAttempt() {
       assert.deepEqual(afterPartial.settings.favoriteModels, ['fav-test-model'], 'favoriteModels must be preserved intact');
       assert.equal(afterPartial.settings.translationMode, 'scroll-follow', 'translationMode must be preserved intact');
       assert.equal(afterPartial.settings.widgetVisible, true, 'widgetVisible must be preserved intact');
-      assert.deepEqual(afterPartial.settings.fallbackModels, ['ag/gemini-3.8-flash'], 'fallbackModels must be preserved intact');
+      assert.deepEqual(afterPartial.settings.fallbacks, [{ id: 'fb1', model: 'ag/gemini-3.8-flash' }], 'fallbacks must be preserved intact');
 
       const revAfterModel = afterPartial.configRevision;
       assert.ok(revAfterModel > revBaseline, 'Changing primary model MUST bump configRevision');
@@ -4271,6 +4293,189 @@ async function runSingleAttempt() {
       } catch {}
     }
 
+    // =========================================================================
+    // Test 49: Fallback v2 (custom baseURL + custom key, and primary key fallback)
+    // =========================================================================
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const popupSender = `{ url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }`;
+      const t49PrimaryModel = 'ag/gemini-3.1-pro-low';
+      const t49SecondaryModel = 'ag/gemini-3.8-flash';
+      const primaryKey = 'sk-primary-test-key-t49';
+      const fbCustomKey = 'sk-fb-custom-key-t49';
+      const fbCustomBaseURL = `http://127.0.0.1:${SMOKE_PORT}/fallback-v2/v1`;
+
+      // 1. Configure settings with primary + fallback with custom baseURL
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._registerTestTab(${fixtureTabId}, ${JSON.stringify(fixtureUrl)});
+          self.__translatorSw._setTestMaxRetries(0);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, ${popupSender});
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${fixtureTabId},
+            value: 'auto'
+          }, ${popupSender});
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${t49PrimaryModel}',
+              fallbacks: [
+                { id: 'fb-t49', baseURL: '${fbCustomBaseURL}', model: '${t49SecondaryModel}' }
+              ]
+            }
+          }, ${popupSender});
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_KEY',
+            key: '${primaryKey}'
+          }, ${popupSender});
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_FALLBACK_KEY',
+            id: 'fb-t49',
+            key: '${fbCustomKey}'
+          }, ${popupSender});
+        })()
+      `, swSessionId);
+
+      // Verify GET_SETTINGS reports fallbackKeyPresence
+      const settingsCheck1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, ${popupSender})
+      `, swSessionId, true);
+      assert.equal(settingsCheck1.hasKey, true, 'Primary key presence must be true');
+      assert.deepEqual(settingsCheck1.fallbackKeyPresence, { 'fb-t49': true }, 'fallbackKeyPresence must report true for fb-t49');
+      assert.strictEqual(settingsCheck1.fallback_api_keys, undefined, 'fallback_api_keys must never leak into GET_SETTINGS');
+      assert.strictEqual(settingsCheck1.settings.apiKey, undefined, 'apiKey must not be in settings');
+      assert.strictEqual(settingsCheck1.settings.fallbacks[0].apiKey, undefined, 'apiKey must not be in fallback object');
+
+      // 2. Subcase A: Primary returns 500 -> Fallback has custom baseURL + custom key
+      fakeServer.setMode('fail_first_model_500');
+      fakeServer.clearLog();
+
+      const res49_a = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't49-item-1', text: '多配置回退测试', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(res49_a && Array.isArray(res49_a.results), 'Batch with custom fallback must succeed: ' + JSON.stringify(res49_a));
+      assert.equal(res49_a.actualModel, t49SecondaryModel, `Expected actualModel ${t49SecondaryModel}, got: ${res49_a.actualModel}`);
+      assert.equal(res49_a.fallbackIndex, 1, `Expected fallbackIndex 1, got: ${res49_a.fallbackIndex}`);
+      assert.equal(res49_a.actualBaseURLHost, `127.0.0.1:${SMOKE_PORT}`, `Expected actualBaseURLHost 127.0.0.1:${SMOKE_PORT}, got: ${res49_a.actualBaseURLHost}`);
+
+      const detailedLogsA = fakeServer.getDetailedLogs();
+      assert.equal(detailedLogsA.length, 2, `Expected 2 requests on fake server, got: ${detailedLogsA.length}`);
+      // Request 1: to primary baseURL with primary key
+      assert.equal(detailedLogsA[0].pathname, '/v1/chat/completions', 'Attempt 1 must hit primary /v1/chat/completions');
+      assert.equal(detailedLogsA[0].authorization, `Bearer ${primaryKey}`, 'Attempt 1 must use primary API key');
+      assert.equal(detailedLogsA[0].host, `127.0.0.1:${SMOKE_PORT}`, 'Attempt 1 host must match');
+      // Request 2: to fallback custom baseURL with fallback key
+      assert.equal(detailedLogsA[1].pathname, '/fallback-v2/v1/chat/completions', 'Attempt 2 must hit fallback custom baseURL path');
+      assert.equal(detailedLogsA[1].authorization, `Bearer ${fbCustomKey}`, 'Attempt 2 must use fallback custom API key');
+      assert.equal(detailedLogsA[1].host, `127.0.0.1:${SMOKE_PORT}`, 'Attempt 2 host must match');
+
+      // 3. Subcase B: Fallback WITHOUT custom key -> inherits primary key
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'DELETE_FALLBACK_KEY',
+          id: 'fb-t49'
+        }, ${popupSender})
+      `, swSessionId, true);
+
+      const settingsCheck2 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, ${popupSender})
+      `, swSessionId, true);
+      assert.equal(settingsCheck2.hasKey, true, 'Primary key presence must still be true');
+      assert.deepEqual(settingsCheck2.fallbackKeyPresence, { 'fb-t49': false }, 'fallbackKeyPresence must report false after DELETE_FALLBACK_KEY');
+
+      fakeServer.clearLog();
+
+      const res49_b = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't49-item-2', text: '继承密钥测试', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(res49_b && Array.isArray(res49_b.results), 'Batch with inherited key fallback must succeed: ' + JSON.stringify(res49_b));
+      assert.equal(res49_b.actualModel, t49SecondaryModel, `Expected actualModel ${t49SecondaryModel}, got: ${res49_b.actualModel}`);
+      assert.equal(res49_b.fallbackIndex, 1, `Expected fallbackIndex 1, got: ${res49_b.fallbackIndex}`);
+      assert.equal(res49_b.actualBaseURLHost, `127.0.0.1:${SMOKE_PORT}`, `Expected actualBaseURLHost 127.0.0.1:${SMOKE_PORT}, got: ${res49_b.actualBaseURLHost}`);
+
+      const detailedLogsB = fakeServer.getDetailedLogs();
+      assert.equal(detailedLogsB.length, 2, `Expected 2 requests on fake server, got: ${detailedLogsB.length}`);
+      // Request 1: to primary baseURL with primary key
+      assert.equal(detailedLogsB[0].pathname, '/v1/chat/completions', 'Attempt 1 must hit primary /v1/chat/completions');
+      assert.equal(detailedLogsB[0].authorization, `Bearer ${primaryKey}`, 'Attempt 1 must use primary API key');
+      // Request 2: to fallback custom baseURL with primary key (inherited!)
+      assert.equal(detailedLogsB[1].pathname, '/fallback-v2/v1/chat/completions', 'Attempt 2 must hit fallback custom baseURL path');
+      assert.equal(detailedLogsB[1].authorization, `Bearer ${primaryKey}`, 'Attempt 2 without fallback key must inherit primary key');
+
+      // 4. Verify DELETE_KEY deletes all fallback keys as well
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_FALLBACK_KEY',
+            id: 'fb-t49',
+            key: '${fbCustomKey}'
+          }, ${popupSender});
+          await self.__translatorSw.dispatchMessage({
+            action: 'DELETE_KEY'
+          }, ${popupSender});
+        })()
+      `, swSessionId);
+
+      const checkDeleteKey = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, ${popupSender})
+      `, swSessionId, true);
+      assert.equal(checkDeleteKey.hasKey, false, 'Primary key presence must be false after DELETE_KEY');
+      assert.deepEqual(checkDeleteKey.fallbackKeyPresence, { 'fb-t49': false }, 'All fallback keys must be deleted on DELETE_KEY');
+
+      record('T49', 'Fallback v2: custom baseURL + key and primary key fallback', true, 'Custom baseURL + custom key verified on fake server, fallback key deletion -> inherited primary key verified, DELETE_KEY wiped fallback keys');
+    } catch (e) {
+      record('T49', 'Fallback v2: custom baseURL + key and primary key fallback', false, e.message);
+    } finally {
+      fakeServer.setMode('normal');
+      fakeServer.clearLog();
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+            self.__translatorSw._setTestMaxRetries(null);
+            await self.__translatorSw.dispatchMessage({
+              action: 'SET_KEY',
+              key: 'fake-test-key'
+            }, popupSender);
+            await self.__translatorSw.dispatchMessage({
+              action: 'SAVE_SETTINGS',
+              settings: {
+                baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+                model: 'ag/gemini-3.1-pro-low',
+                fallbacks: []
+              }
+            }, popupSender);
+          })()
+        `, swSessionId);
+      } catch {}
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -4304,7 +4509,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 49;
+  return allPass && testResults.length >= 50;
 }
 
 async function main() {

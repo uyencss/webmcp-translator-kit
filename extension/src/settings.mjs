@@ -3,13 +3,13 @@
 
 import { normalizeOrigin } from './consent.mjs';
 
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 export const DEFAULT_SETTINGS = Object.freeze({
   version: SETTINGS_VERSION,
   baseURL: 'http://localhost:8080/v1',
   model: 'ag/gemini-3.1-pro-low',
-  fallbackModels: Object.freeze([]),
+  fallbacks: Object.freeze([]),
   favoriteModels: Object.freeze([]),
   autoTranslateSites: Object.freeze([]),
   translationMode: 'scroll-follow',
@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 /**
  * Migrates any raw settings object to the canonical SETTINGS_VERSION.
  * Invariants:
- * 1. api_key or apiKey record is NEVER stored in settings (purged if found).
+ * 1. api_key, apiKey, fallback_api_keys is NEVER stored in settings (purged if found).
  * 2. Missing fields are filled with sensible frozen defaults.
  * 3. Unknown user fields are preserved intact.
  * 4. Idempotent: migrateSettings(migrateSettings(x)) equals migrateSettings(x).
@@ -49,11 +49,13 @@ export function migrateSettings(raw) {
   // Clone to avoid mutating caller object
   const res = { ...raw };
 
-  // INVARIANT: api_key or apiKey must NEVER be in settings
+  // INVARIANT: credentials must NEVER be in settings
   delete res.api_key;
   delete res.apiKey;
+  delete res.fallback_api_keys;
+  delete res.fallbackApiKeys;
 
-  // Migration to v2
+  // Migration to v3
   res.version = SETTINGS_VERSION;
 
   // Ensure default string values if missing or empty
@@ -80,22 +82,63 @@ export function migrateSettings(raw) {
     res.widgetVisible = DEFAULT_SETTINGS.widgetVisible;
   }
 
-  // v2: fallbackModels (0-2 distinct IDs, different from primary model)
-  if (Array.isArray(res.fallbackModels)) {
+  // v3: fallbacks (0-2 items, unique non-empty id, non-empty model, optional baseURL)
+  if (Array.isArray(res.fallbacks)) {
+    const cleaned = [];
+    const seenIds = new Set();
+    let fbCounter = 1;
+    for (const item of res.fallbacks) {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        // Strip any credentials accidentally placed inside fallback items
+        delete item.apiKey;
+        delete item.key;
+        delete item.api_key;
+
+        const model = typeof item.model === 'string' ? item.model.trim() : '';
+        if (!model) continue;
+
+        let id = typeof item.id === 'string' ? item.id.trim() : '';
+        if (!id || seenIds.has(id)) {
+          while (seenIds.has(`fb${fbCounter}`)) {
+            fbCounter++;
+          }
+          id = `fb${fbCounter}`;
+          fbCounter++;
+        }
+        seenIds.add(id);
+
+        const fbObj = { id, model };
+        if (typeof item.baseURL === 'string' && item.baseURL.trim()) {
+          fbObj.baseURL = item.baseURL.trim();
+        }
+        cleaned.push(fbObj);
+      }
+    }
+    res.fallbacks = cleaned.slice(0, 2);
+    delete res.fallbackModels;
+  } else if (Array.isArray(res.fallbackModels)) {
+    // Migration v2 -> v3: fallbackModels [m1, m2] -> fallbacks [{id:'fb1', model:m1}, ...]
     const cleaned = [];
     const seen = new Set();
+    let fbIdx = 1;
     for (const item of res.fallbackModels) {
       if (typeof item === 'string') {
         const trimmed = item.trim();
         if (trimmed && trimmed !== res.model && !seen.has(trimmed)) {
           seen.add(trimmed);
-          cleaned.push(trimmed);
+          cleaned.push({
+            id: `fb${fbIdx}`,
+            model: trimmed
+          });
+          fbIdx++;
         }
       }
     }
-    res.fallbackModels = cleaned.slice(0, 2);
+    res.fallbacks = cleaned.slice(0, 2);
+    delete res.fallbackModels;
   } else {
-    res.fallbackModels = [];
+    res.fallbacks = [];
+    delete res.fallbackModels;
   }
 
   // v2: favoriteModels (unique IDs, max 50)
@@ -201,8 +244,8 @@ export function validateSettings(settings) {
   }
 
   // INVARIANT: credentials must never be passed in settings
-  if ('api_key' in settings || 'apiKey' in settings) {
-    errors.push('api_key must not be stored inside settings');
+  if ('api_key' in settings || 'apiKey' in settings || 'fallback_api_keys' in settings || 'fallbackApiKeys' in settings) {
+    errors.push('api_key and fallback_api_keys must not be stored inside settings');
   }
 
   // Check translationMode
@@ -217,28 +260,45 @@ export function validateSettings(settings) {
     errors.push('widgetVisible must be a boolean');
   }
 
-  // Check fallbackModels
-  if (settings.fallbackModels !== undefined) {
-    if (!Array.isArray(settings.fallbackModels)) {
-      errors.push('fallbackModels must be an array of strings');
-    } else if (settings.fallbackModels.length > 2) {
-      errors.push('fallbackModels cannot have more than 2 models');
+  // Check fallbacks
+  if (settings.fallbacks !== undefined) {
+    if (!Array.isArray(settings.fallbacks)) {
+      errors.push('fallbacks must be an array');
+    } else if (settings.fallbacks.length > 2) {
+      errors.push('fallbacks cannot have more than 2 items');
     } else {
-      const seen = new Set();
-      for (const fb of settings.fallbackModels) {
-        if (typeof fb !== 'string' || !fb.trim()) {
-          errors.push('fallbackModels elements must be non-empty strings');
-          break;
+      const seenIds = new Set();
+      for (let i = 0; i < settings.fallbacks.length; i++) {
+        const fb = settings.fallbacks[i];
+        if (!fb || typeof fb !== 'object' || Array.isArray(fb)) {
+          errors.push(`fallbacks[${i}] must be an object`);
+          continue;
         }
-        if (typeof settings.model === 'string' && fb === settings.model) {
-          errors.push('fallbackModels cannot contain the primary model');
+        if (typeof fb.id !== 'string' || !fb.id.trim()) {
+          errors.push(`fallbacks[${i}].id must be a non-empty string`);
+        } else if (seenIds.has(fb.id.trim())) {
+          errors.push(`fallbacks[${i}].id must be unique`);
+        } else {
+          seenIds.add(fb.id.trim());
         }
-        if (seen.has(fb)) {
-          errors.push('fallbackModels cannot contain duplicate models');
+        if (typeof fb.model !== 'string' || !fb.model.trim()) {
+          errors.push(`fallbacks[${i}].model must be a non-empty string`);
         }
-        seen.add(fb);
+        if (fb.baseURL !== undefined && fb.baseURL !== null && fb.baseURL !== '') {
+          if (typeof fb.baseURL !== 'string' || !/^https?:\/\/.+/i.test(fb.baseURL.trim())) {
+            errors.push(`fallbacks[${i}].baseURL must be a valid HTTP(S) URL`);
+          }
+        }
+        if ('api_key' in fb || 'apiKey' in fb || 'key' in fb) {
+          errors.push(`fallbacks[${i}] must not contain api key`);
+        }
       }
     }
+  }
+
+  // Disallow obsolete fallbackModels in v3
+  if (settings.fallbackModels !== undefined) {
+    errors.push('fallbackModels has been replaced by fallbacks in settings schema v3');
   }
 
   // Check favoriteModels

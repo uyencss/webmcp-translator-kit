@@ -31,6 +31,8 @@ export interface TranslateBatchInput {
   targetLanguage: string; // Target language code (e.g., 'vi')
   model: string;          // Model ID pinned by user (e.g., 'gpt-4o-mini')
   signal: AbortSignal;    // Mandatory cancellation signal (timeout or lifecycle abort)
+  baseURL?: string;       // Optional per-call override for fallback attempts
+  apiKey?: string;        // Optional per-call override for fallback attempts
 }
 
 export interface TranslationProvider {
@@ -100,9 +102,9 @@ Every translation response received from the 9router provider MUST be validated 
    - The run reports `{ collected, applied, failed }`. Items that failed remain untranslated; a second user-triggered run re-collects only untranslated nodes (already-applied nodes are skipped) and resumes from there.
 5. **Model Pinning, Fallback Chain & Logging Hygiene**:
    - The adapter MUST request the exact model requested for that call. Automatic silent fallback within the adapter itself is prohibited (pinned 1 ID/call).
-   - The background service worker coordinates sequential fallback strictly according to the user-configured fallback chain (`[primaryModel, ...fallbackModels]`, max 3 attempts) upon `NETWORK`, `TIMEOUT`, or `HTTP_5xx` errors.
+   - The background service worker coordinates sequential fallback strictly according to the user-configured fallback chain (`[primary, ...fallbacks]`, max 3 attempts) upon `NETWORK`, `TIMEOUT`, or `HTTP_5xx` errors. Each fallback may define a custom `baseURL` and distinct API key; missing fields inherit from the primary configuration.
    - Stop-list errors (`HTTP_401`, `HTTP_403`, `HTTP_404`, `HTTP_429`, policy, consent, rate, schema, abort) terminate immediately without fallback.
-   - Provider responses, receipts, and internal envelopes record `requestedModel`, `actualModel`, and `fallbackIndex`.
+   - Provider responses, receipts, and internal envelopes record `requestedModel`, `actualModel`, `fallbackIndex`, and `actualBaseURLHost`.
    - **Privacy Invariant**: NEVER log page text, source snippets, translated snippets, or API keys in browser consoles, receipts, or error payloads.
 
 ---
