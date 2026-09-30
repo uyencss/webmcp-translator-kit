@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="container">
+    <!-- Header -->
     <header class="header">
       <div class="logo-title">
         <span class="icon">🌐</span>
@@ -16,6 +17,7 @@
       <span class="badge" id="slice-badge">Direct Mode</span>
     </header>
 
+    <!-- Banners -->
     <div class="warning-banner" id="privacy-warning-banner">
       ⚠️ Văn bản trên trang sẽ được gửi tới 9router Base URL đã cấu hình.
     </div>
@@ -24,7 +26,7 @@
       🚨 [KEY_ACCESS_UNAVAILABLE] Lỗi bảo mật bộ nhớ extension. Không thể thiết lập TRUSTED_CONTEXTS.
     </div>
 
-    <!-- Status section -->
+    <!-- Status section (Telemtry Card) -->
     <section class="section status-card" aria-labelledby="status-header-label">
       <div class="status-header">
         <span class="status-label" id="status-header-label">Trạng thái:</span>
@@ -55,7 +57,7 @@
       </div>
     </section>
 
-    <!-- Actions -->
+    <!-- Actions (Translate / Restore) -->
     <section class="section actions-card" aria-label="Hành động dịch">
       <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" disabled>
         ▶ Dịch trang này
@@ -65,10 +67,14 @@
       </button>
     </section>
 
-    <!-- Configuration -->
-    <details class="section config-card" open>
-      <summary class="config-summary">⚙️ Cấu hình 9router</summary>
-      
+    <!-- Tab Navigation -->
+    <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
+      <button type="button" class="tab-btn active" role="tab" id="tab-models" aria-selected="true" aria-controls="tabpanel-models" tabindex="0">Model &amp; kết nối</button>
+      <button type="button" class="tab-btn" role="tab" id="tab-general" aria-selected="false" aria-controls="tabpanel-general" tabindex="-1">Ngôn ngữ &amp; chế độ</button>
+    </div>
+
+    <!-- Tab 1: Model & kết nối -->
+    <section class="section tab-panel" id="tabpanel-models" role="tabpanel" aria-labelledby="tab-models" tabindex="0">
       <div class="form-group">
         <label for="input-base-url">Base URL</label>
         <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" />
@@ -82,24 +88,46 @@
         </div>
       </div>
 
-      <div class="form-row">
-        <div class="form-group flex-1">
-          <label for="select-model">Model</label>
-          <div class="input-with-button">
-            <select id="select-model" aria-label="Chọn model dịch">
-              <optgroup label="Recommended">
-                <option value="do/deepseek-v4.1-flash" selected>do/deepseek-v4.1-flash</option>
-                <option value="ag/gemini-3.1-pro-low">ag/gemini-3.1-pro-low</option>
-                <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
-                <option value="ag/gemini-3.1-pro-low">ag/gemini-3.1-pro-low</option>
-                <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
-              </optgroup>
-            </select>
-            <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model">🔄</button>
-          </div>
+      <div class="form-group">
+        <label for="select-model">Primary Model</label>
+        <div class="input-with-button">
+          <select id="select-model" aria-label="Chọn primary model dịch">
+            <optgroup label="Recommended">
+              <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
+              <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
+              <option value="do/deepseek-v4.1-flash">do/deepseek-v4.1-flash</option>
+              <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
+            </optgroup>
+          </select>
+          <button type="button" id="btn-toggle-favorite" class="btn-icon btn-star" title="Thêm/bỏ yêu thích model này" aria-label="Thêm hoặc bỏ model đang chọn khỏi danh sách yêu thích">☆</button>
+          <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model">🔄</button>
         </div>
       </div>
 
+      <div class="form-row">
+        <div class="form-group flex-1">
+          <label for="select-fallback-1">Fallback 1</label>
+          <select id="select-fallback-1" aria-label="Chọn fallback model 1">
+            <option value="">-- Không chọn --</option>
+          </select>
+        </div>
+        <div class="form-group flex-1">
+          <label for="select-fallback-2">Fallback 2</label>
+          <select id="select-fallback-2" aria-label="Chọn fallback model 2">
+            <option value="">-- Không chọn --</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <button id="btn-save-config" class="btn btn-sm btn-success" title="Lưu cấu hình kết nối &amp; model" aria-label="Lưu cấu hình kết nối và model">💾 Lưu kết nối &amp; model</button>
+        <button id="btn-delete-key" class="btn btn-sm btn-danger" title="Xoá API key đã lưu" aria-label="Xoá API key đã lưu">🗑️ Xoá key</button>
+      </div>
+      <div id="config-message" class="config-message" aria-live="polite"></div>
+    </section>
+
+    <!-- Tab 2: Ngôn ngữ & chế độ -->
+    <section class="section tab-panel hidden" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" tabindex="0">
       <div class="form-row">
         <div class="form-group flex-1">
           <label for="select-src-lang">Nguồn</label>
@@ -121,15 +149,42 @@
         </div>
       </div>
 
-      <div class="config-actions">
-        <button id="btn-save-config" class="btn btn-sm btn-success" title="Lưu cấu hình 9router" aria-label="Lưu cấu hình 9router">💾 Lưu cấu hình</button>
-        <button id="btn-delete-key" class="btn btn-sm btn-danger" title="Xoá API key đã lưu" aria-label="Xoá API key đã lưu">🗑️ Xoá key</button>
+      <div class="form-group" role="radiogroup" aria-label="Chế độ dịch">
+        <label class="field-title">Chế độ dịch</label>
+        <div class="radio-card">
+          <label class="radio-label" for="mode-scroll">
+            <input type="radio" id="mode-scroll" name="translation-mode" value="scroll-follow" checked />
+            <div class="radio-content">
+              <span class="radio-title">Dịch đuổi theo scroll <span class="badge-rec">Mặc định</span></span>
+              <span class="radio-desc">Tự động phát hiện và dịch khi cuộn trang tới</span>
+            </div>
+          </label>
+          <label class="radio-label" for="mode-full">
+            <input type="radio" id="mode-full" name="translation-mode" value="full" />
+            <div class="radio-content">
+              <span class="radio-title">Dịch toàn bộ trang</span>
+              <span class="radio-desc">Quét và dịch toàn bộ nội dung trong một lần</span>
+            </div>
+          </label>
+        </div>
       </div>
-      <div id="config-message" class="config-message" aria-live="polite"></div>
-    </details>
 
+      <div class="form-group checkbox-group">
+        <label class="consent-toggle-label" for="checkbox-widget-visible">
+          <input type="checkbox" id="checkbox-widget-visible" checked />
+          <span class="toggle-text">Hiện icon nổi trên trang (Floating widget)</span>
+        </label>
+      </div>
+
+      <div class="config-actions">
+        <button id="btn-save-general" class="btn btn-sm btn-success" title="Lưu cài đặt ngôn ngữ &amp; chế độ" aria-label="Lưu cài đặt ngôn ngữ và chế độ">💾 Lưu chế độ</button>
+      </div>
+      <div id="config-message-general" class="config-message" aria-live="polite"></div>
+    </section>
+
+    <!-- Footer -->
     <footer class="footer">
-      <span>Slice P1'/P2' • </span>
+      <span>WebMCP Translator • </span>
       <span id="key-status-indicator">Key: Chưa lưu</span>
     </footer>
   </div>
