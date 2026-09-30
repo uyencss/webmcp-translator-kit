@@ -1,0 +1,711 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "translator-kit quality corpus zh->vi",
+    "version": "1.0.0",
+    "date": "2026-09-30",
+    "source": "hand-written, no machine translation, no copied web text",
+    "counts": {
+      "uiStrings": 22,
+      "sentences": 22,
+      "tricky": 8
+    }
+  },
+  "uiStrings": [
+    {
+      "id": "UI-01",
+      "zh": "确认",
+      "expectedVi": [
+        "Xác nhận",
+        "Đồng ý"
+      ],
+      "category": "button",
+      "notes": "Nút xác nhận dialog.",
+      "confidence": "high",
+      "reviewNote": "Nghĩa trực tiếp, không mơ hồ."
+    },
+    {
+      "id": "UI-02",
+      "zh": "取消",
+      "expectedVi": [
+        "Hủy",
+        "Hủy bỏ"
+      ],
+      "category": "button",
+      "notes": "Nút hủy thao tác.",
+      "confidence": "high",
+      "reviewNote": "Chuẩn UI Việt, ngắn gọn."
+    },
+    {
+      "id": "UI-03",
+      "zh": "保存",
+      "expectedVi": [
+        "Lưu",
+        "Lưu lại"
+      ],
+      "category": "button",
+      "notes": "Nút lưu form.",
+      "confidence": "high",
+      "reviewNote": "Một nghĩa duy nhất."
+    },
+    {
+      "id": "UI-04",
+      "zh": "保存成功",
+      "expectedVi": [
+        "Lưu thành công",
+        "Đã lưu thành công"
+      ],
+      "category": "toast",
+      "notes": "Toast sau khi lưu.",
+      "confidence": "high",
+      "reviewNote": "Mẫu toast quen thuộc."
+    },
+    {
+      "id": "UI-05",
+      "zh": "网络连接失败，请稍后重试",
+      "expectedVi": [
+        "Mất kết nối mạng, vui lòng thử lại sau",
+        "Kết nối mạng thất bại, vui lòng thử lại sau"
+      ],
+      "category": "error",
+      "notes": "Lỗi mạng chung.",
+      "confidence": "high",
+      "reviewNote": "Diễn đạt tự nhiên kiểu app Việt."
+    },
+    {
+      "id": "UI-06",
+      "zh": "暂无数据",
+      "expectedVi": [
+        "Chưa có dữ liệu",
+        "Không có dữ liệu"
+      ],
+      "category": "empty",
+      "notes": "Empty state danh sách.",
+      "confidence": "high",
+      "reviewNote": "Cả hai bản đều dùng phổ biến."
+    },
+    {
+      "id": "UI-07",
+      "zh": "首页",
+      "expectedVi": [
+        "Trang chủ",
+        "Trang chính"
+      ],
+      "category": "tab",
+      "notes": "Tab điều hướng.",
+      "confidence": "high",
+      "reviewNote": "Thuật ngữ chuẩn."
+    },
+    {
+      "id": "UI-08",
+      "zh": "我的",
+      "expectedVi": [
+        "Của tôi",
+        "Tài khoản"
+      ],
+      "category": "tab",
+      "notes": "Tab cá nhân; 'Tài khoản' chấp nhận vì nhiều app Việt dùng.",
+      "confidence": "medium",
+      "reviewNote": "Tùy app mà dùng Của tôi hay Tài khoản."
+    },
+    {
+      "id": "UI-09",
+      "zh": "请输入手机号",
+      "expectedVi": [
+        "Nhập số điện thoại",
+        "Vui lòng nhập số điện thoại"
+      ],
+      "category": "placeholder",
+      "notes": "Placeholder ô nhập SĐT.",
+      "confidence": "high",
+      "reviewNote": "Mẫu placeholder chuẩn."
+    },
+    {
+      "id": "UI-10",
+      "zh": "搜索商品、店铺",
+      "expectedVi": [
+        "Tìm sản phẩm, cửa hàng",
+        "Tìm kiếm sản phẩm, cửa hàng"
+      ],
+      "category": "placeholder",
+      "notes": "Placeholder ô tìm kiếm.",
+      "confidence": "high",
+      "reviewNote": "Giữ cấu trúc liệt kê."
+    },
+    {
+      "id": "UI-11",
+      "zh": "删除成功",
+      "expectedVi": [
+        "Xóa thành công",
+        "Đã xóa thành công"
+      ],
+      "category": "toast",
+      "notes": "Toast sau khi xóa.",
+      "confidence": "high",
+      "reviewNote": "Đối xứng với UI-04."
+    },
+    {
+      "id": "UI-12",
+      "zh": "密码不能为空",
+      "expectedVi": [
+        "Mật khẩu không được để trống",
+        "Vui lòng nhập mật khẩu"
+      ],
+      "category": "error",
+      "notes": "Lỗi validate form.",
+      "confidence": "high",
+      "reviewNote": "Bản 2 diễn đạt theo thói quen UX Việt."
+    },
+    {
+      "id": "UI-13",
+      "zh": "您有一条新消息",
+      "expectedVi": [
+        "Bạn có một tin nhắn mới",
+        "Bạn có tin nhắn mới"
+      ],
+      "category": "notification",
+      "notes": "Thông báo đẩy.",
+      "confidence": "high",
+      "reviewNote": "Ngôi Bạn tự nhiên hơn Quý khách ở đây."
+    },
+    {
+      "id": "UI-14",
+      "zh": "设置",
+      "expectedVi": [
+        "Cài đặt",
+        "Thiết lập"
+      ],
+      "category": "menu",
+      "notes": "Mục menu.",
+      "confidence": "high",
+      "reviewNote": "Cài đặt phổ biến hơn."
+    },
+    {
+      "id": "UI-15",
+      "zh": "退出登录",
+      "expectedVi": [
+        "Đăng xuất",
+        "Thoát tài khoản"
+      ],
+      "category": "menu",
+      "notes": "Mục đăng xuất.",
+      "confidence": "high",
+      "reviewNote": "Đăng xuất là chuẩn."
+    },
+    {
+      "id": "UI-16",
+      "zh": "新版本可用",
+      "expectedVi": [
+        "Có phiên bản mới",
+        "Đã có bản cập nhật mới"
+      ],
+      "category": "badge",
+      "notes": "Badge/hint cập nhật.",
+      "confidence": "high",
+      "reviewNote": "Cả hai đều tự nhiên."
+    },
+    {
+      "id": "UI-17",
+      "zh": "全选",
+      "expectedVi": [
+        "Chọn tất cả",
+        "Chọn hết"
+      ],
+      "category": "button",
+      "notes": "Nút chọn tất cả.",
+      "confidence": "high",
+      "reviewNote": "Ngắn gọn đúng UI."
+    },
+    {
+      "id": "UI-18",
+      "zh": "收货地址",
+      "expectedVi": [
+        "Địa chỉ nhận hàng",
+        "Địa chỉ giao hàng"
+      ],
+      "category": "label",
+      "notes": "Nhãn form địa chỉ.",
+      "confidence": "high",
+      "reviewNote": "Cả hai dùng tùy app thương mại."
+    },
+    {
+      "id": "UI-19",
+      "zh": "点击右上角分享给朋友",
+      "expectedVi": [
+        "Chạm vào góc phải phía trên để chia sẻ cho bạn bè",
+        "Nhấn nút chia sẻ ở góc trên bên phải để gửi cho bạn bè"
+      ],
+      "category": "tooltip",
+      "notes": "Tooltip hướng dẫn.",
+      "confidence": "medium",
+      "reviewNote": "Dài hơn UI khác nên chấp nhận 2 biến thể diễn đạt."
+    },
+    {
+      "id": "UI-20",
+      "zh": "加载更多",
+      "expectedVi": [
+        "Tải thêm",
+        "Xem thêm"
+      ],
+      "category": "button",
+      "notes": "Nút phân trang.",
+      "confidence": "high",
+      "reviewNote": "Xem thêm phổ biến ở feed."
+    },
+    {
+      "id": "UI-21",
+      "zh": "优惠券已过期",
+      "expectedVi": [
+        "Mã giảm giá đã hết hạn",
+        "Coupon đã hết hạn"
+      ],
+      "category": "error",
+      "notes": "Lỗi coupon; giữ 'coupon' cũng chấp nhận vì app Việt hay dùng.",
+      "confidence": "medium",
+      "reviewNote": "Mã giảm giá thuần Việt hơn, coupon vẫn thực tế."
+    },
+    {
+      "id": "UI-22",
+      "zh": "夜间模式",
+      "expectedVi": [
+        "Chế độ ban đêm",
+        "Chế độ tối"
+      ],
+      "category": "label",
+      "notes": "Nhãn chuyển theme.",
+      "confidence": "high",
+      "reviewNote": "Chế độ tối phổ biến hơn gần đây."
+    }
+  ],
+  "sentences": [
+    {
+      "id": "S-01",
+      "zh": "欢迎回来，<b>小明</b>！",
+      "expectedVi": [
+        "Chào mừng trở lại, <b>Tiểu Minh</b>!"
+      ],
+      "mustKeep": [
+        "<b>",
+        "</b>"
+      ],
+      "why": "Thẻ <b> là markup in đậm, phải giữ nguyên vị trí bao quanh tên.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Tên giữ nguyên âm Hán-Việt quen thuộc."
+    },
+    {
+      "id": "S-02",
+      "zh": "请阅读<a href=\"https://example.com/terms\">服务条款</a>后继续。",
+      "expectedVi": [
+        "Vui lòng đọc <a href=\"https://example.com/terms\">điều khoản dịch vụ</a> rồi tiếp tục."
+      ],
+      "mustKeep": [
+        "<a href=\"https://example.com/terms\">",
+        "</a>"
+      ],
+      "why": "Thẻ link và URL là bất biến, chỉ dịch text hiển thị.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "URL ví dụ, tuyệt đối không dịch URL."
+    },
+    {
+      "id": "S-03",
+      "zh": "您还有{count}张优惠券未使用。",
+      "expectedVi": [
+        "Bạn còn {count} mã giảm giá chưa dùng."
+      ],
+      "mustKeep": [
+        "{count}"
+      ],
+      "why": "{count} là placeholder số lượng do code thay lúc chạy.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Placeholder giữ nguyên kể cả vị trí giữa câu."
+    },
+    {
+      "id": "S-04",
+      "zh": "%s 邀请你加入群聊。",
+      "expectedVi": [
+        "%s đã mời bạn tham gia nhóm chat."
+      ],
+      "mustKeep": [
+        "%s"
+      ],
+      "why": "%s là placeholder tên người mời dạng printf.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không thay %s bằng tên cụ thể."
+    },
+    {
+      "id": "S-05",
+      "zh": "已下载 %d 个文件，共 500 MB。",
+      "expectedVi": [
+        "Đã tải %d tệp, tổng cộng 500 MB."
+      ],
+      "mustKeep": [
+        "%d",
+        "500 MB"
+      ],
+      "why": "%d là số file động; 500 MB là dung lượng phải giữ số và đơn vị.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Đơn vị MB viết hoa đúng chuẩn."
+    },
+    {
+      "id": "S-06",
+      "zh": "恭喜 $1 获得一等奖！",
+      "expectedVi": [
+        "Chúc mừng $1 đã giành giải nhất!"
+      ],
+      "mustKeep": [
+        "$1"
+      ],
+      "why": "$1 là placeholder vị trí tham số thứ nhất.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không dịch $1 thành $ 1 hay 1$."
+    },
+    {
+      "id": "S-07",
+      "zh": "你好，{{name}}，你的订单已发货。",
+      "expectedVi": [
+        "Chào {{name}}, đơn hàng của bạn đã được gửi đi."
+      ],
+      "mustKeep": [
+        "{{name}}"
+      ],
+      "why": "{{name}} là template variable, sai một dấu ngoặc là hỏng render.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Giữ nguyên cặp ngoặc kép."
+    },
+    {
+      "id": "S-08",
+      "zh": "第一行<br>第二行",
+      "expectedVi": [
+        "Dòng một<br>Dòng hai"
+      ],
+      "mustKeep": [
+        "<br>"
+      ],
+      "why": "<br> là thẻ xuống dòng, không được dịch hay xóa.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Thẻ <br> không có thẻ đóng."
+    },
+    {
+      "id": "S-09",
+      "zh": "<span class=\"price\">¥1,299</span>，限时优惠。",
+      "expectedVi": [
+        "<span class=\"price\">¥1,299</span>, ưu đãi có hạn."
+      ],
+      "mustKeep": [
+        "<span class=\"price\">",
+        "</span>",
+        "¥1,299"
+      ],
+      "why": "Thẻ span + class cho style giá; ¥1,299 là giá tiền bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không chuyển ¥ sang VNĐ, giữ nguyên ký hiệu."
+    },
+    {
+      "id": "S-10",
+      "zh": "活动时间：2026年9月30日。",
+      "expectedVi": [
+        "Thời gian diễn ra: ngày 30 tháng 9 năm 2026."
+      ],
+      "mustKeep": [
+        "2026",
+        "9",
+        "30"
+      ],
+      "why": "Ngày tháng là dữ kiện, model được phép chuyển định dạng nhưng không được đổi số.",
+      "notes": "Chấp nhận cả '30/09/2026' nếu giữ đúng số.",
+      "confidence": "medium",
+      "reviewNote": "Chuyển format ngày là hợp lệ, sai số là rớt."
+    },
+    {
+      "id": "S-11",
+      "zh": "全书共 120万字，分 3 卷。",
+      "expectedVi": [
+        "Cả bộ sách dài 1,2 triệu chữ, chia làm 3 tập."
+      ],
+      "mustKeep": [
+        "120",
+        "3"
+      ],
+      "why": "万字 là đơn vị vạn chữ; số 120 và 3 bất biến, đơn vị được dịch nghĩa.",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "120 vạn = 1,2 triệu, cần đổi đơn vị đúng."
+    },
+    {
+      "id": "S-12",
+      "zh": "剩余 5 km，请继续加油！",
+      "expectedVi": [
+        "Còn 5 km nữa, cố lên!"
+      ],
+      "mustKeep": [
+        "5 km"
+      ],
+      "why": "Số + đơn vị km bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Đơn vị quốc tế giữ nguyên."
+    },
+    {
+      "id": "S-13",
+      "zh": "免费领取 10 GB 云空间。",
+      "expectedVi": [
+        "Nhận miễn phí 10 GB dung lượng đám mây."
+      ],
+      "mustKeep": [
+        "10 GB"
+      ],
+      "why": "Dung lượng số + đơn vị GB bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "GB viết hoa."
+    },
+    {
+      "id": "S-14",
+      "zh": "任务完成 🎉，快去领取奖励吧！",
+      "expectedVi": [
+        "Hoàn thành nhiệm vụ rồi 🎉, mau nhận thưởng nào!"
+      ],
+      "mustKeep": [
+        "🎉"
+      ],
+      "why": "Emoji là token cảm xúc, phải giữ nguyên và đúng vị trí tương đối.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không thay emoji khác hay xóa."
+    },
+    {
+      "id": "S-15",
+      "zh": "你的排名从第 10 名上升到第 3 名。",
+      "expectedVi": [
+        "Thứ hạng của bạn đã tăng từ hạng 10 lên hạng 3."
+      ],
+      "mustKeep": [
+        "10",
+        "3"
+      ],
+      "why": "Số thứ hạng bất biến, chỉ dịch khung câu.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Chú ý thứ tự 10 trước 3 sau."
+    },
+    {
+      "id": "S-16",
+      "zh": "<b>{count}</b> 人正在阅读本文。",
+      "expectedVi": [
+        "Có <b>{count}</b> người đang đọc bài này."
+      ],
+      "mustKeep": [
+        "<b>",
+        "</b>",
+        "{count}"
+      ],
+      "why": "Kết hợp markup + placeholder, cả hai loại đều bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Ca gộp thẻ và biến, dễ rớt một trong hai."
+    },
+    {
+      "id": "S-17",
+      "zh": "点击<a href=\"https://example.com/app\">这里</a>下载，剩余%d天。",
+      "expectedVi": [
+        "Nhấn <a href=\"https://example.com/app\">vào đây</a> để tải, còn %d ngày."
+      ],
+      "mustKeep": [
+        "<a href=\"https://example.com/app\">",
+        "</a>",
+        "%d"
+      ],
+      "why": "Link + placeholder ngày đếm ngược đều bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Kiểm tra cả URL lẫn %d."
+    },
+    {
+      "id": "S-18",
+      "zh": "订单号 {{orderId}} 将于 48 小时后过期。",
+      "expectedVi": [
+        "Đơn hàng {{orderId}} sẽ hết hạn sau 48 giờ."
+      ],
+      "mustKeep": [
+        "{{orderId}}",
+        "48"
+      ],
+      "why": "{{orderId}} là mã động; 48 giờ là thời hạn bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không dịch orderId thành tiếng Việt."
+    },
+    {
+      "id": "S-19",
+      "zh": "已为你节省 ¥58.5，本月累计 12 单。",
+      "expectedVi": [
+        "Bạn đã tiết kiệm được ¥58.5, tháng này tổng 12 đơn."
+      ],
+      "mustKeep": [
+        "¥58.5",
+        "12"
+      ],
+      "why": "Số tiền thập phân và số đơn đều bất biến.",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "Dễ rớt số lẻ .5 khi làm tròn bừa."
+    },
+    {
+      "id": "S-20",
+      "zh": "版本 v2.3.1 已发布，大小 86.4 MB。",
+      "expectedVi": [
+        "Phiên bản v2.3.1 đã ra mắt, dung lượng 86.4 MB."
+      ],
+      "mustKeep": [
+        "v2.3.1",
+        "86.4 MB"
+      ],
+      "why": "Số phiên bản và dung lượng là định danh kỹ thuật.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "v2.3.1 không được dịch hay rút gọn."
+    },
+    {
+      "id": "S-21",
+      "zh": "密码长度至少 8 位，包含 %s 和数字。",
+      "expectedVi": [
+        "Mật khẩu dài ít nhất 8 ký tự, gồm %s và chữ số."
+      ],
+      "mustKeep": [
+        "8",
+        "%s"
+      ],
+      "why": "8 là yêu cầu độ dài; %s là loại ký tự do code chèn.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Không thay %s bằng ví dụ cụ thể."
+    },
+    {
+      "id": "S-22",
+      "zh": "会员有效期至 2027-01-15，共剩余 107 天。",
+      "expectedVi": [
+        "Hội viên có hiệu lực đến 2027-01-15, còn 107 ngày."
+      ],
+      "mustKeep": [
+        "2027-01-15",
+        "107"
+      ],
+      "why": "Ngày ISO và số ngày còn lại bất biến.",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Ngày ISO giữ nguyên định dạng gạch ngang."
+    }
+  ],
+  "tricky": [
+    {
+      "id": "T-01",
+      "zh": "记得一键三连：点赞、投币、收藏！",
+      "expectedVi": [
+        "Nhớ like, donate xu và lưu video nhé!"
+      ],
+      "mustKeep": [],
+      "why": "一键三连 là tiếng lóng Bilibili (3 thao tác một chạm), không có khái niệm tương đương, phải diễn nghĩa.",
+      "notes": "Chấm meaning, không bắt buộc token.",
+      "confidence": "medium",
+      "reviewNote": "Dịch thoát ý, giữ đủ 3 hành động."
+    },
+    {
+      "id": "T-02",
+      "zh": "他嘴上说不要，身体却很诚实，真香。",
+      "expectedVi": [
+        "Ngoài miệng thì chê mà tay vẫn mua, đúng là 'thơm thật'."
+      ],
+      "mustKeep": [],
+      "why": "真香 là meme 'vả mặt' (chê rồi vẫn mê), phải dịch thoát ý mỉa nhẹ.",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "Bản Việt giữ giọng trêu, không dịch chữ 'thơm' đen."
+    },
+    {
+      "id": "T-03",
+      "zh": "小王跟小李说他明天要去北京。",
+      "expectedVi": [
+        "Tiểu Vương nói với Tiểu Lý là ngày mai cậu ấy sẽ đi Bắc Kinh."
+      ],
+      "mustKeep": [
+        "北京"
+      ],
+      "why": "Đại từ 他 mơ hồ (Vương hay Lý đi?); địa danh Bắc Kinh bất biến; model phải chọn một và ghi chú mơ hồ.",
+      "notes": "Chấp nhận cả 'anh ấy' nếu nhất quán; chấm meaning nới tay ở đại từ.",
+      "confidence": "low",
+      "reviewNote": "Câu gốc vốn mơ hồ, không có đáp án hoàn hảo."
+    },
+    {
+      "id": "T-04",
+      "zh": "因为下雨，比赛取消了，但是主办方说如果明天天晴，就在市中心广场重新举行，到时候还会发免费雨衣。",
+      "expectedVi": [
+        "Vì trời mưa nên trận đấu bị hủy, nhưng ban tổ chức nói nếu mai tạnh thì sẽ tổ chức lại ở quảng trường trung tâm, lúc đó còn phát áo mưa miễn phí."
+      ],
+      "mustKeep": [],
+      "why": "Câu dài 4 mệnh đề nhân-quả-điều kiện; kiểm tra giữ đủ logic và không rớt mệnh đề.",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "Dễ rớt mệnh đề áo mưa cuối câu."
+    },
+    {
+      "id": "T-05",
+      "zh": "超长续航智能手环心率监测功能异常。",
+      "expectedVi": [
+        "Chức năng đo nhịp tim của vòng tay thông minh pin siêu trâu bị lỗi."
+      ],
+      "mustKeep": [],
+      "why": "Danh từ ghép dài không dấu ngắt; kiểm tra tách đúng đầu-ngữ (chức năng đo nhịp tim ... bị lỗi).",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "Bẫy tách sai: pin bị lỗi vs chức năng bị lỗi."
+    },
+    {
+      "id": "T-06",
+      "zh": "这块地有 3 亩，约合 2000 平方米。",
+      "expectedVi": [
+        "Mảnh đất này rộng 3 mẫu Trung Quốc (khoảng 2000 mét vuông)."
+      ],
+      "mustKeep": [
+        "3",
+        "2000"
+      ],
+      "why": "亩 là mẫu TQ (~666.7 m2), không bằng mẫu Việt Nam; số bất biến, đơn vị phải chú thích.",
+      "notes": "",
+      "confidence": "low",
+      "reviewNote": "Ca đơn vị khó nhất corpus, cần chú thích để tránh hiểu nhầm."
+    },
+    {
+      "id": "T-07",
+      "zh": "全场五折起，机不可失，错过等一年！",
+      "expectedVi": [
+        "Sale sập sàn từ 50%, cơ hội nghìn năm có một, lỡ là chờ cả năm!"
+      ],
+      "mustKeep": [],
+      "why": "Văn phong quảng cáo hô hào; kiểm tra giữ giọng kích thích mua, không dịch khô.",
+      "notes": "",
+      "confidence": "medium",
+      "reviewNote": "Chấm giọng quảng cáo, không chấm chữ."
+    },
+    {
+      "id": "T-08",
+      "zh": "用户同意授予本平台在全球范围内、免费的、可转让的内容使用权。",
+      "expectedVi": [
+        "Người dùng đồng ý cấp cho nền tảng quyền sử dụng nội dung trên toàn cầu, miễn phí và được phép chuyển nhượng."
+      ],
+      "mustKeep": [],
+      "why": "Văn phong điều khoản pháp lý; kiểm tra đủ 3 thuộc tính (toàn cầu, miễn phí, chuyển nhượng).",
+      "notes": "",
+      "confidence": "high",
+      "reviewNote": "Rớt một thuộc tính là rớt cả câu."
+    }
+  ]
+}
