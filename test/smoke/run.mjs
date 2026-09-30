@@ -241,6 +241,8 @@ async function runSingleAttempt() {
 
     await cdp.evaluate(`
       (async () => {
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
         const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
         await self.__translatorSw.dispatchMessage({
           action: 'SAVE_SETTINGS',
@@ -742,6 +744,7 @@ async function runSingleAttempt() {
       // 12c: After SET_SITE_ENABLED for that origin -> allowed to call provider
       const popupSenderStr = JSON.stringify({ url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
       await cdp.evaluate(`
+        self.__translatorSw._setTestPermission('https://not-opted.example', true);
         self.__translatorSw.dispatchMessage({
           action: 'SET_SITE_ENABLED',
           origin: 'https://not-opted.example',
@@ -812,6 +815,154 @@ async function runSingleAttempt() {
       record('T13', 'Fail-closed key & recovery', false, e.message);
     }
 
+    // Test 14: Dynamic Content-Script Registration Lifecycle & Reconcile
+    try {
+      const popupSenderStr = JSON.stringify({ url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+
+      // 14a. Test mode + test permission granted -> SET_SITE_ENABLED true
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      const enableRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: true
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+      assert.ok(enableRes && enableRes.ok === true, 'T14 enable failed: ' + JSON.stringify(enableRes));
+
+      // Assert getRegisteredContentScripts has script with id starting with translator- and matching fixtureOrigin/*
+      const scriptsAfterEnable = await cdp.evaluate(`
+        (async () => {
+          return await chrome.scripting.getRegisteredContentScripts();
+        })()
+      `, swSessionId, true);
+      assert.ok(Array.isArray(scriptsAfterEnable), 'Expected registered scripts array');
+      const fixtureScript = scriptsAfterEnable.find((s) => s.matches && s.matches.includes(`${fixtureOrigin}/*`));
+      assert.ok(fixtureScript, `Expected registered script for ${fixtureOrigin}/*, got: ` + JSON.stringify(scriptsAfterEnable));
+      assert.ok(fixtureScript.id.startsWith('translator-'), `Expected script ID starting with translator-, got ${fixtureScript.id}`);
+
+      // 14b. Reconcile: manually unregister, then trigger reconcilePermissions -> registration restored
+      await cdp.evaluate(`
+        (async () => {
+          await chrome.scripting.unregisterContentScripts({ ids: [${JSON.stringify(fixtureScript.id)}] });
+        })()
+      `, swSessionId, true);
+
+      const scriptsAfterManualUnreg = await cdp.evaluate(`
+        (async () => {
+          return await chrome.scripting.getRegisteredContentScripts();
+        })()
+      `, swSessionId, true);
+      assert.ok(!scriptsAfterManualUnreg.some((s) => s.id === fixtureScript.id), 'Manual unregister must remove script');
+
+      // Trigger reconcile
+      await cdp.evaluate(`self.__translatorSw.reconcilePermissions()`, swSessionId, true);
+
+      const scriptsAfterReconcile = await cdp.evaluate(`
+        (async () => {
+          return await chrome.scripting.getRegisteredContentScripts();
+        })()
+      `, swSessionId, true);
+      const fixtureScriptRestored = scriptsAfterReconcile.find((s) => s.matches && s.matches.includes(`${fixtureOrigin}/*`));
+      assert.ok(fixtureScriptRestored, 'Reconcile must restore missing content script');
+
+      // 14c. SET_SITE_ENABLED false -> script unregistered
+      const disableRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: false
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+      assert.ok(disableRes && disableRes.ok === true, 'T14 disable failed: ' + JSON.stringify(disableRes));
+
+      const scriptsAfterDisable = await cdp.evaluate(`
+        (async () => {
+          return await chrome.scripting.getRegisteredContentScripts();
+        })()
+      `, swSessionId, true);
+      const fixtureScriptAfterDisable = scriptsAfterDisable.find((s) => s.matches && s.matches.includes(`${fixtureOrigin}/*`));
+      assert.ok(!fixtureScriptAfterDisable, 'Disabled site script must be unregistered');
+
+      // 14d. _setTestPermission(false) + enable -> PERMISSION_REQUIRED
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', false)`, swSessionId);
+      const deniedRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: true
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+      assert.equal(deniedRes?.error?.code, 'PERMISSION_REQUIRED', 'Expected PERMISSION_REQUIRED when permission not granted');
+
+      // Restore permission and re-enable for subsequent tests
+      await cdp.evaluate(`
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${fixtureOrigin}',
+          enabled: true
+        }, ${popupSenderStr});
+      `, swSessionId, true);
+
+      record('T14', 'Registration lifecycle & Reconcile', true, `Script: ${fixtureScript.id}, reconcile restored, unregister OK, permission gate enforced`);
+    } catch (e) {
+      record('T14', 'Registration lifecycle & Reconcile', false, e.message);
+    }
+
+    // Test 15: Permission check on TRANSLATE_BATCH
+    try {
+      const batchPayload = {
+        items: [{ id: 'T15-1', revision: 0, text: '权限检查' }],
+        sourceLanguage: 'auto',
+        targetLanguage: 'vi',
+        model: DEFAULT_MODEL
+      };
+
+      // 15a. Site enabled, but turn off test permission -> PERMISSION_REQUIRED
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', false)`, swSessionId);
+
+      const deniedBatchRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: ${JSON.stringify(batchPayload)}
+        }, {
+          frameId: 0,
+          url: '${fixtureUrl}',
+          tab: { id: 1, url: '${fixtureUrl}' }
+        })
+      `, swSessionId, true);
+
+      assert.ok(deniedBatchRes && deniedBatchRes.error, 'Expected error on revoked permission: ' + JSON.stringify(deniedBatchRes));
+      assert.equal(deniedBatchRes.error.code, 'PERMISSION_REQUIRED', `Expected PERMISSION_REQUIRED, got ${deniedBatchRes.error.code}`);
+
+      // 15b. Turn test permission back ON -> TRANSLATE_BATCH succeeds
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+
+      const okBatchRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: ${JSON.stringify(batchPayload)}
+        }, {
+          frameId: 0,
+          url: '${fixtureUrl}',
+          tab: { id: 1, url: '${fixtureUrl}' }
+        })
+      `, swSessionId, true);
+
+      assert.ok(okBatchRes && !okBatchRes.error, 'Expected success when permission granted: ' + JSON.stringify(okBatchRes));
+      assert.ok(Array.isArray(okBatchRes.results) && okBatchRes.results.length === 1, 'Expected 1 translation result');
+      assert.equal(okBatchRes.results[0].text, '[vi] 权限检查');
+
+      record('T15', 'Permission check on TRANSLATE_BATCH', true, 'Refused with PERMISSION_REQUIRED when revoked, succeeds when granted');
+    } catch (e) {
+      record('T15', 'Permission check on TRANSLATE_BATCH', false, e.message);
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -844,7 +995,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 13;
+  return allPass && testResults.length >= 15;
 }
 
 async function main() {

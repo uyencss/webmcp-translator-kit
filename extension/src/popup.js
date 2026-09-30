@@ -182,16 +182,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadConsent();
   }
 
-  // Site toggle event listener
+  // Site toggle event listener with user gesture permission request
   if (toggleSiteConsent) {
     toggleSiteConsent.addEventListener('change', async () => {
       if (!currentConsent.siteOrigin) return;
       toggleSiteConsent.disabled = true;
+
+      // When turning ON, request permission in user gesture
+      if (toggleSiteConsent.checked) {
+        const matchPattern = currentConsent.siteOrigin + '/*';
+        let granted = false;
+        try {
+          if (chrome.permissions && typeof chrome.permissions.request === 'function') {
+            granted = await chrome.permissions.request({ origins: [matchPattern] });
+          } else {
+            granted = true;
+          }
+        } catch {
+          granted = false;
+        }
+
+        if (!granted) {
+          toggleSiteConsent.checked = false;
+          toggleSiteConsent.disabled = false;
+          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật dịch cho site này.');
+          return;
+        }
+      }
+
       await new Promise((resolve) => {
         chrome.runtime.sendMessage({
           action: 'SET_SITE_ENABLED',
           origin: currentConsent.siteOrigin,
-          enabled: toggleSiteConsent.checked
+          enabled: toggleSiteConsent.checked,
+          tabId: activeTab?.id
         }, resolve);
       });
       await loadConsent();
@@ -485,35 +509,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     startPolling();
 
     try {
-      // 1. Check consent: if effective is OFF, auto-enable site first
-      const consent = await loadConsent();
-      if (consent && consent.effective === 'off' && consent.siteOrigin) {
-        await new Promise((resolve) => {
-          chrome.runtime.sendMessage({
-            action: 'SET_SITE_ENABLED',
-            origin: consent.siteOrigin,
-            enabled: true
-          }, resolve);
-        });
-        // If tab was explicitly off, reset override to null so site setting applies
-        if (consent.tabOverride === 'off') {
-          await new Promise((resolve) => {
-            chrome.runtime.sendMessage({
-              action: 'SET_TAB_OVERRIDE',
-              tabId: activeTab.id,
-              value: null
-            }, resolve);
-          });
-        }
-        await loadConsent();
-      }
-
-      // 2. Inject content.js if not yet injected
-      await chrome.scripting.executeScript({
-        target: { tabId: activeTab.id },
-        files: ['content.js']
+      // 1. Delegate content check and single injection to SW
+      const ensureResp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'ENSURE_CONTENT',
+          tabId: activeTab.id
+        }, resolve);
       });
 
+      if (ensureResp && ensureResp.error) {
+        stopPolling();
+        updateStatus('error', formatDetail('error', { error: ensureResp.error }));
+        btnTranslate.disabled = false;
+        return;
+      }
+
+      // 2. Start translation on content script
       const currentSettings = {
         baseURL: inputBaseUrl.value.trim(),
         model: selectModel.value || DEFAULT_MODEL,
@@ -527,7 +538,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         (resp) => {
           stopPolling();
           if (chrome.runtime.lastError) {
-            updateStatus('error', chrome.runtime.lastError.message);
+            updateStatus('error', chrome.runtime.lastError.message || 'Không thể kết nối với content script');
             btnTranslate.disabled = false;
             return;
           }

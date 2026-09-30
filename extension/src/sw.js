@@ -8,6 +8,11 @@ import {
   isValidOrigin,
   ConsentError
 } from './consent.mjs';
+import {
+  originToScriptId,
+  originToMatchPattern,
+  calculateReconcileDiff
+} from './permissions.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
@@ -21,6 +26,55 @@ let currentAccessLevel = 'TRUSTED_AND_UNTRUSTED_CONTEXTS';
 function _resetStorageAccessStateForTest() {
   storageAccessInitialized = false;
   storageAccessFailed = false;
+}
+
+// ============================================================================
+// TEST-ONLY State & Hooks (Dormant and unread in production)
+// ============================================================================
+let _testMode = false;
+const _testPermissionOverrides = new Map();
+
+// TEST-ONLY: Activate test mode for automated test suites
+function _setTestMode(enabled) {
+  _testMode = Boolean(enabled);
+  if (!_testMode) {
+    _testPermissionOverrides.clear();
+  }
+}
+
+// TEST-ONLY: Set explicit permission status for origin
+function _setTestPermission(origin, granted) {
+  if (!_testMode) return;
+  const norm = normalizeOrigin(origin);
+  if (norm) {
+    _testPermissionOverrides.set(norm, Boolean(granted));
+  }
+}
+
+/**
+ * Checks whether host permission (origin + '/*') is granted.
+ * In production (_testMode === false), queries native chrome.permissions.contains.
+ */
+async function permissionContains(origin) {
+  const norm = normalizeOrigin(origin);
+  if (!norm) return false;
+
+  // TEST-ONLY: check test override map only when test mode is enabled
+  if (_testMode) {
+    if (_testPermissionOverrides.has(norm)) {
+      return Boolean(_testPermissionOverrides.get(norm));
+    }
+  }
+
+  // Production path: native chrome.permissions.contains
+  try {
+    if (typeof chrome !== 'undefined' && chrome.permissions && typeof chrome.permissions.contains === 'function') {
+      return await chrome.permissions.contains({ origins: [norm + '/*'] });
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 // Helper to create typed errors strictly conforming to schemas/error.schema.json
@@ -91,6 +145,12 @@ async function getStoredSites() {
   return res.sites || {};
 }
 
+async function getStoredRegistrations() {
+  await ensureStorageAccess();
+  const res = await chrome.storage.local.get(['registrations']);
+  return res.registrations || {};
+}
+
 async function getStoredTabOverrides() {
   if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
     throw createTypedError('CONSENT_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false);
@@ -115,6 +175,82 @@ if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typ
       // Ignore cleanup error
     }
   });
+}
+
+// Reconcile dynamic content scripts with active permissions and storage
+let _reconcilePromise = null;
+
+async function reconcilePermissions() {
+  if (_reconcilePromise) return _reconcilePromise;
+  _reconcilePromise = (async () => {
+    try {
+      await ensureStorageAccess();
+      const stored = await chrome.storage.local.get(['sites', 'registrations']);
+      const sites = stored.sites || {};
+      const registrations = stored.registrations || {};
+
+      let existingScripts = [];
+      if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.getRegisteredContentScripts === 'function') {
+        try {
+          existingScripts = await chrome.scripting.getRegisteredContentScripts();
+        } catch {
+          existingScripts = [];
+        }
+      }
+      const existingScriptIds = existingScripts.map((s) => s.id);
+
+      // Check permissions for all stored sites
+      const grantedOrigins = new Set();
+      for (const orig of Object.keys(sites)) {
+        if (await permissionContains(orig)) {
+          grantedOrigins.add(orig);
+        }
+      }
+
+      const diff = calculateReconcileDiff({
+        sites,
+        registrations,
+        existingRegisteredScriptIds: existingScriptIds,
+        grantedOrigins
+      });
+
+      // 1. Unregister stale scripts
+      if (diff.toUnregister.length > 0 && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.unregisterContentScripts === 'function') {
+        try {
+          await chrome.scripting.unregisterContentScripts({ ids: diff.toUnregister });
+        } catch {}
+      }
+
+      // 2. Register missing scripts
+      if (diff.toRegister.length > 0 && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.registerContentScripts === 'function') {
+        try {
+          await chrome.scripting.registerContentScripts(
+            diff.toRegister.map((item) => ({
+              id: item.scriptId,
+              matches: item.matches,
+              js: ['content.js'],
+              runAt: 'document_idle',
+              allFrames: false,
+              persistAcrossSessions: true
+            }))
+          );
+        } catch (err) {
+          console.error('Failed to register content scripts during reconcile:', err);
+        }
+      }
+
+      // 3. Persist updated sites & registrations
+      await chrome.storage.local.set({
+        sites: diff.updatedSites,
+        registrations: diff.updatedRegistrations
+      });
+
+      return { ok: true, diff };
+    } finally {
+      _reconcilePromise = null;
+    }
+  })();
+  return _reconcilePromise;
 }
 
 // Sender verification helper
@@ -169,11 +305,24 @@ async function translateBatch(input = {}) {
 // Startup hooks
 if (typeof chrome !== 'undefined' && chrome.runtime) {
   chrome.runtime.onInstalled?.addListener(() => {
-    ensureStorageAccess().catch(() => {});
+    ensureStorageAccess()
+      .then(() => reconcilePermissions())
+      .catch(() => {});
   });
 
   chrome.runtime.onStartup?.addListener(() => {
-    ensureStorageAccess().catch(() => {});
+    ensureStorageAccess()
+      .then(() => reconcilePermissions())
+      .catch(() => {});
+  });
+}
+
+// Permission removal listener
+if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.onRemoved) {
+  chrome.permissions.onRemoved.addListener(async () => {
+    try {
+      await reconcilePermissions();
+    } catch {}
   });
 }
 
@@ -314,15 +463,169 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
-        const res = await chrome.storage.local.get(['sites']);
-        const sites = res.sites || {};
+        const scriptId = originToScriptId(normOrigin);
+
         if (message.enabled) {
+          // Verify host permission
+          const hasPerm = await permissionContains(normOrigin);
+          if (!hasPerm) {
+            return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for origin', false, {
+              origin: normOrigin,
+              permissionType: 'host'
+            });
+          }
+
+          // Register content script dynamically
+          if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.registerContentScripts === 'function') {
+            try {
+              await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
+            } catch {}
+            try {
+              await chrome.scripting.registerContentScripts([{
+                id: scriptId,
+                matches: [originToMatchPattern(normOrigin)],
+                js: ['content.js'],
+                runAt: 'document_idle',
+                allFrames: false,
+                persistAcrossSessions: true
+              }]);
+            } catch (err) {
+              console.error('Failed to register content script:', err);
+            }
+          }
+
+          // Inject into active tab once if tabId is provided
+          if (typeof message.tabId === 'number' && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.executeScript === 'function') {
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: message.tabId, frameIds: [0] },
+                files: ['content.js']
+              });
+            } catch {}
+          }
+
+          const res = await chrome.storage.local.get(['sites', 'registrations']);
+          const sites = res.sites || {};
+          const registrations = res.registrations || {};
           sites[normOrigin] = { createdAt: Date.now() };
+          registrations[normOrigin] = scriptId;
+          await chrome.storage.local.set({ sites, registrations });
         } else {
+          // Unregister content script dynamically
+          if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.unregisterContentScripts === 'function') {
+            try {
+              await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
+            } catch {}
+          }
+          const res = await chrome.storage.local.get(['sites', 'registrations']);
+          const sites = res.sites || {};
+          const registrations = res.registrations || {};
           delete sites[normOrigin];
+          delete registrations[normOrigin];
+          await chrome.storage.local.set({ sites, registrations });
         }
-        await chrome.storage.local.set({ sites });
         return { ok: true };
+      }
+
+      case 'ENSURE_CONTENT': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'ENSURE_CONTENT is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        const tabId = message.tabId;
+        if (typeof tabId !== 'number') {
+          return createTypedError('PERMISSION_REQUIRED', 'Valid tabId required for ENSURE_CONTENT', false, {
+            permissionType: 'host'
+          });
+        }
+
+        let tab = null;
+        try {
+          if (chrome.tabs && typeof chrome.tabs.get === 'function') {
+            tab = await chrome.tabs.get(tabId);
+          }
+        } catch {
+          tab = null;
+        }
+
+        const siteOrigin = tab?.url ? normalizeOrigin(tab.url) : null;
+        if (!siteOrigin) {
+          return createTypedError('SITE_NOT_ALLOWED', 'Current site origin is not valid HTTP(S)', false, {
+            origin: tab?.url || '',
+            tabId
+          });
+        }
+
+        await ensureStorageAccess();
+        let sites, tabOverrides;
+        try {
+          sites = await getStoredSites();
+          tabOverrides = await getStoredTabOverrides();
+        } catch (err) {
+          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
+            tabId,
+            reason: err && err.message ? String(err.message) : 'Storage read error'
+          });
+        }
+
+        const siteEnabled = Boolean(sites[siteOrigin]);
+        const tabOverride = tabOverrides[String(tabId)] || null;
+
+        let effective;
+        try {
+          effective = getEffectivePolicy({ tabOverride, siteEnabled });
+        } catch (err) {
+          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
+            tabId,
+            reason: err && err.message ? String(err.message) : 'Policy evaluation error'
+          });
+        }
+
+        if (effective !== 'on') {
+          return createTypedError('OPT_IN_REQUIRED', 'Translation is disabled (tab explicit OFF, site OFF, or default OFF)', false, {
+            tabId,
+            origin: siteOrigin,
+            scope: tabOverride ? 'tab' : 'site',
+            effectiveConsent: 'off'
+          });
+        }
+
+        // Permission check
+        const hasPerm = await permissionContains(siteOrigin);
+        if (!hasPerm) {
+          return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for site origin', false, {
+            origin: siteOrigin,
+            permissionType: 'host'
+          });
+        }
+
+        // Inject content.js once (content self-guards window.__webMcpTranslatorInjected)
+        if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.executeScript === 'function') {
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId, frameIds: [0] },
+              files: ['content.js']
+            });
+          } catch (err) {
+            return createTypedError('PERMISSION_REQUIRED', 'Failed to execute content script on tab', false, {
+              origin: siteOrigin,
+              tabId,
+              reason: err && err.message ? String(err.message) : 'executeScript error'
+            });
+          }
+        }
+
+        return { ok: true };
+      }
+
+      case 'RECONCILE': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'RECONCILE is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        return await reconcilePermissions();
       }
 
       case 'SET_TAB_OVERRIDE': {
@@ -417,7 +720,16 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // 4. Dispatch batch (payload items only; metadata completely ignored)
+        // 4. Permission check before translation
+        const hasPerm = await permissionContains(origin);
+        if (!hasPerm) {
+          return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for site origin', false, {
+            origin,
+            permissionType: 'host'
+          });
+        }
+
+        // 5. Dispatch batch (payload items only; metadata completely ignored)
         return await translateBatch(message.payload || {});
       }
 
@@ -462,6 +774,10 @@ const defaultTestExtensionUrl = (typeof chrome !== 'undefined' && chrome.runtime
 self.__translatorSw = {
   dispatchMessage: (message, sender = { url: defaultTestExtensionUrl }) => handleRuntimeMessage(message, sender),
   _resetStorageAccessStateForTest,
+  _setTestMode,
+  _setTestPermission,
+  reconcilePermissions,
+  permissionContains,
   translateBatch,
   listModels,
   ensureStorageAccess,
@@ -469,6 +785,7 @@ self.__translatorSw = {
   getStoredApiKey,
   getStoredSites,
   getStoredTabOverrides,
+  getStoredRegistrations,
   DEFAULT_MODEL,
   TRANSLATE_TIMEOUT_MS,
   LIST_MODELS_TIMEOUT_MS
