@@ -98,9 +98,11 @@ Every translation response received from the 9router provider MUST be validated 
    - A single failed chunk MUST NOT abort the whole run. The client retries the chunk once (`recovery.contentRetryPerChunk = 1`, delay `recovery.contentRetryDelayMs = 800` ms, identical payload).
    - If the retry also fails and the chunk has more than `recovery.splitMinItems` (8) items, the client halves the chunk and retries each half (`recovery.splitMaxDepth = 2`), then continues with the remaining chunks.
    - The run reports `{ collected, applied, failed }`. Items that failed remain untranslated; a second user-triggered run re-collects only untranslated nodes (already-applied nodes are skipped) and resumes from there.
-5. **Model Pinning & Logging Hygiene**:
-   - The adapter MUST request the exact model configured by the user. Automatic silent fallback to an alternative model is prohibited.
-   - Logs and receipts MUST record `requestedModel` and `actualModel` (reported in provider response, or `"unknown"` if omitted).
+5. **Model Pinning, Fallback Chain & Logging Hygiene**:
+   - The adapter MUST request the exact model requested for that call. Automatic silent fallback within the adapter itself is prohibited (pinned 1 ID/call).
+   - The background service worker coordinates sequential fallback strictly according to the user-configured fallback chain (`[primaryModel, ...fallbackModels]`, max 3 attempts) upon `NETWORK`, `TIMEOUT`, or `HTTP_5xx` errors.
+   - Stop-list errors (`HTTP_401`, `HTTP_403`, `HTTP_404`, `HTTP_429`, policy, consent, rate, schema, abort) terminate immediately without fallback.
+   - Provider responses, receipts, and internal envelopes record `requestedModel`, `actualModel`, and `fallbackIndex`.
    - **Privacy Invariant**: NEVER log page text, source snippets, translated snippets, or API keys in browser consoles, receipts, or error payloads.
 
 ---

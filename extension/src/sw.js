@@ -42,7 +42,11 @@ const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
 const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
 
+const MODEL_CACHE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MODEL_CACHE_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 let configRevision = 1;
+let _revalidateModelsPromise = null;
 
 // Ephemeral In-Memory Cache: destroyed upon SW restart per contract/lifecycle.md §3.3
 const translationCache = createTranslationCache({
@@ -68,6 +72,115 @@ function _resetStorageAccessStateForTest() {
 }
 
 // ============================================================================
+// Fallback Plan Pure Decision Engine (§6 Sol)
+// ============================================================================
+export const STOP_ERROR_CODES = Object.freeze([
+  'HTTP_401',
+  'HTTP_403',
+  'HTTP_404',
+  'HTTP_429',
+  'MISSING_CONFIG',
+  'MODEL_NOT_ALLOWED',
+  'PERMISSION_REQUIRED',
+  'OPT_IN_REQUIRED',
+  'SITE_NOT_ALLOWED',
+  'RATE_LIMITED',
+  'RATE_STATE_UNAVAILABLE',
+  'CAP_EXCEEDED',
+  'INVALID_SCHEMA',
+  'ABORTED',
+  'DROPPED_ON_RESTART'
+]);
+
+export const FALLBACK_ELIGIBLE_CODES = Object.freeze([
+  'NETWORK',
+  'TIMEOUT',
+  'HTTP_5xx'
+]);
+
+/**
+ * Pure helper function to determine if a failed attempt should fall back to next model.
+ *
+ * @param {any} err - The error envelope { error: { code } } or Error with code property
+ * @param {string[]} chain - Array of models to try [primary, ...fallbacks] (max 3)
+ * @param {number} attemptIndex - 0-based index of current attempt
+ * @returns {{ shouldFallback: boolean, nextIndex?: number, nextModel?: string, reason?: string, terminalError?: any }}
+ */
+export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
+  if (!err) {
+    return { shouldFallback: false, reason: 'NO_ERROR' };
+  }
+
+  const code = (typeof err === 'object' && err !== null)
+    ? (err.error?.code || err.code || '')
+    : '';
+
+  if (STOP_ERROR_CODES.includes(code)) {
+    return {
+      shouldFallback: false,
+      reason: 'STOP_LIST',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  if (!FALLBACK_ELIGIBLE_CODES.includes(code)) {
+    return {
+      shouldFallback: false,
+      reason: 'NOT_ELIGIBLE',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  if (!Array.isArray(chain) || chain.length <= 1) {
+    return {
+      shouldFallback: false,
+      reason: 'NO_FALLBACK_MODELS',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  const nextIndex = attemptIndex + 1;
+  if (nextIndex >= chain.length || nextIndex >= 3) {
+    return {
+      shouldFallback: false,
+      reason: 'CHAIN_EXHAUSTED',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  const nextModel = chain[nextIndex];
+  if (!nextModel || typeof nextModel !== 'string' || !nextModel.trim()) {
+    return {
+      shouldFallback: false,
+      reason: 'INVALID_NEXT_MODEL',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  return {
+    shouldFallback: true,
+    nextIndex,
+    nextModel: nextModel.trim()
+  };
+}
+
+// Utility to compare arrays
+function arraysEqual(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+// ============================================================================
 // TEST-ONLY State & Hooks (Dormant and unread in production)
 // ============================================================================
 let _testMode = false;
@@ -77,6 +190,7 @@ const _testPermissionOverrides = new Map();
 let _testRateLimits = null;
 let _testRateWindowSeconds = null;
 let _testMaxQueue = null;
+let _testMaxRetries = null;
 
 // TEST-ONLY: Activate test mode for automated test suites
 function _setTestMode(enabled) {
@@ -86,7 +200,13 @@ function _setTestMode(enabled) {
     _testRateLimits = null;
     _testRateWindowSeconds = null;
     _testMaxQueue = null;
+    _testMaxRetries = null;
   }
+}
+
+function _setTestMaxRetries(n) {
+  if (!_testMode) return;
+  _testMaxRetries = typeof n === 'number' ? n : null;
 }
 
 // TEST-ONLY: Set explicit permission status for origin
@@ -126,7 +246,7 @@ function _setTestMaxQueue(n) {
 
 async function _resetRateStateForTest() {
   if (!_testMode) return;
-  for (const [tId, active] of activeBatchControllers.entries()) {
+  for (const [reqId, active] of activeBatchControllers.entries()) {
     try { active.controller.abort('test_reset'); } catch {}
   }
   activeBatchControllers.clear();
@@ -331,7 +451,8 @@ function runInAdmissionChain(fn) {
 const DEFAULT_MAX_QUEUE_PER_TAB = 8;
 const tabQueues = new Map(); // tabId -> Array of QueueEntry
 const tabEpochs = new Map(); // tabId -> current epoch number
-const activeBatchControllers = new Map(); // tabId -> { controller, revision, epoch, origin }
+// Controller per-request (Map by requestId instead of tabId to allow concurrent content batches)
+const activeBatchControllers = new Map(); // requestId -> { controller, tabId, revision, epoch, origin }
 
 function getMaxQueue() {
   return (_testMode && typeof _testMaxQueue === 'number') ? _testMaxQueue : DEFAULT_MAX_QUEUE_PER_TAB;
@@ -565,10 +686,11 @@ function scheduleQueueEntry(entry, delayMs) {
 // Clean tab overrides and rate queues/state when tab closes
 async function handleTabRemoved(tabId) {
   try {
-    const active = activeBatchControllers.get(tabId);
-    if (active) {
-      try { active.controller.abort('tab_closed'); } catch {}
-      activeBatchControllers.delete(tabId);
+    for (const [reqId, active] of activeBatchControllers.entries()) {
+      if (active.tabId === tabId) {
+        try { active.controller.abort('tab_closed'); } catch {}
+        activeBatchControllers.delete(reqId);
+      }
     }
     tabEpochs.delete(tabId);
     const queue = tabQueues.get(tabId);
@@ -667,10 +789,10 @@ async function reconcilePermissions() {
       });
 
       // 4. Abort active translation batches and queue entries for revoked origins
-      for (const [tId, active] of activeBatchControllers.entries()) {
+      for (const [reqId, active] of activeBatchControllers.entries()) {
         if (active.origin && !grantedOrigins.has(active.origin)) {
           try { active.controller.abort('permission_revoked'); } catch {}
-          activeBatchControllers.delete(tId);
+          activeBatchControllers.delete(reqId);
         }
       }
       for (const [tId, queue] of tabQueues.entries()) {
@@ -703,7 +825,7 @@ async function reconcilePermissions() {
   return _reconcilePromise;
 }
 
-// Sender verification helper
+// Sender verification helpers
 function isPrivilegedSender(sender) {
   if (!sender) return false;
   // Content scripts always have sender.tab
@@ -719,26 +841,200 @@ function isPrivilegedSender(sender) {
   return false;
 }
 
+function verifyWidgetSender(sender) {
+  if (!sender || !sender.tab || typeof sender.tab.id !== 'number' || sender.frameId !== 0) {
+    return {
+      ok: false,
+      error: createTypedError('PERMISSION_REQUIRED', 'Widget actions require top frame tab sender', false, {
+        permissionType: 'host'
+      })
+    };
+  }
+  const senderRawUrl = sender.url || (sender.tab && sender.tab.url) || sender.origin;
+  const origin = normalizeOrigin(senderRawUrl);
+  if (!origin) {
+    return {
+      ok: false,
+      error: createTypedError('SITE_NOT_ALLOWED', 'Invalid HTTP(S) origin for widget', false, {
+        origin: senderRawUrl || ''
+      })
+    };
+  }
+  return { ok: true, tabId: sender.tab.id, origin, url: senderRawUrl };
+}
+
+// Push helpers for best-effort broadcast
+function notifyModelsUpdated(data) {
+  if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+    try {
+      chrome.runtime.sendMessage({ action: 'MODELS_UPDATED', ...data }).catch(() => {});
+    } catch {}
+  }
+}
+
+function pushWidgetStateChanged(tabId, state) {
+  if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
+    try {
+      chrome.tabs.sendMessage(tabId, { action: 'WIDGET_STATE_CHANGED', ...state }).catch(() => {});
+    } catch {}
+  }
+}
+
+function notifyAllWidgetStateChanged() {
+  if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+    chrome.tabs.query({}).then((tabs) => {
+      if (Array.isArray(tabs)) {
+        for (const tab of tabs) {
+          if (tab && typeof tab.id === 'number') {
+            chrome.tabs.sendMessage(tab.id, { action: 'WIDGET_STATE_CHANGED' }).catch(() => {});
+          }
+        }
+      }
+    }).catch(() => {});
+  }
+}
+
+// Hash full key + baseURL into SHA-256 hex string (zero key material stored)
+async function computeKeyFingerprint(key, baseURL) {
+  if (!key) return '';
+  const normBaseURL = String(baseURL || '').trim();
+  const data = new TextEncoder().encode(`${key}::${normBaseURL}`);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Adapter router instance configuration
 const routerConfig = {
   baseURL: '',
   apiKey: '',
   model: DEFAULT_MODEL,
   timeoutMs: TRANSLATE_TIMEOUT_MS,
-  listModelsTimeoutMs: LIST_MODELS_TIMEOUT_MS
+  listModelsTimeoutMs: LIST_MODELS_TIMEOUT_MS,
+  getMaxRetries: () => (_testMode && typeof _testMaxRetries === 'number') ? _testMaxRetries : 2
 };
 
 const router = createDirect9Router(routerConfig);
 
-// Model Discovery (delegated to adapter)
-async function listModels() {
+// Model Discovery (L2 storage.local cache with TTL & background revalidation)
+async function listModels(options = {}) {
+  const forceRefresh = Boolean(options && options.forceRefresh);
   await ensureStorageAccess();
   const settings = await getStoredSettings();
   const apiKey = await getStoredApiKey();
-  routerConfig.baseURL = settings.baseURL;
+
+  const baseURL = settings.baseURL || '';
+  routerConfig.baseURL = baseURL;
   routerConfig.apiKey = apiKey;
   routerConfig.model = settings.model || DEFAULT_MODEL;
-  return await router.listModels();
+
+  if (!baseURL || !apiKey) {
+    return await router.listModels({ forceRefresh });
+  }
+
+  const fingerprint = await computeKeyFingerprint(apiKey, baseURL);
+
+  // Read L2 cache from storage.local
+  let cached = null;
+  try {
+    const res = await chrome.storage.local.get(['modelListCache']);
+    cached = res.modelListCache;
+  } catch {}
+
+  const isCacheValid = Boolean(
+    cached &&
+    cached.baseURL === baseURL &&
+    cached.keyFingerprint === fingerprint &&
+    Array.isArray(cached.models) &&
+    typeof cached.fetchedAt === 'number'
+  );
+
+  const now = Date.now();
+  const age = isCacheValid ? (now - cached.fetchedAt) : Infinity;
+
+  // 1. Force refresh: bypass L1 and L2
+  if (forceRefresh) {
+    const fetchRes = await router.listModels({ forceRefresh: true });
+    if (fetchRes && Array.isArray(fetchRes.models)) {
+      const fetchedAt = Date.now();
+      await chrome.storage.local.set({
+        modelListCache: {
+          baseURL,
+          keyFingerprint: fingerprint,
+          models: fetchRes.models,
+          fetchedAt
+        }
+      });
+      return { models: fetchRes.models, stale: false, fetchedAt };
+    }
+    // Fetch failed: if stale cache exists within 7 days, return stale + error
+    if (isCacheValid && age <= MODEL_CACHE_STALE_MAX_MS) {
+      return {
+        models: cached.models,
+        stale: true,
+        fetchedAt: cached.fetchedAt,
+        error: fetchRes?.error || fetchRes
+      };
+    }
+    return fetchRes;
+  }
+
+  // 2. Fresh (<24h): return immediately
+  if (isCacheValid && age < MODEL_CACHE_FRESH_MS) {
+    return {
+      models: cached.models,
+      stale: false,
+      fetchedAt: cached.fetchedAt
+    };
+  }
+
+  // 3. Stale (<= 7 days): return immediately, revalidate in background (shared promise)
+  if (isCacheValid && age <= MODEL_CACHE_STALE_MAX_MS) {
+    if (!_revalidateModelsPromise) {
+      _revalidateModelsPromise = (async () => {
+        try {
+          const fetchRes = await router.listModels({ forceRefresh: true });
+          if (fetchRes && Array.isArray(fetchRes.models)) {
+            const fetchedAt = Date.now();
+            await chrome.storage.local.set({
+              modelListCache: {
+                baseURL,
+                keyFingerprint: fingerprint,
+                models: fetchRes.models,
+                fetchedAt
+              }
+            });
+            notifyModelsUpdated({ models: fetchRes.models, fetchedAt });
+          }
+        } catch {
+        } finally {
+          _revalidateModelsPromise = null;
+        }
+      })();
+    }
+    return {
+      models: cached.models,
+      stale: true,
+      fetchedAt: cached.fetchedAt,
+      refreshing: true
+    };
+  }
+
+  // 4. Missing, fingerprint changed, or > 7 days: blocking fetch
+  const fetchRes = await router.listModels({ forceRefresh: true });
+  if (fetchRes && Array.isArray(fetchRes.models)) {
+    const fetchedAt = Date.now();
+    await chrome.storage.local.set({
+      modelListCache: {
+        baseURL,
+        keyFingerprint: fingerprint,
+        models: fetchRes.models,
+        fetchedAt
+      }
+    });
+    return { models: fetchRes.models, stale: false, fetchedAt };
+  }
+  return fetchRes;
 }
 
 // Batch Translation (delegated to adapter)
@@ -748,11 +1044,11 @@ async function translateBatch(input = {}) {
   const apiKey = await getStoredApiKey();
   routerConfig.baseURL = settings.baseURL;
   routerConfig.apiKey = apiKey;
-  routerConfig.model = settings.model || DEFAULT_MODEL;
+  routerConfig.model = input.model || settings.model || DEFAULT_MODEL;
   return await router.translateBatch(input);
 }
 
-// Semaphore-guarded batch translation with cache population & original-order merging
+// Semaphore-guarded batch translation with fallback chain & cache population strictly under actualModel
 async function executeBatchTranslation({
   payload = {},
   misses = [],
@@ -762,15 +1058,13 @@ async function executeBatchTranslation({
   epoch = undefined,
   origin = null
 }) {
+  const requestId = payload.requestId || ('req_' + Math.random().toString(36).slice(2));
   let controller = null;
   if (typeof tabId === 'number') {
-    const prev = activeBatchControllers.get(tabId);
-    if (prev) {
-      try { prev.controller.abort('superseded'); } catch {}
-    }
     controller = new AbortController();
-    activeBatchControllers.set(tabId, {
+    activeBatchControllers.set(requestId, {
       controller,
+      tabId,
       revision: batchConfigRevision,
       epoch,
       origin
@@ -782,10 +1076,8 @@ async function executeBatchTranslation({
   try {
     await providerSemaphore.acquire();
   } catch (err) {
-    if (controller && typeof tabId === 'number') {
-      if (activeBatchControllers.get(tabId)?.controller === controller) {
-        activeBatchControllers.delete(tabId);
-      }
+    if (controller) {
+      activeBatchControllers.delete(requestId);
     }
     if (err?.code === 'TIMEOUT') {
       return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
@@ -798,10 +1090,8 @@ async function executeBatchTranslation({
   // After acquiring semaphore: check if already aborted while waiting for permit
   if (signal?.aborted) {
     providerSemaphore.release();
-    if (controller && typeof tabId === 'number') {
-      if (activeBatchControllers.get(tabId)?.controller === controller) {
-        activeBatchControllers.delete(tabId);
-      }
+    if (controller) {
+      activeBatchControllers.delete(requestId);
     }
     return createTypedError('ABORTED', 'Operation aborted before acquiring provider slot', false, {
       reason: signal.reason ? String(signal.reason) : 'aborted'
@@ -814,10 +1104,8 @@ async function executeBatchTranslation({
     (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId))
   ) {
     providerSemaphore.release();
-    if (controller && typeof tabId === 'number') {
-      if (activeBatchControllers.get(tabId)?.controller === controller) {
-        activeBatchControllers.delete(tabId);
-      }
+    if (controller) {
+      activeBatchControllers.delete(requestId);
     }
     return {
       ...createTypedError(
@@ -831,28 +1119,152 @@ async function executeBatchTranslation({
     };
   }
 
-  let providerRes;
+  const storedSettings = await getStoredSettings();
+  const primaryModel = storedSettings.model || payload.model || DEFAULT_MODEL;
+  const configuredFallbacks = Array.isArray(storedSettings.fallbackModels) ? storedSettings.fallbackModels : [];
+  const chain = [primaryModel, ...configuredFallbacks].filter((m) => typeof m === 'string' && m.trim()).slice(0, 3);
+  const requestedModel = chain[0] || DEFAULT_MODEL;
+
+  let currentMisses = [...misses];
+  let currentHits = [...hits];
+  let finalProviderRes = null;
+  let actualModel = requestedModel;
+  let fallbackIndex = 0;
+
   try {
-    providerRes = await translateBatch({
-      ...payload,
-      items: misses.map((m) => m.item),
-      signal
-    });
+    for (let attemptIndex = 0; attemptIndex < chain.length && attemptIndex < 3; attemptIndex++) {
+      const currentModel = chain[attemptIndex];
+
+      // Re-verify signal and config revision before each attempt
+      if (signal?.aborted) {
+        return createTypedError('ABORTED', 'Operation aborted during attempt', false, {
+          reason: signal.reason ? String(signal.reason) : 'aborted'
+        });
+      }
+      if (
+        batchConfigRevision !== configRevision ||
+        (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId))
+      ) {
+        return {
+          ...createTypedError(
+            'ABORTED',
+            'Translation batch discarded due to configuration change',
+            false,
+            { batchConfigRevision, currentConfigRevision: configRevision }
+          ),
+          configRevision: batchConfigRevision,
+          currentConfigRevision: configRevision
+        };
+      }
+
+      // Check cache for this specific model attempt
+      if (attemptIndex > 0) {
+        const attemptCacheContext = {
+          baseURL: storedSettings.baseURL || '',
+          model: currentModel,
+          sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
+          targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
+          promptVersion: PROMPT_VERSION
+        };
+        const remainingMisses = [];
+        for (const m of currentMisses) {
+          const normText = normalizeSourceText(m.item?.text);
+          const k = cacheKey(m.item, attemptCacheContext);
+          const cachedText = translationCache.get(k, normText);
+          if (cachedText !== undefined) {
+            currentHits.push({
+              index: m.index,
+              result: {
+                id: m.item.id,
+                revision: m.item.revision,
+                text: cachedText
+              }
+            });
+          } else {
+            remainingMisses.push({
+              ...m,
+              key: k
+            });
+          }
+        }
+        currentMisses = remainingMisses;
+
+        // If all misses hit cache for this fallback model, complete without provider call
+        if (currentMisses.length === 0) {
+          actualModel = currentModel;
+          fallbackIndex = attemptIndex;
+          finalProviderRes = { ok: true, results: [] };
+          break;
+        }
+      }
+
+      let attemptRes;
+      try {
+        attemptRes = await translateBatch({
+          ...payload,
+          model: currentModel,
+          items: currentMisses.map((m) => m.item),
+          signal
+        });
+      } catch (err) {
+        attemptRes = (err && err.error) ? err : createTypedError('NETWORK', err?.message || 'Network error', true);
+      }
+
+      if (attemptRes && !attemptRes.error && Array.isArray(attemptRes.results)) {
+        actualModel = currentModel;
+        fallbackIndex = attemptIndex;
+        finalProviderRes = attemptRes;
+
+        // Populate cache strictly under actualModel
+        const actualCacheContext = {
+          baseURL: storedSettings.baseURL || '',
+          model: actualModel,
+          sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
+          targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
+          promptVersion: PROMPT_VERSION
+        };
+
+        for (let i = 0; i < currentMisses.length; i++) {
+          const miss = currentMisses[i];
+          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id) || attemptRes.results[i];
+          if (resItem && typeof resItem.text === 'string') {
+            const k = cacheKey(miss.item, actualCacheContext);
+            translationCache.set(k, resItem.text, normalizeSourceText(miss.item?.text));
+          }
+        }
+
+        // Add translated items to currentHits
+        for (let i = 0; i < currentMisses.length; i++) {
+          const miss = currentMisses[i];
+          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id) || attemptRes.results[i];
+          currentHits.push({
+            index: miss.index,
+            result: {
+              id: miss.item.id,
+              revision: miss.item.revision,
+              text: resItem ? resItem.text : miss.item.text
+            }
+          });
+        }
+        break;
+      }
+
+      // Handle attempt failure
+      finalProviderRes = attemptRes;
+      const plan = resolveFallbackPlan(attemptRes, chain, attemptIndex);
+      if (!plan.shouldFallback) {
+        break;
+      }
+    }
   } finally {
     providerSemaphore.release();
-    if (controller && typeof tabId === 'number') {
-      if (activeBatchControllers.get(tabId)?.controller === controller) {
-        activeBatchControllers.delete(tabId);
-      }
+    if (controller) {
+      activeBatchControllers.delete(requestId);
     }
   }
 
-  if (providerRes && providerRes.error) {
-    return providerRes;
-  }
-
-  if (!providerRes || !Array.isArray(providerRes.results)) {
-    return providerRes;
+  if (finalProviderRes && finalProviderRes.error) {
+    return finalProviderRes;
   }
 
   // If configuration revision changed while batch was in-flight, do NOT cache and abort
@@ -882,36 +1294,20 @@ async function executeBatchTranslation({
     );
   }
 
-  // Populate cache for newly translated items
-  for (let i = 0; i < misses.length; i++) {
-    const miss = misses[i];
-    const res = providerRes.results.find((r) => r && r.id === miss.item.id) || providerRes.results[i];
-    if (res && typeof res.text === 'string') {
-      translationCache.set(miss.key, res.text, normalizeSourceText(miss.item?.text));
-    }
-  }
-
   // Merge hits and misses preserving the exact original order
   const totalCount = hits.length + misses.length;
   const merged = new Array(totalCount);
 
-  for (const h of hits) {
+  for (const h of currentHits) {
     merged[h.index] = h.result;
   }
 
-  for (let i = 0; i < misses.length; i++) {
-    const miss = misses[i];
-    const res = providerRes.results.find((r) => r && r.id === miss.item.id) || providerRes.results[i];
-    merged[miss.index] = {
-      id: miss.item.id,
-      revision: miss.item.revision,
-      text: res ? res.text : miss.item.text
-    };
-  }
-
   return {
-    ...providerRes,
+    ...finalProviderRes,
     results: merged,
+    requestedModel,
+    actualModel,
+    fallbackIndex,
     configRevision: batchConfigRevision,
     currentConfigRevision: configRevision
   };
@@ -967,30 +1363,46 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
         await ensureStorageAccess();
 
-        if (message.settings) {
-          const validation = validateSettings(message.settings);
-          if (!validation.valid) {
-            return createTypedError('INVALID_SCHEMA', 'Invalid settings: ' + (validation.errors || []).join('; '), false, {
-              schemaErrors: validation.errors
-            });
-          }
+        const oldSettings = await getStoredSettings();
+        const patch = (message.settings && typeof message.settings === 'object' && !Array.isArray(message.settings))
+          ? message.settings
+          : {};
+
+        // Merge patch with previously saved settings
+        const mergedRaw = { ...oldSettings, ...patch };
+        if (patch.rateLimits && typeof patch.rateLimits === 'object' && !Array.isArray(patch.rateLimits)) {
+          mergedRaw.rateLimits = {
+            ...oldSettings.rateLimits,
+            ...patch.rateLimits,
+            tab: { ...(oldSettings.rateLimits?.tab || {}), ...(patch.rateLimits.tab || {}) },
+            site: { ...(oldSettings.rateLimits?.site || {}), ...(patch.rateLimits.site || {}) }
+          };
         }
 
-        const oldSettings = await getStoredSettings();
-        const migrated = migrateSettings(message.settings);
+        const validation = validateSettings(mergedRaw);
+        if (!validation.valid) {
+          return createTypedError('INVALID_SCHEMA', 'Invalid settings: ' + (validation.errors || []).join('; '), false, {
+            schemaErrors: validation.errors
+          });
+        }
 
+        const migrated = migrateSettings(mergedRaw);
+
+        // Only bump revision if fields affecting translation change
         const configChanged = (
           oldSettings.baseURL !== migrated.baseURL ||
           oldSettings.model !== migrated.model ||
           oldSettings.sourceLanguage !== migrated.sourceLanguage ||
-          oldSettings.targetLanguage !== migrated.targetLanguage
+          oldSettings.targetLanguage !== migrated.targetLanguage ||
+          oldSettings.translationMode !== migrated.translationMode ||
+          !arraysEqual(oldSettings.fallbackModels, migrated.fallbackModels)
         );
 
         if (configChanged) {
           configRevision++;
           translationCache.clear();
           // Abort active in-flight requests across all tabs
-          for (const [tabId, active] of activeBatchControllers.entries()) {
+          for (const [reqId, active] of activeBatchControllers.entries()) {
             try { active.controller.abort('config_changed'); } catch {}
           }
           activeBatchControllers.clear();
@@ -1009,9 +1421,19 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           tabQueues.clear();
         }
 
+        // Invalidate model cache if baseURL changed
+        if (oldSettings.baseURL !== migrated.baseURL) {
+          await chrome.storage.local.remove(['modelListCache']);
+        }
+
         await chrome.storage.local.set({ settings: migrated });
         if (migrated.baseURL) routerConfig.baseURL = migrated.baseURL;
         if (migrated.model) routerConfig.model = migrated.model;
+
+        // Push WIDGET_STATE_CHANGED if mode or widgetVisible changed
+        if (oldSettings.translationMode !== migrated.translationMode || oldSettings.widgetVisible !== migrated.widgetVisible) {
+          notifyAllWidgetStateChanged();
+        }
 
         return { ok: true, configRevision };
       }
@@ -1049,7 +1471,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await ensureStorageAccess();
         configRevision++;
         translationCache.clear();
-        for (const [tabId, active] of activeBatchControllers.entries()) {
+        for (const [reqId, active] of activeBatchControllers.entries()) {
           try { active.controller.abort('credential_changed'); } catch {}
         }
         activeBatchControllers.clear();
@@ -1065,6 +1487,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
+        // Invalidate model list cache on key change
+        await chrome.storage.local.remove(['modelListCache']);
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
           routerConfig.apiKey = message.key;
@@ -1081,7 +1505,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await ensureStorageAccess();
         configRevision++;
         translationCache.clear();
-        for (const [tabId, active] of activeBatchControllers.entries()) {
+        for (const [reqId, active] of activeBatchControllers.entries()) {
           try { active.controller.abort('credential_changed'); } catch {}
         }
         activeBatchControllers.clear();
@@ -1097,7 +1521,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
-        await chrome.storage.local.remove(['api_key']);
+        // Invalidate model list cache on key removal
+        await chrome.storage.local.remove(['modelListCache', 'api_key']);
         routerConfig.apiKey = '';
         return { ok: true, configRevision };
       }
@@ -1118,7 +1543,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             permissionType: 'host'
           });
         }
-        return await listModels();
+        return await listModels({ forceRefresh: Boolean(message.forceRefresh) });
       }
 
       case 'GET_CONSENT': {
@@ -1248,10 +1673,10 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           await chrome.storage.local.set({ sites, registrations });
 
           // Abort active translation batches and purge queue entries for this origin
-          for (const [tId, active] of activeBatchControllers.entries()) {
+          for (const [reqId, active] of activeBatchControllers.entries()) {
             if (active.origin === normOrigin) {
               try { active.controller.abort('site_disabled'); } catch {}
-              activeBatchControllers.delete(tId);
+              activeBatchControllers.delete(reqId);
             }
           }
           for (const [tId, queue] of tabQueues.entries()) {
@@ -1276,6 +1701,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             }
           }
         }
+        notifyAllWidgetStateChanged();
         return { ok: true };
       }
 
@@ -1419,10 +1845,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await chrome.storage.session.set({ tab_overrides: tabOverrides });
 
         if (val === 'off') {
-          const active = activeBatchControllers.get(tabId);
-          if (active) {
-            try { active.controller.abort('tab_disabled'); } catch {}
-            activeBatchControllers.delete(tabId);
+          for (const [reqId, active] of activeBatchControllers.entries()) {
+            if (active.tabId === tabId) {
+              try { active.controller.abort('tab_disabled'); } catch {}
+              activeBatchControllers.delete(reqId);
+            }
           }
           const queue = tabQueues.get(tabId);
           if (queue && queue.length > 0) {
@@ -1439,6 +1866,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
 
+        notifyAllWidgetStateChanged();
         return { ok: true };
       }
 
@@ -1454,11 +1882,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const nextEpoch = typeof message.epoch === 'number' ? message.epoch : ((tabEpochs.get(tabId) || 0) + 1);
         tabEpochs.set(tabId, nextEpoch);
 
-        const active = activeBatchControllers.get(tabId);
-        if (active) {
-          if (typeof message.epoch !== 'number' || active.epoch === undefined || active.epoch < nextEpoch) {
-            try { active.controller.abort('cancel_pending'); } catch {}
-            activeBatchControllers.delete(tabId);
+        for (const [reqId, active] of activeBatchControllers.entries()) {
+          if (active.tabId === tabId) {
+            if (typeof message.epoch !== 'number' || active.epoch === undefined || active.epoch < nextEpoch) {
+              try { active.controller.abort('cancel_pending'); } catch {}
+              activeBatchControllers.delete(reqId);
+            }
           }
         }
 
@@ -1568,13 +1997,14 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // 5. Cache lookup (after consent & permission, BEFORE rate admission)
+        // 5. Cache lookup on primary model (after consent & permission, BEFORE rate admission)
         const storedSettings = await getStoredSettings();
+        const primaryModel = storedSettings.model || message.payload?.model || DEFAULT_MODEL;
         const cacheContext = {
           baseURL: storedSettings.baseURL || '',
-          model: message.payload?.model || storedSettings.model || DEFAULT_MODEL,
-          sourceLanguage: message.payload?.sourceLanguage || 'auto',
-          targetLanguage: message.payload?.targetLanguage || 'vi',
+          model: primaryModel,
+          sourceLanguage: message.payload?.sourceLanguage || storedSettings.sourceLanguage || 'auto',
+          targetLanguage: message.payload?.targetLanguage || storedSettings.targetLanguage || 'vi',
           promptVersion: PROMPT_VERSION
         };
 
@@ -1621,6 +2051,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
           return {
             results: hits.map((h) => h.result),
+            requestedModel: primaryModel,
+            actualModel: primaryModel,
+            fallbackIndex: 0,
             configRevision: batchConfigRevision,
             currentConfigRevision: configRevision
           };
@@ -1688,6 +2121,164 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         });
       }
 
+      // ======================================================================
+      // WIDGET_* Action Handlers (§2 Sol protocol)
+      // ======================================================================
+      case 'WIDGET_GET_STATE': {
+        const gate = verifyWidgetSender(sender);
+        if (!gate.ok) return gate.error;
+
+        await ensureStorageAccess();
+        const sites = await getStoredSites();
+        const tabOverrides = await getStoredTabOverrides();
+        const settings = await getStoredSettings();
+        const hasKey = Boolean(await getStoredApiKey());
+        const hasPerm = await permissionContains(gate.origin);
+
+        const posRes = await chrome.storage.local.get(['widgetPositions']);
+        const widgetPositions = posRes.widgetPositions || {};
+        const position = widgetPositions[gate.origin] || null;
+
+        const siteEnabled = Boolean(sites[gate.origin]);
+        const tabOverride = tabOverrides[String(gate.tabId)] || null;
+        const effective = getEffectivePolicy({ tabOverride, siteEnabled });
+
+        return {
+          effective,
+          siteEnabled,
+          tabOverride,
+          permission: hasPerm,
+          mode: settings.translationMode || 'scroll-follow',
+          widgetVisible: settings.widgetVisible ?? true,
+          position,
+          hasKey
+        };
+      }
+
+      case 'WIDGET_SET_ENABLED': {
+        const gate = verifyWidgetSender(sender);
+        if (!gate.ok) return gate.error;
+
+        await ensureStorageAccess();
+        const sites = await getStoredSites();
+        const tabOverrides = await getStoredTabOverrides();
+        const siteEnabled = Boolean(sites[gate.origin]);
+
+        if (message.enabled) {
+          const hasPerm = await permissionContains(gate.origin);
+          if (!hasPerm) {
+            return createTypedError(
+              'PERMISSION_REQUIRED',
+              'Host permission required to enable translation. Please open popup to grant permission.',
+              false,
+              { origin: gate.origin, permissionType: 'host' }
+            );
+          }
+          tabOverrides[String(gate.tabId)] = 'on';
+        } else {
+          tabOverrides[String(gate.tabId)] = 'off';
+          // Abort active batches and purge queue for this tab
+          for (const [reqId, active] of activeBatchControllers.entries()) {
+            if (active.tabId === gate.tabId) {
+              try { active.controller.abort('tab_disabled'); } catch {}
+              activeBatchControllers.delete(reqId);
+            }
+          }
+          const queue = tabQueues.get(gate.tabId);
+          if (queue && queue.length > 0) {
+            for (const entry of queue) {
+              if (entry.timer) clearTimeout(entry.timer);
+              entry.resolve(createTypedError(
+                'OPT_IN_REQUIRED',
+                'Translation disabled by tab override',
+                false,
+                { tabId: gate.tabId, effectiveConsent: 'off' }
+              ));
+            }
+            tabQueues.delete(gate.tabId);
+          }
+        }
+
+        await chrome.storage.session.set({ tab_overrides: tabOverrides });
+
+        const tabOverride = tabOverrides[String(gate.tabId)] || null;
+        const effective = getEffectivePolicy({ tabOverride, siteEnabled });
+        const settings = await getStoredSettings();
+        const hasKey = Boolean(await getStoredApiKey());
+        const hasPerm = await permissionContains(gate.origin);
+        const posRes = await chrome.storage.local.get(['widgetPositions']);
+        const widgetPositions = posRes.widgetPositions || {};
+
+        const state = {
+          effective,
+          siteEnabled,
+          tabOverride,
+          permission: hasPerm,
+          mode: settings.translationMode || 'scroll-follow',
+          widgetVisible: settings.widgetVisible ?? true,
+          position: widgetPositions[gate.origin] || null,
+          hasKey
+        };
+
+        pushWidgetStateChanged(gate.tabId, state);
+        return state;
+      }
+
+      case 'WIDGET_SET_MODE': {
+        const gate = verifyWidgetSender(sender);
+        if (!gate.ok) return gate.error;
+
+        const mode = message.mode;
+        if (mode !== 'scroll-follow' && mode !== 'full') {
+          return createTypedError('INVALID_SCHEMA', 'Invalid mode. Must be scroll-follow or full', false);
+        }
+
+        await ensureStorageAccess();
+        const oldSettings = await getStoredSettings();
+        if (oldSettings.translationMode !== mode) {
+          configRevision++;
+          translationCache.clear();
+          for (const [reqId, active] of activeBatchControllers.entries()) {
+            try { active.controller.abort('config_changed'); } catch {}
+          }
+          activeBatchControllers.clear();
+          for (const [tabId, queue] of tabQueues.entries()) {
+            for (const entry of queue) {
+              if (entry.timer) clearTimeout(entry.timer);
+              entry.resolve(createTypedError(
+                'ABORTED',
+                'Translation request aborted due to mode change',
+                false,
+                { reason: 'Mode changed' }
+              ));
+            }
+          }
+          tabQueues.clear();
+
+          const merged = migrateSettings({ ...oldSettings, translationMode: mode });
+          await chrome.storage.local.set({ settings: merged });
+          notifyAllWidgetStateChanged();
+        }
+
+        return { ok: true, mode };
+      }
+
+      case 'WIDGET_SET_POSITION': {
+        const gate = verifyWidgetSender(sender);
+        if (!gate.ok) return gate.error;
+
+        const x = typeof message.x === 'number' ? Math.max(0, Math.round(message.x)) : 0;
+        const y = typeof message.y === 'number' ? Math.max(0, Math.round(message.y)) : 0;
+
+        await ensureStorageAccess();
+        const posRes = await chrome.storage.local.get(['widgetPositions']);
+        const widgetPositions = posRes.widgetPositions || {};
+        widgetPositions[gate.origin] = { x, y };
+        await chrome.storage.local.set({ widgetPositions });
+
+        return { ok: true, position: { x, y } };
+      }
+
       default:
         return { error: { code: 'UNKNOWN_ACTION', message: `Unknown action ${message.action}` } };
     }
@@ -1726,7 +2317,9 @@ const defaultTestExtensionUrl = (typeof chrome !== 'undefined' && chrome.runtime
   ? `chrome-extension://${chrome.runtime.id}/popup.html`
   : 'chrome-extension://feicbphhimmhddfdlahlfmhkhodkdffl/popup.html';
 
-self.__translatorSw = {
+const globalScope = typeof self !== 'undefined' ? self : globalThis;
+
+globalScope.__translatorSw = {
   dispatchMessage: (message, sender = { url: defaultTestExtensionUrl }) => handleRuntimeMessage(message, sender),
   _resetStorageAccessStateForTest,
   _setTestMode,
@@ -1735,6 +2328,7 @@ self.__translatorSw = {
   _setTestRateLimits,
   _setTestRateWindowSeconds,
   _setTestMaxQueue,
+  _setTestMaxRetries,
   _resetRateStateForTest,
   _handleTabRemovedForTest: (tabId) => handleTabRemoved(tabId),
   reconcilePermissions,
@@ -1755,5 +2349,8 @@ self.__translatorSw = {
   getConfigRevision: () => configRevision,
   SETTINGS_VERSION,
   migrateSettings,
-  validateSettings
+  validateSettings,
+  resolveFallbackPlan,
+  computeKeyFingerprint,
+  activeBatchControllers
 };

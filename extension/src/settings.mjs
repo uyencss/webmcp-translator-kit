@@ -1,12 +1,16 @@
 // WebMCP Translator Kit — Pure Settings Schema, Versioning & Migration
 // Contract Version: webmcp-translator-contract/1
 
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = Object.freeze({
   version: SETTINGS_VERSION,
   baseURL: 'http://localhost:8080/v1',
   model: 'ag/gemini-3.1-pro-low',
+  fallbackModels: Object.freeze([]),
+  favoriteModels: Object.freeze([]),
+  translationMode: 'scroll-follow',
+  widgetVisible: true,
   sourceLanguage: 'auto',
   targetLanguage: 'vi',
   rateLimits: Object.freeze({
@@ -46,7 +50,7 @@ export function migrateSettings(raw) {
   delete res.api_key;
   delete res.apiKey;
 
-  // v0 -> v1 migration:
+  // Migration to v2
   res.version = SETTINGS_VERSION;
 
   // Ensure default string values if missing or empty
@@ -61,6 +65,52 @@ export function migrateSettings(raw) {
   }
   if (typeof res.targetLanguage !== 'string' || !res.targetLanguage.trim()) {
     res.targetLanguage = DEFAULT_SETTINGS.targetLanguage;
+  }
+
+  // v2: translationMode ('scroll-follow' | 'full')
+  if (res.translationMode !== 'scroll-follow' && res.translationMode !== 'full') {
+    res.translationMode = DEFAULT_SETTINGS.translationMode;
+  }
+
+  // v2: widgetVisible (boolean)
+  if (typeof res.widgetVisible !== 'boolean') {
+    res.widgetVisible = DEFAULT_SETTINGS.widgetVisible;
+  }
+
+  // v2: fallbackModels (0-2 distinct IDs, different from primary model)
+  if (Array.isArray(res.fallbackModels)) {
+    const cleaned = [];
+    const seen = new Set();
+    for (const item of res.fallbackModels) {
+      if (typeof item === 'string') {
+        const trimmed = item.trim();
+        if (trimmed && trimmed !== res.model && !seen.has(trimmed)) {
+          seen.add(trimmed);
+          cleaned.push(trimmed);
+        }
+      }
+    }
+    res.fallbackModels = cleaned.slice(0, 2);
+  } else {
+    res.fallbackModels = [];
+  }
+
+  // v2: favoriteModels (unique IDs, max 50)
+  if (Array.isArray(res.favoriteModels)) {
+    const cleaned = [];
+    const seen = new Set();
+    for (const item of res.favoriteModels) {
+      if (typeof item === 'string') {
+        const trimmed = item.trim();
+        if (trimmed && !seen.has(trimmed)) {
+          seen.add(trimmed);
+          cleaned.push(trimmed);
+        }
+      }
+    }
+    res.favoriteModels = cleaned.slice(0, 50);
+  } else {
+    res.favoriteModels = [];
   }
 
   // Ensure rateLimits structure is populated with defaults
@@ -132,6 +182,63 @@ export function validateSettings(settings) {
   // INVARIANT: credentials must never be passed in settings
   if ('api_key' in settings || 'apiKey' in settings) {
     errors.push('api_key must not be stored inside settings');
+  }
+
+  // Check translationMode
+  if (settings.translationMode !== undefined) {
+    if (settings.translationMode !== 'scroll-follow' && settings.translationMode !== 'full') {
+      errors.push("translationMode must be 'scroll-follow' or 'full'");
+    }
+  }
+
+  // Check widgetVisible
+  if (settings.widgetVisible !== undefined && typeof settings.widgetVisible !== 'boolean') {
+    errors.push('widgetVisible must be a boolean');
+  }
+
+  // Check fallbackModels
+  if (settings.fallbackModels !== undefined) {
+    if (!Array.isArray(settings.fallbackModels)) {
+      errors.push('fallbackModels must be an array of strings');
+    } else if (settings.fallbackModels.length > 2) {
+      errors.push('fallbackModels cannot have more than 2 models');
+    } else {
+      const seen = new Set();
+      for (const fb of settings.fallbackModels) {
+        if (typeof fb !== 'string' || !fb.trim()) {
+          errors.push('fallbackModels elements must be non-empty strings');
+          break;
+        }
+        if (typeof settings.model === 'string' && fb === settings.model) {
+          errors.push('fallbackModels cannot contain the primary model');
+        }
+        if (seen.has(fb)) {
+          errors.push('fallbackModels cannot contain duplicate models');
+        }
+        seen.add(fb);
+      }
+    }
+  }
+
+  // Check favoriteModels
+  if (settings.favoriteModels !== undefined) {
+    if (!Array.isArray(settings.favoriteModels)) {
+      errors.push('favoriteModels must be an array of strings');
+    } else if (settings.favoriteModels.length > 50) {
+      errors.push('favoriteModels cannot have more than 50 models');
+    } else {
+      const seen = new Set();
+      for (const fav of settings.favoriteModels) {
+        if (typeof fav !== 'string' || !fav.trim()) {
+          errors.push('favoriteModels elements must be non-empty strings');
+          break;
+        }
+        if (seen.has(fav)) {
+          errors.push('favoriteModels cannot contain duplicate models');
+        }
+        seen.add(fav);
+      }
+    }
   }
 
   // Validate rateLimits if present

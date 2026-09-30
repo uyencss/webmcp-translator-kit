@@ -42,6 +42,16 @@ export function createDirect9Router(config = {}) {
   const listModelsTtlMs = config.listModelsTtlMs ?? 300000; // 5 minutes
   const maxRetries = config.maxRetries ?? 2;
   const maxTimeoutRetries = config.maxTimeoutRetries ?? 1;
+
+  function getMaxRetries() {
+    if (typeof config.getMaxRetries === 'function') {
+      return config.getMaxRetries();
+    }
+    if (config.maxRetries !== undefined) {
+      return config.maxRetries;
+    }
+    return maxRetries;
+  }
   const retryInitialDelayMs = config.retryInitialDelayMs ?? 500;
   const retryMaxDelayMs = config.retryMaxDelayMs ?? 1000;
   const retryTimeoutDelayMs = config.retryTimeoutDelayMs ?? 800;
@@ -83,7 +93,8 @@ export function createDirect9Router(config = {}) {
   let lastBaseURL = null;
   let lastApiKey = null;
 
-  async function listModels() {
+  async function listModels(options = {}) {
+    const forceRefresh = Boolean(options && options.forceRefresh);
     const baseURL = getBaseURL();
     const apiKey = getApiKey();
 
@@ -110,6 +121,7 @@ export function createDirect9Router(config = {}) {
 
     const currentTime = now();
     if (
+      !forceRefresh &&
       cachedModels &&
       lastCacheKey === cacheKey &&
       currentTime - lastTimestamp < listModelsTtlMs
@@ -442,7 +454,7 @@ export function createDirect9Router(config = {}) {
             lastErrorResult.elapsedMs = now() - batchStart;
             lastErrorResult.model = targetModel;
 
-            if (networkRetries < maxRetries) {
+            if (networkRetries < getMaxRetries()) {
               networkRetries++;
               await sleep(Math.min(retryAfterMs, 10000));
               if (signal?.aborted) {
@@ -482,7 +494,7 @@ export function createDirect9Router(config = {}) {
             lastErrorResult.elapsedMs = now() - batchStart;
             lastErrorResult.model = targetModel;
 
-            if (networkRetries < maxRetries) {
+            if (networkRetries < getMaxRetries()) {
               networkRetries++;
               const baseDelay = networkRetries === 1 ? retryInitialDelayMs : retryMaxDelayMs;
               await delayWithJitter(baseDelay, retryJitterRatio);
@@ -737,7 +749,7 @@ export function createDirect9Router(config = {}) {
         lastErrorResult.elapsedMs = now() - batchStart;
         lastErrorResult.model = targetModel;
 
-        if (networkRetries < maxRetries) {
+        if (networkRetries < getMaxRetries()) {
           networkRetries++;
           const baseDelay = networkRetries === 1 ? retryInitialDelayMs : retryMaxDelayMs;
           await delayWithJitter(baseDelay, retryJitterRatio);

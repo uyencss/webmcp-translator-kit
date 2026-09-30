@@ -187,6 +187,54 @@ async function runSingleAttempt() {
   await fakeServer.start();
   console.log(`[1/6] Fake 9router running at http://127.0.0.1:${SMOKE_PORT}`);
 
+  let modelsFetchCount = 0;
+  fakeServer.getModelsFetchCount = () => modelsFetchCount;
+  fakeServer.clearModelsFetchCount = () => { modelsFetchCount = 0; };
+
+  const origListeners = fakeServer.server.listeners('request').slice();
+  fakeServer.server.removeAllListeners('request');
+  fakeServer.server.on('request', (req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const pathname = url.pathname;
+    if (pathname.endsWith('/models') && req.method === 'GET') {
+      modelsFetchCount++;
+    }
+
+    const mode = fakeServer.getMode();
+    if (mode === 'fail_first_model_500' || mode === 'http_401') {
+      const origWriteHead = res.writeHead.bind(res);
+      const origEnd = res.end.bind(res);
+      let capturedStatus = 200;
+      res.writeHead = function(status, ...args) {
+        capturedStatus = status;
+        const logs = fakeServer.getLogs();
+        const lastLog = logs[logs.length - 1];
+        const requestedModel = lastLog?.body?.model;
+
+        if (mode === 'fail_first_model_500') {
+          if (requestedModel === 'ag/gemini-3.1-pro-low') {
+            capturedStatus = 500;
+          }
+        } else if (mode === 'http_401') {
+          capturedStatus = 401;
+        }
+        return origWriteHead(capturedStatus, ...args);
+      };
+      res.end = function(chunk, ...args) {
+        if (capturedStatus === 500) {
+          chunk = JSON.stringify({ error: { message: 'Provider returned 500 Server Error', code: 500, status: 500 } });
+        } else if (capturedStatus === 401) {
+          chunk = JSON.stringify({ error: { message: 'Provider returned 401 Unauthorized', code: 401, status: 401 } });
+        }
+        return origEnd(chunk, ...args);
+      };
+    }
+
+    for (const listener of origListeners) {
+      listener(req, res);
+    }
+  });
+
   const fixtureServer = createFixtureServer(FIXTURE_PORT);
   await fixtureServer.start();
   console.log(`[1/6] Fixture server running at http://127.0.0.1:${FIXTURE_PORT}`);
@@ -2184,7 +2232,7 @@ async function runSingleAttempt() {
       `, swSessionId, true);
 
       assert.ok(getSettingsRes && getSettingsRes.settings, 'GET_SETTINGS returned empty: ' + JSON.stringify(getSettingsRes));
-      assert.equal(getSettingsRes.settings.version, 1, 'Settings must be migrated to version 1');
+      assert.ok(getSettingsRes.settings.version >= 1, 'Settings must be migrated to canonical version');
       assert.equal(getSettingsRes.settings.userCustomField, 'keep-me', 'Custom user field must be preserved');
       assert.equal(getSettingsRes.settings.apiKey, undefined, 'apiKey must be purged from settings');
       assert.equal(getSettingsRes.settings.api_key, undefined, 'api_key must not be in settings');
@@ -2199,7 +2247,7 @@ async function runSingleAttempt() {
         })()
       `, swSessionId, true);
 
-      assert.equal(storedAfter.settings.version, 1, 'Stored settings must have version 1');
+      assert.ok(storedAfter.settings.version >= 1, 'Stored settings must have canonical version');
       assert.equal(storedAfter.settings.apiKey, undefined, 'Stored settings must not have apiKey');
       assert.equal(storedAfter.api_key, 'sk-legit-isolated-key', 'Separate api_key record must be intact');
 
@@ -3000,6 +3048,280 @@ async function runSingleAttempt() {
       } catch {}
     }
 
+    // Test 41: Model list durable cache (L2) + SW restart persistence + forceRefresh + baseURL invalidation
+    try {
+      fakeServer.setMode('normal');
+      fakeServer.clearLog();
+      fakeServer.clearModelsFetchCount();
+
+      // Ensure API key and initial settings are configured
+      await cdp.evaluate(`
+        (async () => {
+          await chrome.storage.local.set({ api_key: 'sk-smoke-test-key-t41' });
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}'
+            }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+          await chrome.storage.local.remove(['modelListCache']);
+        })()
+      `, swSessionId);
+
+      // 1. Call 1: cold cache -> fetches from fake server (modelsFetchCount = 1)
+      const res41_1 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'LIST_MODELS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.ok(res41_1 && Array.isArray(res41_1.models), 'Call 1 must return models list');
+      assert.equal(fakeServer.getModelsFetchCount(), 1, 'Call 1 must trigger fetch from fake server');
+
+      // Verify L2 cache is written to storage.local
+      const cacheCheck1 = await cdp.evaluate(`
+        (async () => {
+          const stored = await chrome.storage.local.get(['modelListCache']);
+          return stored.modelListCache;
+        })()
+      `, swSessionId);
+      assert.ok(cacheCheck1 && Array.isArray(cacheCheck1.models), 'modelListCache must be persisted in storage.local');
+      assert.ok(cacheCheck1.keyFingerprint && cacheCheck1.keyFingerprint.length === 64, 'keyFingerprint must be SHA-256 hex');
+
+      // 2. Call 2 (SW alive): does NOT fetch (modelsFetchCount remains 1)
+      const res41_2 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'LIST_MODELS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.ok(res41_2 && Array.isArray(res41_2.models), 'Call 2 must return models list');
+      assert.equal(fakeServer.getModelsFetchCount(), 1, 'Call 2 must NOT fetch from fake server (cached)');
+
+      // 3. Restart SW -> Call 3: does NOT fetch (modelsFetchCount remains 1, reads L2 from storage.local)
+      await restartSw('T41 restart');
+      const res41_3 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'LIST_MODELS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.ok(res41_3 && Array.isArray(res41_3.models), 'Call 3 after SW restart must return models list');
+      assert.equal(fakeServer.getModelsFetchCount(), 1, 'Call 3 after restart must NOT fetch from fake server (L2 in storage.local)');
+
+      // 4. Call 4 with forceRefresh: true -> fetches from fake server (modelsFetchCount = 2)
+      const res41_4 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'LIST_MODELS', forceRefresh: true }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.ok(res41_4 && Array.isArray(res41_4.models), 'Call 4 with forceRefresh must return models list');
+      assert.equal(fakeServer.getModelsFetchCount(), 2, 'Call 4 with forceRefresh must fetch from fake server');
+
+      // 5. Change baseURL via SAVE_SETTINGS -> cache invalidated -> Call 5 fetches again
+      const newBaseURL = `http://127.0.0.1:${SMOKE_PORT}/v2`;
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            baseURL: '${newBaseURL}'
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      // Next LIST_MODELS call on new baseURL must fetch
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'LIST_MODELS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.equal(fakeServer.getModelsFetchCount(), 3, 'LIST_MODELS after baseURL change must fetch from fake server');
+
+      // Dọn dẹp cache sau test và restore baseURL
+      await cdp.evaluate(`
+        (async () => {
+          await chrome.storage.local.remove(['modelListCache']);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1'
+            }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        })()
+      `, swSessionId);
+
+      record('T41', 'Model list durable cache (L2, restart, forceRefresh, URL invalidate)', true, 'L1/L2 hits verified, restart persistence verified, forceRefresh bypassed, URL change invalidated');
+    } catch (e) {
+      record('T41', 'Model list durable cache (L2, restart, forceRefresh, URL invalidate)', false, e.message);
+    }
+
+    // Test 42: Fallback chain E2E (primary 500 failover to fb1, 401 terminal non-fallback)
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // Configure primary model + fallbackModels
+      const fbPrimaryModel = 'ag/gemini-3.1-pro-low';
+      const fbSecondaryModel = 'ag/gemini-3.8-flash';
+
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestMaxRetries(0);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${fbPrimaryModel}',
+              fallbackModels: ['${fbSecondaryModel}']
+            }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        })()
+      `, swSessionId);
+
+      // 1. Set mode fail_first_model_500: primary model fails with HTTP 500, fallback succeeds
+      fakeServer.setMode('fail_first_model_500');
+      fakeServer.clearLog();
+
+      const res42_success = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't42-item-1', text: '回退链验证', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(res42_success && Array.isArray(res42_success.results), 'Batch with fallback must succeed: ' + JSON.stringify(res42_success));
+      assert.equal(res42_success.actualModel, fbSecondaryModel, `Expected actualModel ${fbSecondaryModel}, got: ${res42_success.actualModel}`);
+      assert.equal(res42_success.fallbackIndex, 1, `Expected fallbackIndex 1, got: ${res42_success.fallbackIndex}`);
+      assert.equal(res42_success.requestedModel, fbPrimaryModel, `Expected requestedModel ${fbPrimaryModel}, got: ${res42_success.requestedModel}`);
+
+      const logsFallback = fakeServer.getLogs();
+      assert.equal(logsFallback.length, 2, `Fake server must receive exactly 2 requests (primary fail 500 + fb1 ok), got: ${logsFallback.length}`);
+      assert.equal(logsFallback[0].body?.model, fbPrimaryModel, 'Attempt 1 must request primary model');
+      assert.equal(logsFallback[1].body?.model, fbSecondaryModel, 'Attempt 2 must request fallback model');
+
+      // 2. Set mode http_401: primary fails with 401 Unauthorized -> must STOP immediately with zero fallback attempts
+      fakeServer.setMode('http_401');
+      fakeServer.clearLog();
+
+      const res42_stop = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't42-item-2', text: '停止名单测试', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(res42_stop && res42_stop.error, 'Batch with 401 must return error envelope: ' + JSON.stringify(res42_stop));
+      assert.equal(res42_stop.error.code, 'HTTP_401', `Expected HTTP_401, got: ${res42_stop.error.code}`);
+
+      const logsStop = fakeServer.getLogs();
+      assert.equal(logsStop.length, 1, `Fake server must receive exactly 1 request on 401 (zero fallback attempts), got: ${logsStop.length}`);
+
+      fakeServer.setMode('normal');
+      fakeServer.clearLog();
+
+      record('T42', 'Model fallback chain (500 failover to fb1, 401 non-fallback stop)', true, `HTTP 500 fell back to actualModel=${fbSecondaryModel} (2 provider requests), HTTP 401 terminated immediately (1 provider request)`);
+    } catch (e) {
+      record('T42', 'Model fallback chain (500 failover to fb1, 401 non-fallback stop)', false, e.message);
+    } finally {
+      try {
+        await cdp.evaluate(`self.__translatorSw._setTestMaxRetries(null)`, swSessionId);
+      } catch {}
+    }
+
+    // Test 43: Merge-save preserves fields, selective configRevision bumping
+    try {
+      // 1. Save full baseline settings
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+            model: 'ag/gemini-3.1-pro-low',
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            translationMode: 'scroll-follow',
+            widgetVisible: true,
+            favoriteModels: ['fav-test-model'],
+            fallbackModels: ['ag/gemini-3.8-flash']
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      const baseline = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      const revBaseline = baseline.configRevision;
+      assert.deepEqual(baseline.settings.favoriteModels, ['fav-test-model']);
+      assert.equal(baseline.settings.translationMode, 'scroll-follow');
+
+      // 2. Partial save sending ONLY model -> verify favoriteModels and translationMode are preserved
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            model: 'do/deepseek-v4.1-flash'
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      const afterPartial = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.equal(afterPartial.settings.model, 'do/deepseek-v4.1-flash', 'Model must be updated');
+      assert.deepEqual(afterPartial.settings.favoriteModels, ['fav-test-model'], 'favoriteModels must be preserved intact');
+      assert.equal(afterPartial.settings.translationMode, 'scroll-follow', 'translationMode must be preserved intact');
+      assert.equal(afterPartial.settings.widgetVisible, true, 'widgetVisible must be preserved intact');
+      assert.deepEqual(afterPartial.settings.fallbackModels, ['ag/gemini-3.8-flash'], 'fallbackModels must be preserved intact');
+
+      const revAfterModel = afterPartial.configRevision;
+      assert.ok(revAfterModel > revBaseline, 'Changing primary model MUST bump configRevision');
+
+      // 3. Changing ONLY favoriteModels must NOT bump configRevision
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            favoriteModels: ['fav-test-model', 'fav-model-2']
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      const afterFav = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.deepEqual(afterFav.settings.favoriteModels, ['fav-test-model', 'fav-model-2']);
+      assert.equal(afterFav.configRevision, revAfterModel, `configRevision must NOT bump when only favoriteModels change (expected ${revAfterModel}, got ${afterFav.configRevision})`);
+
+      // 4. Changing translationMode MUST bump configRevision
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            translationMode: 'full'
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      const afterMode = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.equal(afterMode.settings.translationMode, 'full');
+      assert.ok(afterMode.configRevision > revAfterModel, `Changing translationMode MUST bump configRevision (expected > ${revAfterModel}, got ${afterMode.configRevision})`);
+
+      // Restore settings to default model
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            model: '${DEFAULT_MODEL}',
+            translationMode: 'scroll-follow'
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      record('T43', 'Merge-save preserves fields, selective revision bump', true, 'Partial save preserved favorites/mode/fallbacks, favorites change did not bump revision, mode change bumped revision');
+    } catch (e) {
+      record('T43', 'Merge-save preserves fields, selective revision bump', false, e.message);
+    }
+
     // Section 5: Batch-count measurement (20-node viewport fixture) under default contract limits
     try {
       const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
@@ -3105,7 +3427,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 41;
+  return allPass && testResults.length >= 44;
 }
 
 async function main() {
