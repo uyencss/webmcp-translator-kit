@@ -1,6 +1,8 @@
 // WebMCP Translator Kit — Popup Logic
 // Contract Version: webmcp-translator-contract/1
 
+import { normalizeOrigin } from './consent.mjs';
+
 export const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
 export const RECOMMENDED_MODELS = [
   'ag/gemini-3.1-pro-low',
@@ -59,6 +61,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const checkboxWidgetVisible = document.getElementById('checkbox-widget-visible');
   const btnSaveGeneral = document.getElementById('btn-save-general');
   const configMessageGeneral = document.getElementById('config-message-general');
+  const btnAddCurrentSite = document.getElementById('btn-add-current-site');
+  const inputAutoSite = document.getElementById('input-auto-site');
+  const btnAddCustomSite = document.getElementById('btn-add-custom-site');
+  const autoSiteError = document.getElementById('auto-site-error');
+  const autoSitesList = document.getElementById('auto-sites-list');
 
   // Application State
   let activeTab = null;
@@ -76,6 +83,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let discoveredModels = [];
   let favoriteModels = [];
   let fallbackModels = [];
+  let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
   let activeTabNav = 'tab-models';
 
@@ -687,6 +695,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
           fallbackModels = Array.isArray(resp.settings.fallbackModels) ? [...resp.settings.fallbackModels] : [];
+          autoTranslateSites = Array.isArray(resp.settings.autoTranslateSites) ? [...resp.settings.autoTranslateSites] : [];
 
           hasStoredKey = Boolean(resp.hasKey);
           if (keyStatusIndicator) {
@@ -697,6 +706,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           renderAllModelDropdowns();
+          renderAutoSitesChips();
         }
         resolve();
       });
@@ -1045,6 +1055,231 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       await checkTabStatus();
+    });
+  }
+
+  // ============================================================================
+  // Auto-Translate Sites Management (§4 UX-D)
+  // ============================================================================
+  function showAutoSiteError(msg) {
+    if (!autoSiteError) return;
+    autoSiteError.textContent = msg;
+    autoSiteError.style.display = 'block';
+  }
+
+  function hideAutoSiteError() {
+    if (!autoSiteError) return;
+    autoSiteError.textContent = '';
+    autoSiteError.style.display = 'none';
+  }
+
+  function renderAutoSitesChips() {
+    if (!autoSitesList) return;
+    autoSitesList.innerHTML = '';
+
+    if (!autoTranslateSites || autoTranslateSites.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'auto-sites-empty';
+      emptyEl.textContent = 'Chưa có trang nào trong danh sách.';
+      autoSitesList.appendChild(emptyEl);
+      return;
+    }
+
+    for (const site of autoTranslateSites) {
+      const chip = document.createElement('div');
+      chip.className = 'site-chip';
+      chip.setAttribute('role', 'listitem');
+
+      const originSpan = document.createElement('span');
+      originSpan.className = 'chip-origin';
+      originSpan.title = site;
+      originSpan.textContent = site;
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn-chip-remove';
+      removeBtn.setAttribute('aria-label', `Xoá ${site} khỏi danh sách tự động dịch`);
+      removeBtn.title = 'Xoá';
+      removeBtn.innerHTML = '&times;';
+
+      removeBtn.addEventListener('click', async () => {
+        hideAutoSiteError();
+        const updatedList = autoTranslateSites.filter((s) => s !== site);
+        removeBtn.disabled = true;
+
+        const saveResp = await new Promise((resolve) => {
+          chrome.runtime.sendMessage({
+            action: 'SAVE_SETTINGS',
+            settings: { autoTranslateSites: updatedList }
+          }, resolve);
+        });
+
+        if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+          const err = saveResp?.error || chrome.runtime.lastError;
+          showAutoSiteError('Lỗi xoá trang: ' + (err?.message || 'Không thể lưu'));
+          removeBtn.disabled = false;
+          return;
+        }
+
+        autoTranslateSites = updatedList;
+        savedSettings.autoTranslateSites = [...updatedList];
+        renderAutoSitesChips();
+      });
+
+      chip.appendChild(originSpan);
+      chip.appendChild(removeBtn);
+      autoSitesList.appendChild(chip);
+    }
+  }
+
+  async function handleAddCustomSite() {
+    hideAutoSiteError();
+    const val = inputAutoSite ? inputAutoSite.value.trim() : '';
+    if (!val) {
+      showAutoSiteError('Vui lòng nhập origin (ví dụ: https://example.com)');
+      return;
+    }
+
+    const norm = normalizeOrigin(val);
+    if (!norm) {
+      showAutoSiteError('Origin không hợp lệ. Vui lòng nhập định dạng https://example.com (chỉ HTTP/HTTPS)');
+      return;
+    }
+
+    if (autoTranslateSites.includes(norm)) {
+      showAutoSiteError(`Trang ${norm} đã có trong danh sách.`);
+      return;
+    }
+
+    if (autoTranslateSites.length >= 200) {
+      showAutoSiteError('Danh sách đã đạt tối đa 200 trang.');
+      return;
+    }
+
+    if (btnAddCustomSite) btnAddCustomSite.disabled = true;
+    const updatedList = [...autoTranslateSites, norm];
+
+    const saveResp = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'SAVE_SETTINGS',
+        settings: { autoTranslateSites: updatedList }
+      }, resolve);
+    });
+    if (btnAddCustomSite) btnAddCustomSite.disabled = false;
+
+    if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+      const err = saveResp?.error || chrome.runtime.lastError;
+      showAutoSiteError('Lỗi thêm trang: ' + (err?.message || 'Không thể lưu'));
+      return;
+    }
+
+    autoTranslateSites = updatedList;
+    savedSettings.autoTranslateSites = [...updatedList];
+    if (inputAutoSite) inputAutoSite.value = '';
+    renderAutoSitesChips();
+  }
+
+  if (btnAddCustomSite) {
+    btnAddCustomSite.addEventListener('click', handleAddCustomSite);
+  }
+  if (inputAutoSite) {
+    inputAutoSite.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleAddCustomSite();
+      }
+    });
+  }
+
+  if (btnAddCurrentSite) {
+    btnAddCurrentSite.addEventListener('click', async () => {
+      hideAutoSiteError();
+      const tabUrl = activeTab?.url;
+      if (!tabUrl) {
+        showAutoSiteError('Không thể xác định trang hiện tại.');
+        return;
+      }
+
+      const curOrigin = normalizeOrigin(tabUrl);
+      if (!curOrigin) {
+        showAutoSiteError('Trang hiện tại không phải là trang web HTTP/HTTPS hợp lệ.');
+        return;
+      }
+
+      if (autoTranslateSites.includes(curOrigin)) {
+        showAutoSiteError(`Trang ${curOrigin} đã có trong danh sách.`);
+        return;
+      }
+
+      if (autoTranslateSites.length >= 200) {
+        showAutoSiteError('Danh sách đã đạt tối đa 200 trang.');
+        return;
+      }
+
+      btnAddCurrentSite.disabled = true;
+
+      // 1. Opt-in flow if site not yet enabled: request permission in gesture + SET_SITE_ENABLED
+      if (!currentConsent.siteEnabled) {
+        const matchPattern = curOrigin + '/*';
+        let granted = false;
+        try {
+          if (chrome.permissions && typeof chrome.permissions.request === 'function') {
+            granted = await chrome.permissions.request({ origins: [matchPattern] });
+          } else {
+            granted = true;
+          }
+        } catch {
+          granted = false;
+        }
+
+        if (!granted) {
+          btnAddCurrentSite.disabled = false;
+          showAutoSiteError('[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch cho site này.');
+          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch cho site này.');
+          return;
+        }
+
+        const enableResp = await new Promise((resolve) => {
+          chrome.runtime.sendMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: curOrigin,
+            enabled: true,
+            tabId: activeTab?.id
+          }, resolve);
+        });
+
+        if (chrome.runtime.lastError || !enableResp || enableResp.error) {
+          btnAddCurrentSite.disabled = false;
+          const err = enableResp?.error || chrome.runtime.lastError;
+          showAutoSiteError('Lỗi bật quyền site: ' + (err?.message || 'Không thể lưu quyền site'));
+          updateStatus('error', `[${err?.code || 'ERROR'}] ${err?.message || 'Không thể lưu quyền site'}`);
+          return;
+        }
+
+        currentConsent.siteEnabled = true;
+        if (toggleSiteConsent) toggleSiteConsent.checked = true;
+        await loadConsent();
+      }
+
+      // 2. Add to autoTranslateSites and save
+      const updatedList = [...autoTranslateSites, curOrigin];
+      const saveResp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'SAVE_SETTINGS',
+          settings: { autoTranslateSites: updatedList }
+        }, resolve);
+      });
+      btnAddCurrentSite.disabled = false;
+
+      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+        const err = saveResp?.error || chrome.runtime.lastError;
+        showAutoSiteError('Lỗi lưu danh sách: ' + (err?.message || 'Không thể lưu'));
+        return;
+      }
+
+      autoTranslateSites = updatedList;
+      savedSettings.autoTranslateSites = [...updatedList];
+      renderAutoSitesChips();
     });
   }
 

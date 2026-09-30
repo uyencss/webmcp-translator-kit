@@ -176,6 +176,22 @@
         </label>
       </div>
 
+      <div class="form-group auto-translate-group">
+        <div class="auto-translate-header">
+          <label class="field-title" for="input-auto-site">Tự động dịch khi mở trang</label>
+          <button type="button" id="btn-add-current-site" class="btn btn-xs btn-outline" title="Thêm trang hiện tại vào danh sách tự động dịch" aria-label="Thêm trang hiện tại vào danh sách tự động dịch">+ Thêm trang hiện tại</button>
+        </div>
+        <p class="field-desc">Tự động bắt đầu dịch ngay khi mở các trang web trong danh sách này.</p>
+        
+        <div class="input-with-button auto-site-input-row">
+          <input type="text" id="input-auto-site" placeholder="https://example.com" autocomplete="off" aria-label="Nhập origin trang web để tự động dịch" />
+          <button type="button" id="btn-add-custom-site" class="btn btn-sm btn-secondary" title="Thêm origin vào danh sách" aria-label="Thêm origin vào danh sách">Thêm</button>
+        </div>
+        <div id="auto-site-error" class="auto-site-error" role="alert" style="display: none;"></div>
+
+        <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
+      </div>
+
       <div class="config-actions">
         <button id="btn-save-general" class="btn btn-sm btn-success" title="Lưu cài đặt ngôn ngữ &amp; chế độ" aria-label="Lưu cài đặt ngôn ngữ và chế độ">💾 Lưu chế độ</button>
       </div>

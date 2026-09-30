@@ -1,6 +1,8 @@
 // WebMCP Translator Kit — Pure Settings Schema, Versioning & Migration
 // Contract Version: webmcp-translator-contract/1
 
+import { normalizeOrigin } from './consent.mjs';
+
 export const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -9,6 +11,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   model: 'ag/gemini-3.1-pro-low',
   fallbackModels: Object.freeze([]),
   favoriteModels: Object.freeze([]),
+  autoTranslateSites: Object.freeze([]),
   translationMode: 'scroll-follow',
   widgetVisible: true,
   sourceLanguage: 'auto',
@@ -111,6 +114,24 @@ export function migrateSettings(raw) {
     res.favoriteModels = cleaned.slice(0, 50);
   } else {
     res.favoriteModels = [];
+  }
+
+  // v2: autoTranslateSites (unique normalized origins, max 200)
+  if (Array.isArray(res.autoTranslateSites)) {
+    const cleaned = [];
+    const seen = new Set();
+    for (const item of res.autoTranslateSites) {
+      if (typeof item === 'string') {
+        const norm = normalizeOrigin(item);
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          cleaned.push(norm);
+        }
+      }
+    }
+    res.autoTranslateSites = cleaned.slice(0, 200);
+  } else {
+    res.autoTranslateSites = [];
   }
 
   // Ensure rateLimits structure is populated with defaults
@@ -237,6 +258,33 @@ export function validateSettings(settings) {
           errors.push('favoriteModels cannot contain duplicate models');
         }
         seen.add(fav);
+      }
+    }
+  }
+
+  // Check autoTranslateSites
+  if (settings.autoTranslateSites !== undefined) {
+    if (!Array.isArray(settings.autoTranslateSites)) {
+      errors.push('autoTranslateSites must be an array of strings');
+    } else if (settings.autoTranslateSites.length > 200) {
+      errors.push('autoTranslateSites cannot have more than 200 sites');
+    } else {
+      const seen = new Set();
+      for (const site of settings.autoTranslateSites) {
+        if (typeof site !== 'string' || !site.trim()) {
+          errors.push('autoTranslateSites elements must be non-empty strings');
+          break;
+        }
+        const norm = normalizeOrigin(site);
+        if (!norm || norm !== site.trim()) {
+          errors.push(`autoTranslateSites element "${site}" must be a valid normalized HTTP(S) origin`);
+          break;
+        }
+        if (seen.has(norm)) {
+          errors.push('autoTranslateSites cannot contain duplicate origins');
+          break;
+        }
+        seen.add(norm);
       }
     }
   }

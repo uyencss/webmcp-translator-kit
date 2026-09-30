@@ -28,6 +28,11 @@
   let idCounter = 1;
   let currentMode = 'full'; // 'full' | 'scroll-follow'
 
+  const AUTO_SETTLE_MS = 500;
+  let autoStartAttempted = false;
+  let userRestored = false;
+  let autoStartTimer = null;
+
   const nodeToRec = new WeakMap();
   const idToRec = new Map();
   const restoreKept = new Map();
@@ -229,6 +234,12 @@
 
   // Restore DOM nodes: epoch++ + CANCEL_PENDING + stop active sessions + clear pending
   function restore() {
+    userRestored = true;
+    if (autoStartTimer) {
+      clearTimeout(autoStartTimer);
+      autoStartTimer = null;
+    }
+
     // 1. Advance epoch to immediately drop in-flight / late-arriving responses
     epoch++;
     const cancelEpoch = epoch;
@@ -1273,6 +1284,18 @@
       if (!st) return;
       widgetState = { ...widgetState, ...st };
 
+      // Effective Consent
+      const isEffectiveOn = widgetState.effective === 'on';
+      if (!isEffectiveOn) {
+        if (autoStartTimer) {
+          clearTimeout(autoStartTimer);
+          autoStartTimer = null;
+        }
+        if (scrollSession.watching) {
+          stopScrollFollowSession(true);
+        }
+      }
+
       // Visibility
       if (widgetState.widgetVisible === false) {
         host.style.display = 'none';
@@ -1280,8 +1303,6 @@
       }
       host.style.display = 'block';
 
-      // Effective Consent
-      const isEffectiveOn = widgetState.effective === 'on';
       badge.classList.toggle('active', isEffectiveOn);
       statusTag.textContent = isEffectiveOn ? 'Đang bật' : 'Đang tắt';
       statusTag.classList.toggle('on', isEffectiveOn);
@@ -1318,10 +1339,35 @@
       }
     }
 
+    function checkAutoStart(st) {
+      if (autoStartAttempted) return;
+      autoStartAttempted = true;
+
+      if (!st || !st.autoStart || userRestored) return;
+      if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+
+      const targetMode = st.mode || 'scroll-follow';
+      autoStartTimer = setTimeout(() => {
+        autoStartTimer = null;
+        if (userRestored) return;
+        if (isTranslating || scrollSession.watching) return;
+
+        currentMode = targetMode;
+        lastTranslateStatus.mode = targetMode;
+
+        if (targetMode === 'scroll-follow') {
+          startScrollFollowSession(st);
+        } else {
+          executeTranslation(st);
+        }
+      }, AUTO_SETTLE_MS);
+    }
+
     function queryState() {
       chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (resp) => {
         if (!chrome.runtime.lastError && resp && !resp.error) {
           applyState(resp);
+          checkAutoStart(resp);
         }
       });
     }

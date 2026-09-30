@@ -2143,6 +2143,27 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const tabOverride = tabOverrides[String(gate.tabId)] || null;
         const effective = getEffectivePolicy({ tabOverride, siteEnabled });
 
+        const autoSites = Array.isArray(settings.autoTranslateSites) ? settings.autoTranslateSites : [];
+        const inAutoList = autoSites.includes(gate.origin);
+        const urlMatchesSender = !sender.url || !sender.tab?.url || (normalizeOrigin(sender.url) === normalizeOrigin(sender.tab.url));
+
+        let autoStart = false;
+        let reason;
+
+        if (!inAutoList) {
+          reason = 'not_in_list';
+        } else if (tabOverride === 'off') {
+          reason = 'tab_off';
+        } else if (!siteEnabled) {
+          reason = 'site_off';
+        } else if (!hasPerm) {
+          reason = 'no_permission';
+        } else if (urlMatchesSender) {
+          autoStart = true;
+        } else {
+          reason = 'not_in_list';
+        }
+
         return {
           effective,
           siteEnabled,
@@ -2151,7 +2172,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           mode: settings.translationMode || 'scroll-follow',
           widgetVisible: settings.widgetVisible ?? true,
           position,
-          hasKey
+          hasKey,
+          autoStart,
+          ...(reason ? { reason } : {})
         };
       }
 

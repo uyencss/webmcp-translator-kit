@@ -3290,6 +3290,22 @@ async function runSingleAttempt() {
       assert.deepEqual(afterFav.settings.favoriteModels, ['fav-test-model', 'fav-model-2']);
       assert.equal(afterFav.configRevision, revAfterModel, `configRevision must NOT bump when only favoriteModels change (expected ${revAfterModel}, got ${afterFav.configRevision})`);
 
+      // 3b. Changing ONLY autoTranslateSites must NOT bump configRevision
+      await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SAVE_SETTINGS',
+          settings: {
+            autoTranslateSites: ['https://example.com']
+          }
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+
+      const afterAuto = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.deepEqual(afterAuto.settings.autoTranslateSites, ['https://example.com']);
+      assert.equal(afterAuto.configRevision, revAfterModel, `configRevision must NOT bump when only autoTranslateSites change (expected ${revAfterModel}, got ${afterAuto.configRevision})`);
+
       // 4. Changing translationMode MUST bump configRevision
       await cdp.evaluate(`
         self.__translatorSw.dispatchMessage({
@@ -3394,6 +3410,278 @@ async function runSingleAttempt() {
       record('MEASURE', 'Batch-count 20-node viewport (defaults)', false, e.message);
     }
 
+    // Test 48: Auto-translate on page load (autoTranslateSites)
+    let nextTestTabId = 20000;
+    async function createBridgedFixtureTab(url) {
+      const tabTarget = await cdp.send('Target.createTarget', { url });
+      const attachRes = await cdp.send('Target.attachToTarget', {
+        targetId: tabTarget.targetId,
+        flatten: true
+      });
+      const sessionId = attachRes.sessionId;
+
+      await cdp.send('Runtime.enable', {}, sessionId);
+      await cdp.send('Runtime.addBinding', { name: '__cdpSendToSw' }, sessionId);
+
+      const assignedTabId = nextTestTabId++;
+      // Register test tab in SW registry for policy checks
+      try {
+        await cdp.evaluate(`self.__translatorSw._registerTestTab(${assignedTabId}, ${JSON.stringify(url)})`, swSessionId);
+      } catch {}
+
+      let active = true;
+      const listener = async (msg) => {
+        if (!active) return;
+        if (msg.sessionId === sessionId && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpSendToSw') {
+          const { callId, payload } = JSON.parse(msg.params.payload);
+          try {
+            const swRes = await cdp.evaluate(
+              `self.__translatorSw.dispatchMessage(${JSON.stringify(payload)}, { frameId: 0, url: ${JSON.stringify(url)}, tab: { id: ${assignedTabId}, url: ${JSON.stringify(url)} } })`,
+              swSessionId
+            );
+            await cdp.evaluate(
+              `window.__cdpReply(${JSON.stringify(callId)}, ${JSON.stringify(swRes)})`,
+              sessionId,
+              false
+            );
+          } catch (err) {
+            const isClosed = err.message && (
+              err.message.includes('closed') ||
+              err.message.includes('crashed') ||
+              err.message.includes('detached') ||
+              err.message.includes('Session')
+            );
+            const lastError = isClosed
+              ? 'The message port closed before a response was received.'
+              : (err.message || 'Unknown bridge error');
+            try {
+              await cdp.evaluate(
+                `window.__cdpReply(${JSON.stringify(callId)}, undefined, ${JSON.stringify(lastError)})`,
+                sessionId,
+                false
+              );
+            } catch {}
+          }
+        }
+      };
+      cdp.addEventListener(listener);
+
+      // Setup chrome.runtime messaging bridge on this tab
+      await cdp.evaluate(`
+        window.__bridgePending = new Map();
+        window.__bridgeCallId = 1;
+        window.__cdpReply = function(callId, response, lastError) {
+          if (window.__bridgePending.has(callId)) {
+            const cb = window.__bridgePending.get(callId);
+            window.__bridgePending.delete(callId);
+            if (lastError) {
+              window.chrome.runtime.lastError = { message: lastError };
+            } else {
+              delete window.chrome.runtime.lastError;
+            }
+            try {
+              cb(response);
+            } finally {
+              delete window.chrome.runtime.lastError;
+            }
+          }
+        };
+
+        window.chrome = window.chrome || {};
+        window.chrome.runtime = window.chrome.runtime || {};
+        window.chrome.runtime.onMessage = {
+          addListener: () => {},
+          removeListener: () => {},
+          hasListener: () => false
+        };
+        window.chrome.runtime.sendMessage = function(message, callback) {
+          const callId = window.__bridgeCallId++;
+          if (typeof callback === 'function') {
+            window.__bridgePending.set(callId, callback);
+          }
+          window.__cdpSendToSw(JSON.stringify({ callId, payload: message }));
+        };
+      `, sessionId, false);
+
+      const injectContentScript = async () => {
+        const contentJsSource = fs.readFileSync(path.join(EXTENSION_DIR, 'content.js'), 'utf8');
+        await cdp.evaluate(`${contentJsSource}\n;true;`, sessionId, false);
+      };
+
+      const close = async () => {
+        active = false;
+        try {
+          await cdp.send('Target.closeTarget', { targetId: tabTarget.targetId });
+        } catch {}
+      };
+
+      return {
+        targetId: tabTarget.targetId,
+        sessionId,
+        tabId: assignedTabId,
+        injectContentScript,
+        close
+      };
+    }
+
+    let t48TabPos = null;
+    let t48TabNeg1 = null;
+    let t48TabNeg2 = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // 1. Ensure testMode, testPermission, site enabled, and autoTranslateSites contains fixtureOrigin
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestMaxRetries(0);
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}',
+              translationMode: 'scroll-follow',
+              autoTranslateSites: ['${fixtureOrigin}']
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      // (a) Positive: Create new tab on same origin -> content auto-starts within <= ~2.5s
+      fakeServer.clearLog();
+      t48TabPos = await createBridgedFixtureTab(fixtureUrl);
+      await t48TabPos.injectContentScript();
+
+      // Poll up to 2.5s for fakeServer requests
+      let posSuccess = false;
+      let posDetail = '';
+      const posStart = Date.now();
+      while (Date.now() - posStart < 2500) {
+        await sleep(100);
+        const logs = fakeServer.getLogs();
+        if (logs.length > 0) {
+          posSuccess = true;
+          posDetail = `Auto-start received by fake server (${logs.length} reqs in ${Date.now() - posStart}ms)`;
+          break;
+        }
+      }
+      assert.ok(posSuccess, 'Positive case: fake server must receive translation request automatically within 2.5s without user click');
+
+      // Poll/verify status: watching === true or totalApplied > 0
+      const posStatus = await cdp.evaluate('window.__translatorDom.getStatus()', t48TabPos.sessionId);
+      assert.ok(posStatus.watching === true || posStatus.totalApplied > 0, `Expected watching === true or applied > 0, got: ${JSON.stringify(posStatus)}`);
+
+      // Close positive tab
+      await t48TabPos.close();
+      t48TabPos = null;
+
+      // (b) Negative 1: Remove from autoTranslateSites -> new tab -> NO auto-translation in 2.5s
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              autoTranslateSites: []
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      t48TabNeg1 = await createBridgedFixtureTab(fixtureUrl);
+      await t48TabNeg1.injectContentScript();
+
+      // Wait 2.5s and verify zero requests
+      await sleep(2500);
+      const neg1Logs = fakeServer.getLogs();
+      assert.equal(neg1Logs.length, 0, `Negative 1 (not in list): Expected 0 provider requests in 2.5s, got: ${neg1Logs.length}`);
+
+      const neg1Status = await cdp.evaluate('window.__translatorDom.getStatus()', t48TabNeg1.sessionId);
+      assert.equal(neg1Status.watching, false, 'Negative 1: watching must remain false');
+      assert.equal(neg1Status.totalApplied, 0, 'Negative 1: applied must remain 0');
+
+      // Close neg1 tab
+      await t48TabNeg1.close();
+      t48TabNeg1 = null;
+
+      // (c) Negative 2: In autoTranslateSites, but tab override is 'off' -> NO auto-translation
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              autoTranslateSites: ['${fixtureOrigin}']
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      t48TabNeg2 = await createBridgedFixtureTab(fixtureUrl);
+
+      // Set explicit tab override = 'off' on this tab BEFORE injecting content script
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${t48TabNeg2.tabId},
+            value: 'off'
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      await t48TabNeg2.injectContentScript();
+
+      // Wait 2.5s and verify zero requests
+      await sleep(2500);
+      const neg2Logs = fakeServer.getLogs();
+      assert.equal(neg2Logs.length, 0, `Negative 2 (tab override off): Expected 0 provider requests in 2.5s, got: ${neg2Logs.length}`);
+
+      const neg2Status = await cdp.evaluate('window.__translatorDom.getStatus()', t48TabNeg2.sessionId);
+      assert.equal(neg2Status.watching, false, 'Negative 2: watching must remain false');
+      assert.equal(neg2Status.totalApplied, 0, 'Negative 2: applied must remain 0');
+
+      // Close neg2 tab
+      await t48TabNeg2.close();
+      t48TabNeg2 = null;
+
+      record('T48', 'Auto-translate on page load (autoTranslateSites)', true, `${posDetail}; Neg 1 (not in list) 0 reqs; Neg 2 (tab override off) 0 reqs`);
+    } catch (e) {
+      record('T48', 'Auto-translate on page load (autoTranslateSites)', false, e.message);
+    } finally {
+      if (t48TabPos) {
+        try { await t48TabPos.close(); } catch {}
+      }
+      if (t48TabNeg1) {
+        try { await t48TabNeg1.close(); } catch {}
+      }
+      if (t48TabNeg2) {
+        try { await t48TabNeg2.close(); } catch {}
+      }
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+            await self.__translatorSw.dispatchMessage({
+              action: 'SAVE_SETTINGS',
+              settings: { autoTranslateSites: [] }
+            }, popupSender);
+          })()
+        `, swSessionId);
+      } catch {}
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -3427,7 +3715,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 44;
+  return allPass && testResults.length >= 45;
 }
 
 async function main() {
