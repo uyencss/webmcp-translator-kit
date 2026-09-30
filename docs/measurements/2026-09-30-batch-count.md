@@ -8,7 +8,7 @@
 
 ## 1. Cấu hình đo lường (Test Configuration)
 
-- **Git Commit Hash:** `20cd4052d37df6fb5ecbc61bedd86a8127a9d68f`
+- **Git Commit Hash (revision đo):** `fa87c5e9120085c537c9ac0697687c632012acc9` *(P1'-C; các sửa doc N1/N2 sau đó không đổi logic đo)*
 - **Môi trường chạy:** macOS (Apple Silicon / arm64), Chrome for Testing headless (`--headless=new`)
 - **Mô hình giả lập (Mock Provider):** `fake-9router` chạy tại `http://127.0.0.1:8089/v1`, model `ag/gemini-3.1-pro-low`
 - **Fixture HTML:** `test/smoke/fixture-20nodes.html` (20 text nodes: 1 `<h1>` + 19 `<p>` chứa văn bản tiếng Trung, tổng dung lượng văn bản ~3.3 KB UTF-8)
@@ -16,7 +16,7 @@
   - **Tab rate limits:** `maxBatches: 4`, `maxSourceCodePoints: 12000` trong cửa sổ 60 giây.
   - **Site rate limits:** `maxBatches: 12`, `maxSourceCodePoints: 36000` trong cửa sổ 60 giây.
   - **Cửa sổ trượt (Sliding window):** 60 giây.
-  - **Dung lượng hàng đợi tối đa (Max queue):** 10 yêu cầu.
+  - **Dung lượng hàng đợi tối đa (Max queue):** 8 yêu cầu (per tab, `DEFAULT_MAX_QUEUE_PER_TAB`).
   - **Độ tương tranh tối đa (Concurrency limit):** 2 luồng.
   - **Quy tắc phân mảnh batch (Chunking rules):** tối đa 64 items và tối đa 24 KiB UTF-8 mỗi batch (`content.js`).
 
@@ -35,7 +35,7 @@ Dữ liệu được trích xuất từ lần chạy kiểm thử tự động `
 | **Số lượng item trong batch** | **20** | ≤ 64 items | Nằm gọn trong 1 batch |
 | **Số lần bị `RATE_LIMITED`** | **0** | 0 | Không bị nghẽn |
 | **Thời gian chờ queue (`queueWaitTimeMs`)** | **0 ms** | 0 ms | Trúng slot ngay lập tức |
-| **Thời gian thực thi & patch DOM (`totalElapsedMs`)** | **6 ms** | < 1000 ms | Rất nhanh (mock provider) |
+| **Thời gian thực thi & patch DOM (`totalElapsedMs`)** | **7 ms** | < 1000 ms | Rất nhanh (mock provider) |
 
 ---
 

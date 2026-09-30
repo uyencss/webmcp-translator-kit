@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createFakeServer } from './fake-9router.mjs';
 
@@ -1956,7 +1956,7 @@ async function runSingleAttempt() {
 
       const measData = {
         timestamp: new Date().toISOString(),
-        commitHash: '20cd4052d37df6fb5ecbc61bedd86a8127a9d68f',
+        commitHash: (() => { try { return execSync('git rev-parse HEAD', { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return process.env.GIT_COMMIT || 'unknown'; } })(),
         fixtureNodes: countNodes,
         batchesDispatched: fakeLogs.length,
         itemsInBatch: fakeLogs[0]?.body?.items?.length || 20,
