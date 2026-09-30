@@ -6,7 +6,6 @@ export const RECOMMENDED_MODELS = [
   'ag/gemini-3.1-pro-low',
   'do/glm-5.3-flash',
   'do/deepseek-v4.1-flash',
-  'ag/gemini-3.1-pro-low',
   'ag/gemini-3.8-flash'
 ];
 
@@ -39,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnDeleteKey = document.getElementById('btn-delete-key');
   const configMessage = document.getElementById('config-message');
   const keyStatusIndicator = document.getElementById('key-status-indicator');
+  const keyAccessBanner = document.getElementById('key-access-banner');
 
   let activeTab = null;
   let hasStoredKey = false;
@@ -50,6 +50,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     tabOverride: null,
     effective: 'off'
   };
+
+  function showKeyAccessBanner() {
+    if (keyAccessBanner) keyAccessBanner.style.display = 'block';
+    btnTranslate.disabled = true;
+    btnRefreshModels.disabled = true;
+    selectModel.disabled = true;
+  }
 
   function startPolling() {
     if (pollInterval) return;
@@ -87,6 +94,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusText.textContent = 'Đã khôi phục';
         statusText.style.color = '#64748b';
         break;
+      case 'unsupported':
+        statusText.textContent = 'Không hỗ trợ';
+        statusText.style.color = '#94a3b8';
+        break;
       case 'error':
         statusText.textContent = 'Lỗi';
         statusText.style.color = '#dc2626';
@@ -106,15 +117,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 4000);
   }
 
-  // Load active tab
+  // Load and validate active tab
   async function resolveActiveTab() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       activeTab = tab;
-      if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+      if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
         btnTranslate.disabled = true;
         btnRestore.disabled = true;
-        updateStatus('unsupported', 'Trang hệ thống Chrome không hỗ trợ dịch.');
+        btnTranslate.title = 'Trang hệ thống hoặc protocol không hỗ trợ';
+        updateStatus('unsupported', 'Trang hệ thống Chrome hoặc URL không phải HTTP(S) không hỗ trợ dịch.');
         if (toggleSiteConsent) toggleSiteConsent.disabled = true;
         if (btnOverrideInherit) btnOverrideInherit.disabled = true;
         if (btnOverrideOn) btnOverrideOn.disabled = true;
@@ -128,9 +140,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // Evaluates button states and hints based on current state matrix
+  function evaluateActionReadiness(restorableCount = 0) {
+    if (!activeTab || !activeTab.id || !activeTab.url || (!activeTab.url.startsWith('http://') && !activeTab.url.startsWith('https://'))) {
+      btnTranslate.disabled = true;
+      btnRestore.disabled = true;
+      btnTranslate.title = 'Trang hệ thống hoặc URL không phải HTTP(S) không hỗ trợ dịch';
+      return;
+    }
+
+    if (!hasStoredKey) {
+      btnTranslate.disabled = true;
+      btnTranslate.title = 'Vui lòng nhập API key để bắt đầu dịch';
+      updateStatus('unconfigured', 'Vui lòng nhập API key trong mục Cấu hình.');
+      btnRestore.disabled = restorableCount === 0;
+      return;
+    }
+
+    const curModel = selectModel.value ? selectModel.value.trim() : '';
+    if (!curModel || curModel === '' || curModel.includes('Lỗi')) {
+      btnTranslate.disabled = true;
+      btnTranslate.title = 'Chưa chọn model hợp lệ';
+      updateStatus('error', 'Chưa chọn model hợp lệ. Vui lòng chọn model hoặc làm mới danh sách.');
+      btnRestore.disabled = restorableCount === 0;
+      return;
+    }
+
+    btnTranslate.disabled = false;
+    btnTranslate.title = 'Dịch trang này';
+    btnRestore.disabled = restorableCount === 0;
+    if (statusText.textContent === 'Chưa cấu hình' || statusText.textContent === 'Đang tải...') {
+      updateStatus('ready', 'Sẵn sàng dịch trang hiện tại.');
+    }
+  }
+
   // Load consent state for current active tab
   async function loadConsent() {
-    if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
+    if (!activeTab || !activeTab.id || !activeTab.url || (!activeTab.url.startsWith('http://') && !activeTab.url.startsWith('https://'))) {
       if (toggleSiteConsent) toggleSiteConsent.disabled = true;
       if (btnOverrideInherit) btnOverrideInherit.disabled = true;
       if (btnOverrideOn) btnOverrideOn.disabled = true;
@@ -142,6 +188,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'GET_CONSENT', tabId: activeTab.id }, (resp) => {
         if (chrome.runtime.lastError || !resp || resp.error) {
+          if (resp && resp.error && resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
+            showKeyAccessBanner();
+          }
           if (siteOriginBadge) siteOriginBadge.textContent = '--';
           resolve(null);
           return;
@@ -169,27 +218,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Helper to set tab override
+  // Non-optimistic update for tab override buttons
   async function updateTabOverride(val) {
     if (!activeTab || !activeTab.id) return;
-    await new Promise((resolve) => {
+    btnOverrideInherit.disabled = true;
+    btnOverrideOn.disabled = true;
+    btnOverrideOff.disabled = true;
+
+    const resp = await new Promise((resolve) => {
       chrome.runtime.sendMessage({
         action: 'SET_TAB_OVERRIDE',
         tabId: activeTab.id,
         value: val
       }, resolve);
     });
+
+    btnOverrideInherit.disabled = false;
+    btnOverrideOn.disabled = false;
+    btnOverrideOff.disabled = false;
+
+    if (chrome.runtime.lastError || !resp || resp.error) {
+      const err = resp?.error || chrome.runtime.lastError;
+      updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không thể lưu cài đặt tab override'}`);
+      return;
+    }
+
     await loadConsent();
+    await checkTabStatus();
   }
 
-  // Site toggle event listener with user gesture permission request
+  // Non-optimistic site toggle event listener with user gesture permission request
   if (toggleSiteConsent) {
     toggleSiteConsent.addEventListener('change', async () => {
       if (!currentConsent.siteOrigin) return;
+      const targetChecked = toggleSiteConsent.checked;
+      const prevChecked = !targetChecked;
       toggleSiteConsent.disabled = true;
 
       // When turning ON, request permission in user gesture
-      if (toggleSiteConsent.checked) {
+      if (targetChecked) {
         const matchPattern = currentConsent.siteOrigin + '/*';
         let granted = false;
         try {
@@ -203,22 +270,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (!granted) {
-          toggleSiteConsent.checked = false;
+          toggleSiteConsent.checked = prevChecked;
           toggleSiteConsent.disabled = false;
           updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật dịch cho site này.');
           return;
         }
       }
 
-      await new Promise((resolve) => {
+      const resp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({
           action: 'SET_SITE_ENABLED',
           origin: currentConsent.siteOrigin,
-          enabled: toggleSiteConsent.checked,
+          enabled: targetChecked,
           tabId: activeTab?.id
         }, resolve);
       });
+
+      if (chrome.runtime.lastError || !resp || resp.error) {
+        toggleSiteConsent.checked = prevChecked;
+        toggleSiteConsent.disabled = false;
+        const err = resp?.error || chrome.runtime.lastError;
+        updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không thể lưu quyền site'}`);
+        return;
+      }
+
+      toggleSiteConsent.disabled = false;
       await loadConsent();
+      await checkTabStatus();
     });
   }
 
@@ -237,6 +315,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function loadSettings() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (resp) => {
+        if (resp && resp.error) {
+          if (resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
+            showKeyAccessBanner();
+          }
+          updateStatus('error', `[${resp.error.code}] ${resp.error.message}`);
+          resolve();
+          return;
+        }
         if (resp && resp.settings) {
           inputBaseUrl.value = resp.settings.baseURL || 'http://localhost:8080/v1';
           if (resp.settings.sourceLanguage) selectSrcLang.value = resp.settings.sourceLanguage;
@@ -255,8 +341,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Populate models
   async function refreshModels() {
     selectModel.innerHTML = '<option value="">Đang tải models...</option>';
+    selectModel.disabled = true;
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'LIST_MODELS' }, (resp) => {
+        selectModel.disabled = false;
+        if (resp && resp.error) {
+          if (resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
+            showKeyAccessBanner();
+          }
+          selectModel.innerHTML = `<option value="">Lỗi tải models (${resp.error.code})</option>`;
+          updateStatus('error', `[${resp.error.code}] ${resp.error.message || 'Lỗi tải danh sách model'}`);
+          evaluateActionReadiness();
+          resolve();
+          return;
+        }
+
         selectModel.innerHTML = '';
 
         // Group 1: Recommended models at the top
@@ -291,6 +390,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           } else {
             selectModel.value = DEFAULT_MODEL;
           }
+          evaluateActionReadiness();
         });
         resolve();
       });
@@ -335,6 +435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return `[SITE_NOT_ALLOWED] Trang web này không hỗ trợ dịch hoặc URL không hợp lệ.`;
       }
       if (code === 'KEY_ACCESS_UNAVAILABLE') {
+        showKeyAccessBanner();
         return `[KEY_ACCESS_UNAVAILABLE] Lỗi bảo mật bộ nhớ extension. Vui lòng thử lại.`;
       }
       if (code === 'CONSENT_STATE_UNAVAILABLE') {
@@ -348,6 +449,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         const retrySec = Math.ceil((err.details?.retryAfterMs || 0) / 1000);
         return `[RATE_LIMITED] ${scope} · thử lại sau ${retrySec}s`;
       }
+      if (code === 'CAP_EXCEEDED') {
+        const capType = err.details?.capType || 'kích thước';
+        const limit = err.details?.limit;
+        const actual = err.details?.actual;
+        const limitStr = (limit !== undefined && actual !== undefined) ? ` (${actual} > ${limit})` : '';
+        return `[CAP_EXCEEDED] Batch bị loại do vượt cap ${capType}${limitStr}`;
+      }
+      if (code === 'INVALID_SCHEMA') {
+        const schemaErrors = (err.details?.schemaErrors || []).join(', ');
+        return `[INVALID_SCHEMA] Dữ liệu không đúng schema${schemaErrors ? ': ' + schemaErrors : ''}`;
+      }
+      if (code === 'NETWORK') {
+        return `[NETWORK] Mất kết nối mạng hoặc không thể kết nối tới Base URL.`;
+      }
+      if (code.startsWith('HTTP_')) {
+        const statusText = err.details?.statusText || msg || '';
+        return `[${code}] Lỗi phản hồi từ máy chủ: ${statusText}`;
+      }
       if (code === 'RATE_STATE_UNAVAILABLE') {
         return `[RATE_STATE_UNAVAILABLE] Không thể đọc hoặc ghi bộ đếm giới hạn tốc độ.`;
       }
@@ -357,7 +476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return '';
   }
 
-  // Check tab status
+  // Check tab status and queue status
   async function checkTabStatus() {
     if (!activeTab || !activeTab.id) return;
     try {
@@ -365,14 +484,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (chrome.runtime.lastError || !resp || !resp.ok) {
           stopPolling();
           // Content script not yet injected
-          if (hasStoredKey && inputBaseUrl.value) {
-            updateStatus('ready', 'Sẵn sàng dịch trang hiện tại.');
-            btnTranslate.disabled = false;
-          } else {
-            updateStatus('unconfigured', 'Vui lòng cấu hình Base URL và API key.');
-            btnTranslate.disabled = true;
-          }
-          btnRestore.disabled = true;
+          evaluateActionReadiness(0);
           return;
         }
 
@@ -387,19 +499,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             elapsedMs: st.elapsedMs,
             model: st.model
           }));
-          btnRestore.disabled = resp.restorableCount === 0;
-          btnTranslate.disabled = false;
+          evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'restored') {
           stopPolling();
           updateStatus('restored', `Đã khôi phục ${st.totalRestored} nodes.`);
-          btnRestore.disabled = true;
-          btnTranslate.disabled = false;
+          evaluateActionReadiness(0);
         } else if (st.state === 'translating') {
           startPolling();
-          const progressDetail = (typeof st.totalCollected === 'number' && st.totalCollected > 0)
-            ? `Đang dịch ${st.totalApplied || 0}/${st.totalCollected} nodes...`
-            : 'Đang dịch...';
-          updateStatus('translating', progressDetail);
+          // Query queue status from SW
+          chrome.runtime.sendMessage({ action: 'GET_QUEUE_STATUS', tabId: activeTab.id }, (qResp) => {
+            if (qResp && qResp.queued) {
+              const remSec = Math.max(1, Math.ceil((qResp.retryAfterMs || 0) / 1000));
+              updateStatus('translating', `Đang chờ quota… sẽ chạy lại sau ~${remSec}s`);
+            } else {
+              const progressDetail = (typeof st.totalCollected === 'number' && st.totalCollected > 0)
+                ? `Đang dịch ${st.totalApplied || 0}/${st.totalCollected} nodes...`
+                : 'Đang dịch...';
+              updateStatus('translating', progressDetail);
+            }
+          });
           btnTranslate.disabled = true;
           btnRestore.disabled = true;
         } else if (st.state === 'error') {
@@ -409,18 +527,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             elapsedMs: st.elapsedMs,
             model: st.model
           }));
-          btnTranslate.disabled = false;
-          btnRestore.disabled = resp.restorableCount === 0;
+          evaluateActionReadiness(resp.restorableCount || 0);
         } else {
           stopPolling();
-          updateStatus('ready', 'Sẵn sàng dịch.');
-          btnTranslate.disabled = false;
-          btnRestore.disabled = resp.restorableCount === 0;
+          evaluateActionReadiness(resp.restorableCount || 0);
         }
       });
     } catch {
       stopPolling();
-      // Content script message failed
     }
   }
 
@@ -440,6 +554,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnRefreshModels.disabled = true;
     await refreshModels();
     btnRefreshModels.disabled = false;
+  });
+
+  // Re-evaluate readiness on model change
+  selectModel.addEventListener('change', () => {
+    evaluateActionReadiness();
   });
 
   // Save configuration with permission request
@@ -478,15 +597,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       targetLanguage: selectTgtLang.value || 'vi'
     };
 
-    await new Promise((resolve) => {
+    const saveResp = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings: newSettings }, resolve);
     });
 
+    if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+      const err = saveResp?.error || chrome.runtime.lastError;
+      setConfigMsg('Lỗi lưu cấu hình: ' + (err.message || 'Lỗi không xác định'), true);
+      return;
+    }
+
     const keyVal = inputApiKey.value.trim();
     if (keyVal) {
-      await new Promise((resolve) => {
+      const keyResp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({ action: 'SET_KEY', key: keyVal }, resolve);
       });
+      if (chrome.runtime.lastError || !keyResp || keyResp.error) {
+        const err = keyResp?.error || chrome.runtime.lastError;
+        setConfigMsg('Lỗi lưu API key: ' + (err.message || 'Lỗi không xác định'), true);
+        return;
+      }
       hasStoredKey = true;
       keyStatusIndicator.textContent = 'Key: Đã lưu';
       inputApiKey.value = '';
@@ -500,14 +630,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Delete API key
   btnDeleteKey.addEventListener('click', async () => {
-    await new Promise((resolve) => {
+    btnDeleteKey.disabled = true;
+    const resp = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'DELETE_KEY' }, resolve);
     });
+    btnDeleteKey.disabled = false;
+
+    if (chrome.runtime.lastError || !resp || resp.error) {
+      const err = resp?.error || chrome.runtime.lastError;
+      setConfigMsg('Lỗi xoá API key: ' + (err.message || ''), true);
+      return;
+    }
+
     hasStoredKey = false;
     keyStatusIndicator.textContent = 'Key: Chưa lưu';
     inputApiKey.value = '';
     inputApiKey.placeholder = 'Nhập API key';
     setConfigMsg('Đã xoá API key.');
+    evaluateActionReadiness();
     await checkTabStatus();
   });
 
@@ -531,7 +671,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (ensureResp && ensureResp.error) {
         stopPolling();
         updateStatus('error', formatDetail('error', { error: ensureResp.error }));
-        btnTranslate.disabled = false;
+        evaluateActionReadiness();
         return;
       }
 
@@ -550,7 +690,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           stopPolling();
           if (chrome.runtime.lastError) {
             updateStatus('error', chrome.runtime.lastError.message || 'Không thể kết nối với content script');
-            btnTranslate.disabled = false;
+            evaluateActionReadiness();
             return;
           }
           if (resp && resp.error) {
@@ -559,7 +699,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               elapsedMs: resp.elapsedMs,
               model: resp.model || currentSettings.model
             }));
-            btnTranslate.disabled = false;
+            evaluateActionReadiness();
             return;
           }
           updateStatus('translated', formatDetail('translated', {
@@ -571,14 +711,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             elapsedMs: resp.elapsedMs,
             model: resp.model || currentSettings.model
           }));
-          btnTranslate.disabled = false;
-          btnRestore.disabled = false;
+          evaluateActionReadiness(resp.applied || 0);
         }
       );
     } catch (err) {
       stopPolling();
       updateStatus('error', err?.message || 'Không thể inject content script');
-      btnTranslate.disabled = false;
+      evaluateActionReadiness();
     }
   });
 
@@ -597,7 +736,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const restored = resp?.restored || 0;
       updateStatus('restored', `Đã khôi phục ${restored} nodes về bản gốc.`);
       btnRestore.disabled = true;
-      btnTranslate.disabled = false;
+      evaluateActionReadiness(0);
     });
   });
 

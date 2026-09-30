@@ -317,7 +317,7 @@
   }
 
   // Chunk-level recovery: retry 1 time, binary split if depth < 2 && items.length > 8
-  async function translateChunkWithRecovery(items, settings = {}, depth = 0, targetEpoch = epoch) {
+  async function translateChunkWithRecovery(items, settings = {}, depth = 0, targetEpoch = epoch, runConfig = { revision: null }) {
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
     }
@@ -338,7 +338,8 @@
       'CONSENT_DENIED',
       'INVALID_SCHEMA',
       'CAP_EXCEEDED',
-      'MODEL_NOT_ALLOWED'
+      'MODEL_NOT_ALLOWED',
+      'ABORTED'
     ]);
 
     function isNonRetryable(err) {
@@ -348,10 +349,37 @@
       return false;
     }
 
+    function checkRevisionMismatch(r) {
+      if (!r) return null;
+      if (typeof r.configRevision === 'number') {
+        if (typeof r.currentConfigRevision === 'number' && r.configRevision !== r.currentConfigRevision) {
+          return 'Configuration changed in-flight';
+        }
+        if (runConfig.revision !== null && runConfig.revision !== undefined && r.configRevision !== runConfig.revision) {
+          return 'Configuration revision mismatch';
+        }
+        if (runConfig.revision === null) {
+          runConfig.revision = r.configRevision;
+        }
+      }
+      return null;
+    }
+
     // 1. Initial sendChunk
     let resp = await sendChunk(items, settings, targetEpoch);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
+    }
+
+    const mismatch1 = checkRevisionMismatch(resp);
+    if (mismatch1) {
+      return {
+        cancelled: true,
+        applied: 0,
+        failed: items.length,
+        fatal: true,
+        error: { code: 'ABORTED', message: mismatch1, retryable: false }
+      };
     }
 
     if (resp && resp.error && isNonRetryable(resp.error)) {
@@ -378,6 +406,17 @@
       return { cancelled: true, applied: 0, failed: 0 };
     }
 
+    const mismatch2 = checkRevisionMismatch(resp);
+    if (mismatch2) {
+      return {
+        cancelled: true,
+        applied: 0,
+        failed: items.length,
+        fatal: true,
+        error: { code: 'ABORTED', message: mismatch2, retryable: false }
+      };
+    }
+
     if (resp && Array.isArray(resp.results)) {
       const patchResult = await applyBatchThrottled(resp.results, targetEpoch);
       return { applied: patchResult.applied, failed: 0 };
@@ -389,12 +428,12 @@
       const leftItems = items.slice(0, mid);
       const rightItems = items.slice(mid);
 
-      const leftRes = await translateChunkWithRecovery(leftItems, settings, depth + 1, targetEpoch);
+      const leftRes = await translateChunkWithRecovery(leftItems, settings, depth + 1, targetEpoch, runConfig);
       if (leftRes.cancelled) {
         return leftRes;
       }
 
-      const rightRes = await translateChunkWithRecovery(rightItems, settings, depth + 1, targetEpoch);
+      const rightRes = await translateChunkWithRecovery(rightItems, settings, depth + 1, targetEpoch, runConfig);
       if (rightRes.cancelled) {
         return rightRes;
       }
@@ -463,6 +502,7 @@
       let chunksDone = 0;
       let lastError = null;
       let runAborted = false;
+      const runConfig = { revision: typeof settings.configRevision === 'number' ? settings.configRevision : null };
 
       async function worker() {
         while (nextIndex < chunks.length) {
@@ -478,7 +518,8 @@
               model: targetModel
             },
             0,
-            currentEpoch
+            currentEpoch,
+            runConfig
           );
 
           if (epoch !== currentEpoch || runAborted) break;
@@ -494,8 +535,9 @@
           lastTranslateStatus.totalFailed = totalFailed;
           lastTranslateStatus.chunksDone = chunksDone;
 
-          if (chunkRes.fatal) {
+          if (chunkRes.fatal || chunkRes.cancelled) {
             runAborted = true;
+            epoch++;
             break;
           }
         }
@@ -508,7 +550,7 @@
       }
       await Promise.all(workers);
 
-      if (epoch !== currentEpoch) {
+      if (epoch !== currentEpoch && !runAborted) {
         return { cancelled: true };
       }
 
@@ -519,14 +561,15 @@
       lastTranslateStatus.totalFailed = totalFailed;
       lastTranslateStatus.model = targetModel;
 
-      // Nếu có lỗi fatal (như DROPPED_ON_RESTART) hoặc toàn bộ chunk thất bại -> trả về lỗi
-      if ((totalApplied === 0 && totalFailed > 0) || (lastError && lastError.code === 'DROPPED_ON_RESTART') || (runAborted && lastError)) {
+      // Nếu có lỗi fatal (như DROPPED_ON_RESTART hoặc ABORTED) hoặc toàn bộ chunk thất bại -> trả về lỗi
+      if ((totalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'Tất cả các chunk đều thất bại' };
         isTranslating = false;
         return {
           ok: false,
           error: lastTranslateStatus.error,
+          cancelled: runAborted || lastError?.code === 'ABORTED',
           applied: totalApplied,
           failed: totalFailed,
           model: targetModel,

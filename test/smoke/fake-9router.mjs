@@ -84,7 +84,9 @@ export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', () => {
-        requestLog.push({ time: Date.now(), mode, length: body.length });
+        let parsedBody = null;
+        try { parsedBody = JSON.parse(body); } catch {}
+        requestLog.push({ time: Date.now(), mode, length: body.length, body: parsedBody, rawBody: body });
 
         if (mode === 'destroy_socket_mid_batch') {
           res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -170,6 +172,11 @@ export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089
             res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: { message: 'Invalid request: ' + err.message } }));
           }
+        }
+
+        if (mode === 'hold_5s' || mode === 'delay_5s') {
+          setTimeout(respondNormal, 5000);
+          return;
         }
 
         if (mode === 'hold_6s') {

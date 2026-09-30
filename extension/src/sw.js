@@ -30,10 +30,18 @@ import {
 import {
   createSemaphore
 } from './semaphore.mjs';
+import {
+  SETTINGS_VERSION,
+  DEFAULT_SETTINGS,
+  migrateSettings,
+  validateSettings
+} from './settings.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
 const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
+
+let configRevision = 1;
 
 // Ephemeral In-Memory Cache: destroyed upon SW restart per contract/lifecycle.md §3.3
 const translationCache = createTranslationCache({
@@ -197,12 +205,12 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && t
 async function getStoredSettings() {
   await ensureStorageAccess();
   const res = await chrome.storage.local.get(['settings']);
-  return res.settings || {
-    baseURL: 'http://localhost:8080/v1',
-    model: DEFAULT_MODEL,
-    sourceLanguage: 'auto',
-    targetLanguage: 'vi'
-  };
+  const raw = res.settings;
+  const migrated = migrateSettings(raw);
+  if (!raw || raw.version !== SETTINGS_VERSION) {
+    await chrome.storage.local.set({ settings: migrated });
+  }
+  return migrated;
 }
 
 async function getStoredApiKey() {
@@ -372,6 +380,7 @@ function scheduleQueueEntry(entry, delayMs) {
   if (entry.timer) {
     clearTimeout(entry.timer);
   }
+  entry.retryAt = Date.now() + Math.max(10, delayMs);
   entry.timer = setTimeout(async () => {
     entry.timer = null;
     const queue = tabQueues.get(entry.tabId);
@@ -435,7 +444,12 @@ function scheduleQueueEntry(entry, delayMs) {
       if (admission.allowed) {
         removeEntryFromQueue(entry);
         const result = entry.misses
-          ? await executeBatchTranslation({ payload: entry.payload, misses: entry.misses, hits: entry.hits })
+          ? await executeBatchTranslation({
+              payload: entry.payload,
+              misses: entry.misses,
+              hits: entry.hits,
+              batchConfigRevision: entry.configRevision
+            })
           : await translateBatch(entry.payload || {});
         entry.resolve(result);
         return;
@@ -619,7 +633,7 @@ async function translateBatch(input = {}) {
 }
 
 // Semaphore-guarded batch translation with cache population & original-order merging
-async function executeBatchTranslation({ payload = {}, misses = [], hits = [] }) {
+async function executeBatchTranslation({ payload = {}, misses = [], hits = [], batchConfigRevision = configRevision }) {
   try {
     await providerSemaphore.acquire();
   } catch (err) {
@@ -647,6 +661,23 @@ async function executeBatchTranslation({ payload = {}, misses = [], hits = [] })
 
   if (!providerRes || !Array.isArray(providerRes.results)) {
     return providerRes;
+  }
+
+  // If configuration revision changed while batch was in-flight, do NOT cache and abort
+  if (batchConfigRevision !== configRevision) {
+    return {
+      ...createTypedError(
+        'ABORTED',
+        'Translation batch discarded due to configuration change',
+        false,
+        {
+          batchConfigRevision,
+          currentConfigRevision: configRevision
+        }
+      ),
+      configRevision: batchConfigRevision,
+      currentConfigRevision: configRevision
+    };
   }
 
   // Populate cache for newly translated items
@@ -678,7 +709,9 @@ async function executeBatchTranslation({ payload = {}, misses = [], hits = [] })
 
   return {
     ...providerRes,
-    results: merged
+    results: merged,
+    configRevision: batchConfigRevision,
+    currentConfigRevision: configRevision
   };
 }
 
@@ -721,7 +754,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
         const settings = await getStoredSettings();
         const hasKey = Boolean(await getStoredApiKey());
-        return { settings, hasKey };
+        return { settings, hasKey, configRevision };
       }
 
       case 'SAVE_SETTINGS': {
@@ -731,13 +764,73 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
-        translationCache.clear();
+
         if (message.settings) {
-          await chrome.storage.local.set({ settings: message.settings });
-          if (message.settings.baseURL) routerConfig.baseURL = message.settings.baseURL;
-          if (message.settings.model) routerConfig.model = message.settings.model;
+          const validation = validateSettings(message.settings);
+          if (!validation.valid) {
+            return createTypedError('INVALID_SCHEMA', 'Invalid settings: ' + (validation.errors || []).join('; '), false, {
+              schemaErrors: validation.errors
+            });
+          }
         }
-        return { ok: true };
+
+        const oldSettings = await getStoredSettings();
+        const migrated = migrateSettings(message.settings);
+
+        const configChanged = (
+          oldSettings.baseURL !== migrated.baseURL ||
+          oldSettings.model !== migrated.model ||
+          oldSettings.sourceLanguage !== migrated.sourceLanguage ||
+          oldSettings.targetLanguage !== migrated.targetLanguage
+        );
+
+        if (configChanged) {
+          configRevision++;
+          translationCache.clear();
+          // Abort all queued batches across all tabs
+          for (const [tabId, queue] of tabQueues.entries()) {
+            for (const entry of queue) {
+              if (entry.timer) clearTimeout(entry.timer);
+              entry.resolve(createTypedError(
+                'ABORTED',
+                'Translation request aborted due to configuration change',
+                false,
+                { reason: 'Configuration changed' }
+              ));
+            }
+          }
+          tabQueues.clear();
+        }
+
+        await chrome.storage.local.set({ settings: migrated });
+        if (migrated.baseURL) routerConfig.baseURL = migrated.baseURL;
+        if (migrated.model) routerConfig.model = migrated.model;
+
+        return { ok: true, configRevision };
+      }
+
+      case 'GET_QUEUE_STATUS': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'GET_QUEUE_STATUS is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        const tabId = message.tabId;
+        if (typeof tabId !== 'number') {
+          return { queued: false, queueLength: 0 };
+        }
+        const queue = tabQueues.get(tabId);
+        if (queue && queue.length > 0) {
+          const nextEntry = queue[0];
+          const remainingMs = Math.max(0, (nextEntry.retryAt || 0) - Date.now());
+          return {
+            queued: true,
+            queueLength: queue.length,
+            retryAfterMs: remainingMs,
+            scope: nextEntry.scope || 'tab'
+          };
+        }
+        return { queued: false, queueLength: 0 };
       }
 
       case 'SET_KEY': {
@@ -747,12 +840,25 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
+        configRevision++;
         translationCache.clear();
+        for (const [tabId, queue] of tabQueues.entries()) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Translation request aborted due to credential change',
+              false,
+              { reason: 'Credential changed' }
+            ));
+          }
+        }
+        tabQueues.clear();
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
           routerConfig.apiKey = message.key;
         }
-        return { ok: true };
+        return { ok: true, configRevision };
       }
 
       case 'DELETE_KEY': {
@@ -762,10 +868,23 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
+        configRevision++;
         translationCache.clear();
+        for (const [tabId, queue] of tabQueues.entries()) {
+          for (const entry of queue) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'ABORTED',
+              'Translation request aborted due to credential removal',
+              false,
+              { reason: 'Credential removed' }
+            ));
+          }
+        }
+        tabQueues.clear();
         await chrome.storage.local.remove(['api_key']);
         routerConfig.apiKey = '';
-        return { ok: true };
+        return { ok: true, configRevision };
       }
 
       case 'HAS_KEY': {
@@ -1091,6 +1210,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'TRANSLATE_BATCH': {
+        // Record current configRevision at dispatch time
+        const batchConfigRevision = configRevision;
+
         // 1. Fail-closed storage access verification
         await ensureStorageAccess();
 
@@ -1204,8 +1326,22 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         // Fast path: full cache hit bypasses rate admission & provider calls completely
         if (misses.length === 0) {
+          if (batchConfigRevision !== configRevision) {
+            return {
+              ...createTypedError(
+                'ABORTED',
+                'Translation batch discarded due to configuration change',
+                false,
+                { batchConfigRevision, currentConfigRevision: configRevision }
+              ),
+              configRevision: batchConfigRevision,
+              currentConfigRevision: configRevision
+            };
+          }
           return {
-            results: hits.map((h) => h.result)
+            results: hits.map((h) => h.result),
+            configRevision: batchConfigRevision,
+            currentConfigRevision: configRevision
           };
         }
 
@@ -1240,6 +1376,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               tabId,
               origin,
               epoch: reqEpoch,
+              configRevision: batchConfigRevision,
+              scope: admission.scope,
+              retryAt: Date.now() + admission.retryAfterMs,
               cost,
               payload: message.payload,
               misses,
@@ -1259,7 +1398,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         return await executeBatchTranslation({
           payload: message.payload || {},
           misses,
-          hits
+          hits,
+          batchConfigRevision
         });
       }
 
@@ -1324,5 +1464,9 @@ self.__translatorSw = {
   TRANSLATE_TIMEOUT_MS,
   LIST_MODELS_TIMEOUT_MS,
   translationCache,
-  providerSemaphore
+  providerSemaphore,
+  getConfigRevision: () => configRevision,
+  SETTINGS_VERSION,
+  migrateSettings,
+  validateSettings
 };

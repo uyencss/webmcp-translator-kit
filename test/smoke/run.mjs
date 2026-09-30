@@ -1907,6 +1907,146 @@ async function runSingleAttempt() {
       record('T25', 'TRUSTED_CONTEXTS re-assert after restart', false, e.message);
     }
 
+    // Test 26: Cancel-on-config-change (SAVE_SETTINGS aborts queued / in-flight batches)
+    try {
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      // Set fake server to delay 5s
+      fakeServer.clearLog();
+      fakeServer.setMode('hold_5s');
+
+      const t26Text = '待取消配置变更文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t26-node">${t26Text}</h1>';
+      `, fixtureSessionId, false);
+
+      // Trigger translation from content script -> will hang at fake server for 5s
+      await cdp.evaluate(`
+        window.__t26Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // Wait 300ms so the request is in-flight at fake server
+      await sleep(300);
+
+      // Send SAVE_SETTINGS with a different model to trigger configRevision bump + in-flight abort
+      const newModel = 'do/glm-5.3-flash';
+      const saveRes = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${newModel}',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi'
+            }
+          });
+        })()
+      `, swSessionId, true);
+
+      assert.ok(saveRes && saveRes.ok === true, 'SAVE_SETTINGS should return ok: ' + JSON.stringify(saveRes));
+
+      // Await the in-flight translation promise
+      const t26Res = await cdp.evaluate('window.__t26Promise', fixtureSessionId, true);
+      assert.ok(t26Res && (t26Res.ok === false || t26Res.cancelled || t26Res.error), 'Translation must be aborted on config change: ' + JSON.stringify(t26Res));
+      assert.equal(t26Res.error?.code, 'ABORTED', `Expected error code ABORTED, got: ${t26Res.error?.code}`);
+
+      // Verify DOM was NOT patched (original Chinese text intact)
+      const domTextT26 = await cdp.evaluate('document.getElementById("t26-node").textContent', fixtureSessionId);
+      assert.equal(domTextT26, t26Text, 'DOM text must remain unpatched when config changed');
+
+      // Verify cache is empty / invalidated
+      const cacheSize = await cdp.evaluate('self.__translatorSw.translationCache.size().entries', swSessionId);
+      assert.equal(cacheSize, 0, 'Cache must be invalidated upon config change');
+
+      // Reset fake server mode to normal
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // Subsequent translation must succeed with new model and call provider again
+      const t26Subsequent = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${newModel}'
+        });
+      `, fixtureSessionId, true);
+
+      assert.ok(t26Subsequent && t26Subsequent.ok === true, 'Subsequent translation with new model should succeed: ' + JSON.stringify(t26Subsequent));
+
+      // Verify DOM was patched
+      const patchedTextT26 = await cdp.evaluate('document.getElementById("t26-node").textContent', fixtureSessionId);
+      assert.equal(patchedTextT26, `[vi] ${t26Text}`, 'DOM text must be patched after subsequent translation');
+
+      // Verify fake server log shows new model
+      const logs = fakeServer.getLogs();
+      assert.equal(logs.length, 1, 'Provider should be called exactly once for subsequent translation (cache was empty)');
+
+      record('T26', 'Cancel-on-config-change aborts in-flight batch', true, `ABORTED returned, DOM intact, cache invalidated, subsequent ${newModel} passed`);
+    } catch (e) {
+      record('T26', 'Cancel-on-config-change aborts in-flight batch', false, e.message);
+    }
+
+    // Test 27: Settings migration E2E (v0 without version -> v1 canonical with defaults and key separation)
+    try {
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw.ensureStorageAccess();
+          // Write an unversioned v0 settings object with dirty injected apiKey
+          await chrome.storage.local.set({
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: '${DEFAULT_MODEL}',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              apiKey: 'should-be-stripped',
+              userCustomField: 'keep-me'
+            },
+            api_key: 'sk-legit-isolated-key'
+          });
+        })()
+      `, swSessionId);
+
+      // Call GET_SETTINGS through SW
+      const getSettingsRes = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' });
+        })()
+      `, swSessionId, true);
+
+      assert.ok(getSettingsRes && getSettingsRes.settings, 'GET_SETTINGS returned empty: ' + JSON.stringify(getSettingsRes));
+      assert.equal(getSettingsRes.settings.version, 1, 'Settings must be migrated to version 1');
+      assert.equal(getSettingsRes.settings.userCustomField, 'keep-me', 'Custom user field must be preserved');
+      assert.equal(getSettingsRes.settings.apiKey, undefined, 'apiKey must be purged from settings');
+      assert.equal(getSettingsRes.settings.api_key, undefined, 'api_key must not be in settings');
+      assert.equal(getSettingsRes.hasKey, true, 'hasKey must reflect separate api_key record');
+      assert.ok(getSettingsRes.settings.rateLimits, 'rateLimits defaults must be populated');
+      assert.equal(getSettingsRes.settings.rateLimits.windowSeconds, 60);
+
+      // Verify chrome.storage.local now contains the migrated settings
+      const storedAfter = await cdp.evaluate(`
+        (async () => {
+          return await chrome.storage.local.get(['settings', 'api_key']);
+        })()
+      `, swSessionId, true);
+
+      assert.equal(storedAfter.settings.version, 1, 'Stored settings must have version 1');
+      assert.equal(storedAfter.settings.apiKey, undefined, 'Stored settings must not have apiKey');
+      assert.equal(storedAfter.api_key, 'sk-legit-isolated-key', 'Separate api_key record must be intact');
+
+      record('T27', 'Settings migration e2e (v0 -> v1 & key separation)', true, `Migrated to v1, rateLimits added, apiKey purged, separate key intact`);
+    } catch (e) {
+      record('T27', 'Settings migration e2e (v0 -> v1 & key separation)', false, e.message);
+    }
+
     // Section 5: Batch-count measurement (20-node viewport fixture) under default contract limits
     try {
       const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
@@ -2012,7 +2152,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 26;
+  return allPass && testResults.length >= 28;
 }
 
 async function main() {

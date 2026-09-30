@@ -1,0 +1,177 @@
+// WebMCP Translator Kit — Pure Settings Schema, Versioning & Migration
+// Contract Version: webmcp-translator-contract/1
+
+export const SETTINGS_VERSION = 1;
+
+export const DEFAULT_SETTINGS = Object.freeze({
+  version: SETTINGS_VERSION,
+  baseURL: 'http://localhost:8080/v1',
+  model: 'ag/gemini-3.1-pro-low',
+  sourceLanguage: 'auto',
+  targetLanguage: 'vi',
+  rateLimits: Object.freeze({
+    windowSeconds: 60,
+    tab: Object.freeze({
+      maxBatches: 4,
+      maxSourceCodePoints: 12000
+    }),
+    site: Object.freeze({
+      maxBatches: 12,
+      maxSourceCodePoints: 36000
+    })
+  })
+});
+
+/**
+ * Migrates any raw settings object to the canonical SETTINGS_VERSION.
+ * Invariants:
+ * 1. api_key or apiKey record is NEVER stored in settings (purged if found).
+ * 2. Missing fields are filled with sensible frozen defaults.
+ * 3. Unknown user fields are preserved intact.
+ * 4. Idempotent: migrateSettings(migrateSettings(x)) equals migrateSettings(x).
+ * 5. Safe: undefined/null/empty/primitive input will not throw.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, any>}
+ */
+export function migrateSettings(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  }
+
+  // Clone to avoid mutating caller object
+  const res = { ...raw };
+
+  // INVARIANT: api_key or apiKey must NEVER be in settings
+  delete res.api_key;
+  delete res.apiKey;
+
+  // v0 -> v1 migration:
+  res.version = SETTINGS_VERSION;
+
+  // Ensure default string values if missing or empty
+  if (typeof res.baseURL !== 'string' || !res.baseURL.trim()) {
+    res.baseURL = DEFAULT_SETTINGS.baseURL;
+  }
+  if (typeof res.model !== 'string' || !res.model.trim()) {
+    res.model = DEFAULT_SETTINGS.model;
+  }
+  if (typeof res.sourceLanguage !== 'string' || !res.sourceLanguage.trim()) {
+    res.sourceLanguage = DEFAULT_SETTINGS.sourceLanguage;
+  }
+  if (typeof res.targetLanguage !== 'string' || !res.targetLanguage.trim()) {
+    res.targetLanguage = DEFAULT_SETTINGS.targetLanguage;
+  }
+
+  // Ensure rateLimits structure is populated with defaults
+  const rawRL = (res.rateLimits && typeof res.rateLimits === 'object' && !Array.isArray(res.rateLimits))
+    ? res.rateLimits
+    : {};
+
+  res.rateLimits = {
+    windowSeconds: typeof rawRL.windowSeconds === 'number' && rawRL.windowSeconds > 0
+      ? rawRL.windowSeconds
+      : DEFAULT_SETTINGS.rateLimits.windowSeconds,
+    tab: {
+      maxBatches: typeof rawRL.tab?.maxBatches === 'number' && rawRL.tab.maxBatches > 0
+        ? rawRL.tab.maxBatches
+        : DEFAULT_SETTINGS.rateLimits.tab.maxBatches,
+      maxSourceCodePoints: typeof rawRL.tab?.maxSourceCodePoints === 'number' && rawRL.tab.maxSourceCodePoints > 0
+        ? rawRL.tab.maxSourceCodePoints
+        : DEFAULT_SETTINGS.rateLimits.tab.maxSourceCodePoints
+    },
+    site: {
+      maxBatches: typeof rawRL.site?.maxBatches === 'number' && rawRL.site.maxBatches > 0
+        ? rawRL.site.maxBatches
+        : DEFAULT_SETTINGS.rateLimits.site.maxBatches,
+      maxSourceCodePoints: typeof rawRL.site?.maxSourceCodePoints === 'number' && rawRL.site.maxSourceCodePoints > 0
+        ? rawRL.site.maxSourceCodePoints
+        : DEFAULT_SETTINGS.rateLimits.site.maxSourceCodePoints
+    }
+  };
+
+  return res;
+}
+
+/**
+ * Validates a settings object against expected schema types and safety rules.
+ *
+ * @param {unknown} settings
+ * @returns {{ valid: boolean, errors?: string[] }}
+ */
+export function validateSettings(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return { valid: false, errors: ['Settings must be a non-null object'] };
+  }
+
+  const errors = [];
+
+  // Check version if provided
+  if (settings.version !== undefined && (typeof settings.version !== 'number' || settings.version < 1)) {
+    errors.push('version must be a positive number');
+  }
+
+  // Check baseURL
+  if (typeof settings.baseURL !== 'string' || !/^https?:\/\/.+/i.test(settings.baseURL.trim())) {
+    errors.push('baseURL must be a valid HTTP(S) URL');
+  }
+
+  // Check model
+  if (typeof settings.model !== 'string' || !settings.model.trim()) {
+    errors.push('model must be a non-empty string');
+  }
+
+  // Check sourceLanguage & targetLanguage
+  if (typeof settings.sourceLanguage !== 'string' || !settings.sourceLanguage.trim()) {
+    errors.push('sourceLanguage must be a non-empty string');
+  }
+  if (typeof settings.targetLanguage !== 'string' || !settings.targetLanguage.trim()) {
+    errors.push('targetLanguage must be a non-empty string');
+  }
+
+  // INVARIANT: credentials must never be passed in settings
+  if ('api_key' in settings || 'apiKey' in settings) {
+    errors.push('api_key must not be stored inside settings');
+  }
+
+  // Validate rateLimits if present
+  if (settings.rateLimits !== undefined) {
+    if (typeof settings.rateLimits !== 'object' || settings.rateLimits === null || Array.isArray(settings.rateLimits)) {
+      errors.push('rateLimits must be an object');
+    } else {
+      const rl = settings.rateLimits;
+      if (rl.windowSeconds !== undefined && (typeof rl.windowSeconds !== 'number' || rl.windowSeconds <= 0)) {
+        errors.push('rateLimits.windowSeconds must be a positive number');
+      }
+      if (rl.tab !== undefined) {
+        if (typeof rl.tab !== 'object' || rl.tab === null) {
+          errors.push('rateLimits.tab must be an object');
+        } else {
+          if (rl.tab.maxBatches !== undefined && (typeof rl.tab.maxBatches !== 'number' || rl.tab.maxBatches <= 0)) {
+            errors.push('rateLimits.tab.maxBatches must be a positive number');
+          }
+          if (rl.tab.maxSourceCodePoints !== undefined && (typeof rl.tab.maxSourceCodePoints !== 'number' || rl.tab.maxSourceCodePoints <= 0)) {
+            errors.push('rateLimits.tab.maxSourceCodePoints must be a positive number');
+          }
+        }
+      }
+      if (rl.site !== undefined) {
+        if (typeof rl.site !== 'object' || rl.site === null) {
+          errors.push('rateLimits.site must be an object');
+        } else {
+          if (rl.site.maxBatches !== undefined && (typeof rl.site.maxBatches !== 'number' || rl.site.maxBatches <= 0)) {
+            errors.push('rateLimits.site.maxBatches must be a positive number');
+          }
+          if (rl.site.maxSourceCodePoints !== undefined && (typeof rl.site.maxSourceCodePoints !== 'number' || rl.site.maxSourceCodePoints <= 0)) {
+            errors.push('rateLimits.site.maxSourceCodePoints must be a positive number');
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors: errors.length > 0 ? errors : undefined
+  };
+}
