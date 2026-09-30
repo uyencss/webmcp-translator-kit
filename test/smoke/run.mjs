@@ -342,18 +342,37 @@ async function runSingleAttempt() {
     await cdp.send('Runtime.enable', {}, fixtureSessionId);
     await cdp.send('Runtime.addBinding', { name: '__cdpSendToSw' }, fixtureSessionId);
 
-    let fixtureTabId = 1;
+    let fixtureTabId = null;
+    for (let r = 0; r < 60; r++) {
+      await sleep(150);
+      try {
+        const tabs = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(tabs) && tabs.find(t => t.url && t.url.includes(String(FIXTURE_PORT)));
+        if (match?.id) {
+          try {
+            await cdp.evaluate(`chrome.tabs.get(${match.id})`, swSessionId);
+            fixtureTabId = match.id;
+            break;
+          } catch {}
+        }
+      } catch {}
+    }
+    if (!fixtureTabId) {
+      fixtureTabId = 1;
+      console.warn('[smoke] fixtureTabId resolution fell back to 1 (no real fixture tab matched) — test-mode tolerance engaged');
+    }
+
+    // TEST-ONLY: register the simulated/real fixture tab so SW policy checks
+    // (queue timer, SET_TAB_OVERRIDE) can resolve it deterministically.
     try {
-      const tabs = await cdp.evaluate(`
-        (async () => {
-          if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
-            return await chrome.tabs.query({});
-          }
-          return [];
-        })()
-      `, swSessionId);
-      const match = Array.isArray(tabs) && (tabs.find(t => t.url && t.url.includes(String(FIXTURE_PORT))) || tabs[0]);
-      if (match?.id) fixtureTabId = match.id;
+      await cdp.evaluate(`self.__translatorSw._registerTestTab(${fixtureTabId}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
     } catch {}
 
     // Bridge messages between fixture tab and SW
@@ -524,7 +543,7 @@ async function runSingleAttempt() {
         }, {
           frameId: 0,
           url: '${fixtureUrl}',
-          tab: { id: 1, url: '${fixtureUrl}' }
+          tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
 
@@ -609,7 +628,7 @@ async function runSingleAttempt() {
         }, {
           frameId: 0,
           url: '${fixtureUrl}',
-          tab: { id: 1, url: '${fixtureUrl}' }
+          tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
       const elapsed = Date.now() - t0;
@@ -938,7 +957,45 @@ async function runSingleAttempt() {
 
       assert.ok(okRes && Array.isArray(okRes.models) && !okRes.error, `Expected models array after recovery, got ${JSON.stringify(okRes)}`);
 
-      record('T13', 'Fail-closed key & recovery', true, 'Refused with KEY_ACCESS_UNAVAILABLE on failure, recovered on retry');
+      // 13d: delete chrome.storage.local.setAccessLevel entirely -> fail-closed
+      await cdp.evaluate(`
+        self.__origSetAccessLevel = chrome.storage.local.setAccessLevel;
+        delete chrome.storage.local.setAccessLevel;
+        self.__translatorSw._resetStorageAccessStateForTest();
+      `, swSessionId, true);
+
+      // Privileged call LIST_MODELS must fail with KEY_ACCESS_UNAVAILABLE
+      const failDeleteRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'LIST_MODELS'
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+      assert.equal(failDeleteRes?.error?.code, 'KEY_ACCESS_UNAVAILABLE', `Expected KEY_ACCESS_UNAVAILABLE on missing method, got ${failDeleteRes?.error?.code}`);
+
+      // TRANSLATE_BATCH must also fail with KEY_ACCESS_UNAVAILABLE
+      const failTranslateRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: { items: [{ id: 't13-del', revision: 0, text: 'hi' }] }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.equal(failTranslateRes?.error?.code, 'KEY_ACCESS_UNAVAILABLE', `Expected KEY_ACCESS_UNAVAILABLE for translate on missing method, got ${failTranslateRes?.error?.code}`);
+
+      // 13e: Restore function -> self-recovers
+      await cdp.evaluate(`
+        chrome.storage.local.setAccessLevel = self.__origSetAccessLevel;
+        delete self.__origSetAccessLevel;
+        self.__translatorSw._resetStorageAccessStateForTest();
+      `, swSessionId, true);
+
+      const okRecoverRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'LIST_MODELS'
+        }, ${popupSenderStr})
+      `, swSessionId, true);
+      assert.ok(okRecoverRes && Array.isArray(okRecoverRes.models) && !okRecoverRes.error, `Expected models array after restoring setAccessLevel, got ${JSON.stringify(okRecoverRes)}`);
+
+      record('T13', 'Fail-closed key & recovery', true, 'Refused with KEY_ACCESS_UNAVAILABLE on throw and missing method, recovered on retry');
     } catch (e) {
       // Clean up monkey-patch if failed
       try {
@@ -1070,7 +1127,7 @@ async function runSingleAttempt() {
         }, {
           frameId: 0,
           url: '${fixtureUrl}',
-          tab: { id: 1, url: '${fixtureUrl}' }
+          tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
 
@@ -1087,7 +1144,7 @@ async function runSingleAttempt() {
         }, {
           frameId: 0,
           url: '${fixtureUrl}',
-          tab: { id: 1, url: '${fixtureUrl}' }
+          tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' }
         })
       `, swSessionId, true);
 
@@ -1117,7 +1174,7 @@ async function runSingleAttempt() {
       const senderStr = JSON.stringify({
         frameId: 0,
         url: fixtureUrl,
-        tab: { id: 1, url: fixtureUrl }
+        tab: { id: fixtureTabId, url: fixtureUrl }
       });
 
       // Batch 1: should succeed immediately
@@ -1180,7 +1237,7 @@ async function runSingleAttempt() {
       const senderStr = JSON.stringify({
         frameId: 0,
         url: fixtureUrl,
-        tab: { id: 1, url: fixtureUrl }
+        tab: { id: fixtureTabId, url: fixtureUrl }
       });
 
       // Dispatch 3 batches in parallel.
@@ -1240,7 +1297,7 @@ async function runSingleAttempt() {
       const senderStr = JSON.stringify({
         frameId: 0,
         url: fixtureUrl,
-        tab: { id: 1, url: fixtureUrl }
+        tab: { id: fixtureTabId, url: fixtureUrl }
       });
 
       // 18a. Monkey-patch chrome.storage.session.set to throw
@@ -1511,6 +1568,11 @@ async function runSingleAttempt() {
       await cdp.send('Runtime.runIfWaitingForDebugger', {}, swSessionId);
       await sleep(150);
 
+      // TEST-ONLY: registry lives in SW memory; re-register after respawn.
+      try {
+        await cdp.evaluate(`self.__translatorSw._registerTestTab(${fixtureTabId}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
+      } catch {}
+
       try {
         await cdp.send('Target.closeTarget', { targetId: popupTarget.targetId });
       } catch {}
@@ -1544,7 +1606,7 @@ async function runSingleAttempt() {
             targetLanguage: 'vi',
             model: '${DEFAULT_MODEL}'
           }
-        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
       `, swSessionId);
 
       assert.ok(t21Batch1 && t21Batch1.results, 'First batch before restart should succeed: ' + JSON.stringify(t21Batch1));
@@ -1574,7 +1636,7 @@ async function runSingleAttempt() {
             targetLanguage: 'vi',
             model: '${DEFAULT_MODEL}'
           }
-        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
       `, swSessionId);
 
       assert.ok(t21Batch2?.error, 'Expected 2nd batch to be rate-limited after restart: ' + JSON.stringify(t21Batch2));
@@ -1594,7 +1656,7 @@ async function runSingleAttempt() {
             targetLanguage: 'vi',
             model: '${DEFAULT_MODEL}'
           }
-        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: 1, url: '${fixtureUrl}' } })
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
       `, swSessionId);
 
       assert.ok(t21Batch3?.results, '3rd batch after window expiration should succeed: ' + JSON.stringify(t21Batch3));
@@ -1910,9 +1972,13 @@ async function runSingleAttempt() {
     // Test 26: Cancel-on-config-change (SAVE_SETTINGS aborts queued / in-flight batches)
     try {
       await cdp.evaluate(`
-        self.__translatorSw._setTestMode(true);
-        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
-      `, swSessionId);
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId, true);
 
       // Set fake server to delay 5s
       fakeServer.clearLog();
@@ -1967,6 +2033,90 @@ async function runSingleAttempt() {
       const cacheSize = await cdp.evaluate('self.__translatorSw.translationCache.size().entries', swSessionId);
       assert.equal(cacheSize, 0, 'Cache must be invalidated upon config change');
 
+      // Verify genuine client abort on fake server
+      let saveAbortedRecorded = false;
+      for (let i = 0; i < 15; i++) {
+        await sleep(100);
+        const l = fakeServer.getLogs();
+        if (l.length >= 1 && l[0].clientAborted) {
+          saveAbortedRecorded = true;
+          break;
+        }
+      }
+      assert.ok(saveAbortedRecorded, 'In-flight provider request must be genuinely aborted by client on SAVE_SETTINGS');
+
+      // Part 2: SET_SITE_ENABLED { enabled: false } aborts mid-flight batch
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestRateLimits(null);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId, true);
+      fakeServer.clearLog();
+      fakeServer.setMode('hold_5s');
+
+      const t26SiteText = '待取消站点禁用文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t26-site-node">${t26SiteText}</h1>';
+      `, fixtureSessionId, false);
+
+      await cdp.evaluate(`
+        window.__t26SitePromise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${newModel}'
+        });
+      `, fixtureSessionId, false);
+
+      // Wait up to 4000ms for request to arrive at fake server
+      let siteReqArrived = false;
+      for (let i = 0; i < 40; i++) {
+        await sleep(100);
+        if (fakeServer.getLogs().length >= 1) {
+          siteReqArrived = true;
+          break;
+        }
+      }
+      assert.ok(siteReqArrived, 'Provider request must arrive at fake server before disable');
+
+      const disableRes = await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: false
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        })()
+      `, swSessionId, true);
+      assert.ok(disableRes && disableRes.ok === true, 'SET_SITE_ENABLED false should return ok');
+
+      const t26SiteRes = await cdp.evaluate('window.__t26SitePromise', fixtureSessionId, true);
+      assert.ok(t26SiteRes && (t26SiteRes.ok === false || t26SiteRes.cancelled || t26SiteRes.error), 'Translation must be aborted on site disabled: ' + JSON.stringify(t26SiteRes));
+
+      // Wait up to 1500ms for client abort to be recorded
+      let siteAbortedRecorded = false;
+      for (let i = 0; i < 15; i++) {
+        await sleep(100);
+        const l = fakeServer.getLogs();
+        if (l.length >= 1 && l[0].clientAborted) {
+          siteAbortedRecorded = true;
+          break;
+        }
+      }
+      assert.ok(siteAbortedRecorded, 'In-flight provider request must be genuinely aborted on site disable');
+
+      // Re-enable site for subsequent tests
+      await cdp.evaluate(`
+        (async () => {
+          return await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        })()
+      `, swSessionId, true);
+
       // Reset fake server mode to normal
       fakeServer.clearLog();
       fakeServer.setMode('normal');
@@ -1983,16 +2133,27 @@ async function runSingleAttempt() {
       assert.ok(t26Subsequent && t26Subsequent.ok === true, 'Subsequent translation with new model should succeed: ' + JSON.stringify(t26Subsequent));
 
       // Verify DOM was patched
-      const patchedTextT26 = await cdp.evaluate('document.getElementById("t26-node").textContent', fixtureSessionId);
-      assert.equal(patchedTextT26, `[vi] ${t26Text}`, 'DOM text must be patched after subsequent translation');
+      const patchedTextT26 = await cdp.evaluate('document.getElementById("t26-site-node").textContent', fixtureSessionId);
+      assert.equal(patchedTextT26, `[vi] ${t26SiteText}`, 'DOM text must be patched after subsequent translation');
 
       // Verify fake server log shows new model
       const logs = fakeServer.getLogs();
       assert.equal(logs.length, 1, 'Provider should be called exactly once for subsequent translation (cache was empty)');
 
-      record('T26', 'Cancel-on-config-change aborts in-flight batch', true, `ABORTED returned, DOM intact, cache invalidated, subsequent ${newModel} passed`);
+      record('T26', 'Cancel-on-config-change aborts in-flight batch', true, `ABORTED returned, clientAborted verified for SAVE_SETTINGS and SET_SITE_ENABLED off, DOM intact, cache invalidated, subsequent ${newModel} passed`);
     } catch (e) {
       record('T26', 'Cancel-on-config-change aborts in-flight batch', false, e.message);
+    } finally {
+      fakeServer.setMode('normal');
+      try {
+        await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' });
+        `, swSessionId, true);
+      } catch {}
     }
 
     // Test 27: Settings migration E2E (v0 without version -> v1 canonical with defaults and key separation)
@@ -2702,6 +2863,143 @@ async function runSingleAttempt() {
       record('T39', 'Browser-close semantics (session wiped, policy = site/default)', false, e.message);
     }
 
+    // Test 40: Queue timer navigation check (abort queued batch when tab navigates, zero phantom provider calls)
+    let tab40Target = null;
+    try {
+      // 1. Create a dedicated real tab on same origin
+      tab40Target = await cdp.send('Target.createTarget', { url: fixtureUrl });
+      let tab40Id = null;
+      for (let retries = 0; retries < 25; retries++) {
+        await sleep(100);
+        const tabsAfter = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => t.id !== fixtureTabId);
+        if (match?.id) {
+          tab40Id = match.id;
+          break;
+        }
+      }
+      assert.ok(tab40Id, 'Tab 40 must be discovered in chrome.tabs');
+
+      // TEST-ONLY: register tab 40 so the queue timer can resolve its URL.
+      try {
+        await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(fixtureUrl)})`, swSessionId);
+      } catch {}
+
+      const attachTab40Res = await cdp.send('Target.attachToTarget', {
+        targetId: tab40Target.targetId,
+        flatten: true
+      });
+      const tab40SessionId = attachTab40Res.sessionId;
+      await cdp.send('Page.enable', {}, tab40SessionId);
+      await cdp.send('Target.activateTarget', { targetId: tab40Target.targetId });
+
+      // 2. Configure tight rate limits: tab maxBatches=1, window=2s
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          self.__translatorSw._setTestRateLimits({
+            tab: { maxBatches: 1, maxSourceCodePoints: 10000 },
+            site: { maxBatches: 10, maxSourceCodePoints: 50000 },
+            windowSeconds: 2
+          });
+          self.__translatorSw._setTestRateWindowSeconds(2);
+          self.__translatorSw._setTestMaxQueue(10);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      // 3. Batch 1 dispatches immediately and consumes tab quota
+      const b1Res = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40-b1', text: '导航测试第一批', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${tab40Id}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.ok(b1Res && Array.isArray(b1Res.results), 'Batch 1 must succeed: ' + JSON.stringify(b1Res));
+      assert.equal(fakeServer.getLogs().length, 1, 'Fake server received Batch 1');
+
+      // 4. Batch 2 is dispatched and gets queued because tab quota is exhausted
+      await cdp.evaluate(`
+        self.__batch2Promise = self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 't40-b2', text: '第二批待导航验证', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${tab40Id}, url: '${fixtureUrl}' } });
+      `, swSessionId, false);
+
+      await sleep(100);
+
+      const queueStatus = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'GET_QUEUE_STATUS',
+          tabId: ${tab40Id}
+        }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+      `, swSessionId, true);
+      assert.equal(queueStatus?.queued, true, 'Batch 2 must be queued');
+
+      // 5. Navigate Tab 40 via CDP Page.navigate to a different path on same origin
+      const navUrl = `${fixtureUrl}?nav=t40`;
+      await cdp.send('Page.navigate', { url: navUrl }, tab40SessionId);
+
+      // TEST-ONLY: mirror the navigation into the registry (covers browsers
+      // where tab.url is not visible without granted host permission).
+      try {
+        await cdp.evaluate(`self.__translatorSw._registerTestTab(${tab40Id}, ${JSON.stringify(navUrl)})`, swSessionId);
+      } catch {}
+
+      // Wait for navigation and queue timer to fire (> window 2000ms)
+      await sleep(2500);
+
+      // 6. Assert provider call count DID NOT increase (no phantom batch dispatched)
+      const logsAfterNav = fakeServer.getLogs();
+      assert.equal(logsAfterNav.length, 1, 'Provider call count must not increase (zero phantom batch dispatched)');
+
+      // 7. Assert Batch 2 received ABORTED with reason 'navigation'
+      const b2Res = await cdp.evaluate('self.__batch2Promise', swSessionId, true);
+      assert.ok(b2Res && b2Res.error, 'Batch 2 must receive error: ' + JSON.stringify(b2Res));
+      assert.equal(b2Res.error.code, 'ABORTED', `Expected ABORTED, got: ${b2Res.error.code}`);
+      assert.equal(b2Res.error.details?.reason, 'navigation', `Expected navigation reason, got: ${b2Res.error.details?.reason}`);
+
+      record('T40', 'Queue timer verifies tab URL on navigation', true, `Batch 2 aborted with reason navigation, provider call count did not increase (no phantom batch)`);
+    } catch (e) {
+      record('T40', 'Queue timer verifies tab URL on navigation', false, e.message);
+    } finally {
+      if (tab40Target?.targetId) {
+        try { await cdp.send('Target.closeTarget', { targetId: tab40Target.targetId }); } catch {}
+      }
+      try { await cdp.send('Target.activateTarget', { targetId: tabTarget.targetId }); } catch {}
+      try {
+        await cdp.evaluate(`
+          (async () => {
+            self.__translatorSw._setTestRateLimits(null);
+            self.__translatorSw._setTestRateWindowSeconds(null);
+            self.__translatorSw._setTestMaxQueue(null);
+            await self.__translatorSw._resetRateStateForTest();
+          })()
+        `, swSessionId);
+      } catch {}
+    }
+
     // Section 5: Batch-count measurement (20-node viewport fixture) under default contract limits
     try {
       const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
@@ -2807,7 +3105,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 40;
+  return allPass && testResults.length >= 41;
 }
 
 async function main() {

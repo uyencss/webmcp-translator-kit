@@ -512,3 +512,94 @@ test('Case 10: Privacy invariant: error objects never contain item text', async 
     await fake.stop();
   }
 });
+
+test('H1 (a): translateBatch times out when body stream stalls after HTTP 200', async () => {
+  const neverEndingStream = new ReadableStream({
+    start() {
+      // Intentionally never calls controller.close() or enqueue()
+    }
+  });
+  const mockFetch = async () => new Response(neverEndingStream, {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const router = createDirect9Router({
+    baseURL: 'http://example.com/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+    timeoutMs: 50,
+    maxTimeoutRetries: 0,
+    fetchImpl: mockFetch
+  });
+
+  const t0 = Date.now();
+  const res = await router.translateBatch({
+    items: [{ id: '1', revision: 0, text: 'hello' }]
+  });
+  const elapsed = Date.now() - t0;
+
+  assert.ok(res.error, 'Expected error response');
+  assert.equal(res.error.code, 'TIMEOUT');
+  assert.ok(elapsed <= 300, `Expected elapsed <= 300ms, got ${elapsed}ms`);
+});
+
+test('H1 (b): listModels times out when body json stalls after HTTP 200', async () => {
+  const neverEndingStream = new ReadableStream({
+    start() {
+      // Intentionally never calls controller.close() or enqueue()
+    }
+  });
+  const mockFetch = async () => new Response(neverEndingStream, {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const router = createDirect9Router({
+    baseURL: 'http://example.com/v1',
+    apiKey: 'test-key',
+    listModelsTimeoutMs: 50,
+    fetchImpl: mockFetch
+  });
+
+  const t0 = Date.now();
+  const res = await router.listModels();
+  const elapsed = Date.now() - t0;
+
+  assert.ok(res.error, 'Expected error response');
+  assert.equal(res.error.code, 'TIMEOUT');
+  assert.ok(elapsed <= 300, `Expected elapsed <= 300ms, got ${elapsed}ms`);
+});
+
+test('H1 (c): translateBatch times out when stream stalls mid-body after initial chunks', async () => {
+  const partialStream = new ReadableStream({
+    start(controller) {
+      // Send opening chunk, then stall forever
+      controller.enqueue(new TextEncoder().encode('{"model":"test-model","choices":[{"message":{"content":"'));
+    }
+  });
+  const mockFetch = async () => new Response(partialStream, {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const router = createDirect9Router({
+    baseURL: 'http://example.com/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+    timeoutMs: 50,
+    maxTimeoutRetries: 0,
+    fetchImpl: mockFetch
+  });
+
+  const t0 = Date.now();
+  const res = await router.translateBatch({
+    items: [{ id: '1', revision: 0, text: 'hello' }]
+  });
+  const elapsed = Date.now() - t0;
+
+  assert.ok(res.error, 'Expected error response');
+  assert.equal(res.error.code, 'TIMEOUT');
+  assert.ok(elapsed <= 300, `Expected elapsed <= 300ms, got ${elapsed}ms`);
+});
+

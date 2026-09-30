@@ -86,7 +86,24 @@ export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089
       req.on('end', () => {
         let parsedBody = null;
         try { parsedBody = JSON.parse(body); } catch {}
-        requestLog.push({ time: Date.now(), mode, length: body.length, body: parsedBody, rawBody: body });
+        const logEntry = {
+          time: Date.now(),
+          mode,
+          length: body.length,
+          body: parsedBody,
+          rawBody: body,
+          clientAborted: false
+        };
+        requestLog.push(logEntry);
+
+        const onClientClose = () => {
+          if (!res.writableEnded) {
+            logEntry.clientAborted = true;
+          }
+        };
+        req.on('close', onClientClose);
+        if (req.socket) req.socket.on('close', onClientClose);
+        res.on('close', onClientClose);
 
         if (mode === 'destroy_socket_mid_batch') {
           res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });

@@ -196,3 +196,54 @@ test('cache: clear resets all entries and byte count', () => {
   assert.equal(cache.get('k1'), undefined);
   assert.equal(cache.get('k2'), undefined);
 });
+
+test('M1: 32-bit FNV-1a cache collision prevention with source verification', () => {
+  // Offline discovered collision pair for FNV-1a 32-bit:
+  // hashText('vr5c7lrg9g') === '3065017d'
+  // hashText('4nqmqum3fx') === '3065017d'
+  const textA = 'vr5c7lrg9g';
+  const textB = '4nqmqum3fx';
+
+  assert.equal(hashText(textA), '3065017d');
+  assert.equal(hashText(textB), '3065017d');
+  assert.notEqual(textA, textB, 'Precondition: textA and textB must be distinct strings');
+
+  const ctx = {
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    baseURL: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    promptVersion: PROMPT_VERSION
+  };
+
+  const keyA = cacheKey(textA, ctx);
+  const keyB = cacheKey(textB, ctx);
+  assert.equal(keyA, keyB, 'Precondition: keyA and keyB collide to identical cache key');
+
+  const cache = createTranslationCache({ ttlMs: 600000 });
+
+  // 1. Set translation for textA
+  const okA = cache.set(keyA, '[vi] Bản dịch A', textA);
+  assert.equal(okA, true);
+
+  // 2. Query cache for textB using colliding key -> must MISS (not return translation of A)
+  const hitB = cache.get(keyB, textB);
+  assert.equal(hitB, undefined, 'Cache get for colliding textB must be a miss due to source mismatch');
+
+  // 3. Query cache for textA -> must HIT
+  const hitA = cache.get(keyA, textA);
+  assert.equal(hitA, '[vi] Bản dịch A', 'Cache get for original textA must hit');
+
+  // 4. Overwrite entry with translation for textB
+  const okB = cache.set(keyB, '[vi] Bản dịch B', textB);
+  assert.equal(okB, true);
+
+  // 5. Query for textB -> must HIT with textB translation
+  const hitBAfter = cache.get(keyB, textB);
+  assert.equal(hitBAfter, '[vi] Bản dịch B', 'Cache get for textB after overwrite must return textB translation');
+
+  // 6. Query for textA -> must now MISS
+  const hitAAfter = cache.get(keyA, textA);
+  assert.equal(hitAAfter, undefined, 'Cache get for textA after overwrite must miss');
+});
+

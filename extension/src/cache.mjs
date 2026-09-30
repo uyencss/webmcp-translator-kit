@@ -56,15 +56,30 @@ export function createTranslationCache({
     return countUtf8Bytes(JSON.stringify(val ?? ''));
   }
 
-  function get(key, customNow) {
+  function get(key, sourceOrCustomNow, customNow) {
     const entry = entries.get(key);
     if (!entry) return undefined;
 
-    const currentTime = typeof customNow === 'number' ? customNow : now();
+    let source = undefined;
+    let currentTime = now();
+    if (typeof sourceOrCustomNow === 'number') {
+      currentTime = sourceOrCustomNow;
+    } else if (typeof sourceOrCustomNow === 'string') {
+      source = normalizeSourceText(sourceOrCustomNow);
+      if (typeof customNow === 'number') {
+        currentTime = customNow;
+      }
+    }
+
     // Boundary: now - createdAt >= ttlMs indicates expired
     if (currentTime - entry.createdAt >= ttlMs) {
       entries.delete(key);
       currentBytes = Math.max(0, currentBytes - entry.size);
+      return undefined;
+    }
+
+    // 32-bit hash collision verification: if source is provided, entry.source must match
+    if (source !== undefined && entry.source !== undefined && entry.source !== source) {
       return undefined;
     }
 
@@ -74,8 +89,17 @@ export function createTranslationCache({
     return entry.value;
   }
 
-  function set(key, value, customNow) {
-    const currentTime = typeof customNow === 'number' ? customNow : now();
+  function set(key, value, sourceOrCustomNow, customNow) {
+    let source = undefined;
+    let currentTime = now();
+    if (typeof sourceOrCustomNow === 'number') {
+      currentTime = sourceOrCustomNow;
+    } else if (typeof sourceOrCustomNow === 'string') {
+      source = normalizeSourceText(sourceOrCustomNow);
+      if (typeof customNow === 'number') {
+        currentTime = customNow;
+      }
+    }
     const entrySize = getEntrySize(value);
 
     // If a single entry exceeds the entire byte budget, do not cache (skip without crash)
@@ -106,6 +130,7 @@ export function createTranslationCache({
 
     entries.set(key, {
       value,
+      source,
       size: entrySize,
       createdAt: currentTime
     });

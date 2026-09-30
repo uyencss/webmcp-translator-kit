@@ -25,6 +25,7 @@ import {
 import {
   createTranslationCache,
   cacheKey,
+  normalizeSourceText,
   PROMPT_VERSION
 } from './cache.mjs';
 import {
@@ -70,6 +71,8 @@ function _resetStorageAccessStateForTest() {
 // TEST-ONLY State & Hooks (Dormant and unread in production)
 // ============================================================================
 let _testMode = false;
+// TEST-ONLY: simulated tab ids -> url (harness registers fixture/tab40 ids).
+const testTabRegistry = new Map();
 const _testPermissionOverrides = new Map();
 let _testRateLimits = null;
 let _testRateWindowSeconds = null;
@@ -95,6 +98,17 @@ function _setTestPermission(origin, granted) {
   }
 }
 
+/**
+ * TEST-ONLY: register a simulated tab so policy checks (queue timer,
+ * SET_TAB_OVERRIDE) can resolve it without a real chrome tab. Read only when
+ * _testMode is on; production never populates the registry.
+ */
+function _registerTestTab(tabId, url) {
+  const id = Number(tabId);
+  if (!Number.isFinite(id)) return;
+  testTabRegistry.set(id, String(url));
+}
+
 function _setTestRateLimits(limits) {
   if (!_testMode) return;
   _testRateLimits = limits;
@@ -112,6 +126,10 @@ function _setTestMaxQueue(n) {
 
 async function _resetRateStateForTest() {
   if (!_testMode) return;
+  for (const [tId, active] of activeBatchControllers.entries()) {
+    try { active.controller.abort('test_reset'); } catch {}
+  }
+  activeBatchControllers.clear();
   for (const queue of tabQueues.values()) {
     for (const entry of queue) {
       if (entry.timer) clearTimeout(entry.timer);
@@ -176,10 +194,26 @@ function createTypedError(code, message, retryable, details = {}) {
 // 4.1 Storage Access Level: TRUSTED_CONTEXTS fail-closed gate
 async function ensureStorageAccess() {
   if (storageAccessInitialized && !storageAccessFailed) return;
+
+  if (
+    typeof chrome === 'undefined' ||
+    !chrome.storage ||
+    !chrome.storage.local ||
+    typeof chrome.storage.local.setAccessLevel !== 'function'
+  ) {
+    currentAccessLevel = 'UNAVAILABLE';
+    storageAccessInitialized = false;
+    storageAccessFailed = true;
+    throw createTypedError(
+      'KEY_ACCESS_UNAVAILABLE',
+      'chrome.storage.local.setAccessLevel is not available',
+      false,
+      { reason: 'setAccessLevel method missing' }
+    );
+  }
+
   try {
-    if (chrome.storage && chrome.storage.local && typeof chrome.storage.local.setAccessLevel === 'function') {
-      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-    }
+    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
     currentAccessLevel = 'TRUSTED_CONTEXTS';
     storageAccessInitialized = true;
     storageAccessFailed = false;
@@ -297,6 +331,7 @@ function runInAdmissionChain(fn) {
 const DEFAULT_MAX_QUEUE_PER_TAB = 8;
 const tabQueues = new Map(); // tabId -> Array of QueueEntry
 const tabEpochs = new Map(); // tabId -> current epoch number
+const activeBatchControllers = new Map(); // tabId -> { controller, revision, epoch, origin }
 
 function getMaxQueue() {
   return (_testMode && typeof _testMaxQueue === 'number') ? _testMaxQueue : DEFAULT_MAX_QUEUE_PER_TAB;
@@ -376,6 +411,26 @@ async function checkAdmission(tabId, origin, cost) {
   });
 }
 
+/**
+ * Resolve tab existence + current URL for policy checks. Production reads
+ * chrome.tabs. In test mode a TEST-ONLY registry covers simulated tab ids
+ * (harness); ids unknown to both sources are treated as closed.
+ */
+async function resolveTabPolicy(tabId) {
+  let real = null;
+  try {
+    if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.get === 'function') {
+      real = await chrome.tabs.get(tabId);
+    }
+  } catch {
+    real = null;
+  }
+  const testUrl = _testMode && testTabRegistry.has(Number(tabId)) ? testTabRegistry.get(Number(tabId)) : null;
+  if (!real && testUrl === null) return null;
+  const url = (real && typeof real.url === 'string' && real.url) || testUrl || null;
+  return { exists: true, url };
+}
+
 function scheduleQueueEntry(entry, delayMs) {
   if (entry.timer) {
     clearTimeout(entry.timer);
@@ -390,6 +445,32 @@ function scheduleQueueEntry(entry, delayMs) {
 
     try {
       await ensureStorageAccess();
+
+      // Navigation & tab existence check before consent & admission
+      const tabInfo = await resolveTabPolicy(entry.tabId);
+
+      if (!tabInfo) {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'ABORTED',
+          'Tab was closed while translation was queued',
+          false,
+          { reason: 'tab_closed' }
+        ));
+        return;
+      }
+
+      if (entry.tabUrl && tabInfo.url && tabInfo.url !== entry.tabUrl) {
+        removeEntryFromQueue(entry);
+        entry.resolve(createTypedError(
+          'ABORTED',
+          'Tab navigated while translation was queued',
+          false,
+          { reason: 'navigation', originalUrl: entry.tabUrl, currentUrl: tabInfo.url }
+        ));
+        return;
+      }
+
       const sites = await getStoredSites();
       const tabOverrides = await getStoredTabOverrides();
       const siteEnabled = Boolean(sites[entry.origin]);
@@ -448,7 +529,10 @@ function scheduleQueueEntry(entry, delayMs) {
               payload: entry.payload,
               misses: entry.misses,
               hits: entry.hits,
-              batchConfigRevision: entry.configRevision
+              batchConfigRevision: entry.configRevision,
+              tabId: entry.tabId,
+              epoch: entry.epoch,
+              origin: entry.origin
             })
           : await translateBatch(entry.payload || {});
         entry.resolve(result);
@@ -481,12 +565,17 @@ function scheduleQueueEntry(entry, delayMs) {
 // Clean tab overrides and rate queues/state when tab closes
 async function handleTabRemoved(tabId) {
   try {
+    const active = activeBatchControllers.get(tabId);
+    if (active) {
+      try { active.controller.abort('tab_closed'); } catch {}
+      activeBatchControllers.delete(tabId);
+    }
     tabEpochs.delete(tabId);
     const queue = tabQueues.get(tabId);
     if (queue && queue.length > 0) {
       for (const entry of queue) {
         if (entry.timer) clearTimeout(entry.timer);
-        entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'Tab closed' }));
+        entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'tab_closed' }));
       }
       tabQueues.delete(tabId);
     }
@@ -577,6 +666,35 @@ async function reconcilePermissions() {
         registrations: diff.updatedRegistrations
       });
 
+      // 4. Abort active translation batches and queue entries for revoked origins
+      for (const [tId, active] of activeBatchControllers.entries()) {
+        if (active.origin && !grantedOrigins.has(active.origin)) {
+          try { active.controller.abort('permission_revoked'); } catch {}
+          activeBatchControllers.delete(tId);
+        }
+      }
+      for (const [tId, queue] of tabQueues.entries()) {
+        const remaining = [];
+        for (const entry of queue) {
+          if (entry.origin && !grantedOrigins.has(entry.origin)) {
+            if (entry.timer) clearTimeout(entry.timer);
+            entry.resolve(createTypedError(
+              'PERMISSION_REQUIRED',
+              'Host permission not granted for site origin',
+              false,
+              { origin: entry.origin, permissionType: 'host' }
+            ));
+          } else {
+            remaining.push(entry);
+          }
+        }
+        if (remaining.length > 0) {
+          tabQueues.set(tId, remaining);
+        } else {
+          tabQueues.delete(tId);
+        }
+      }
+
       return { ok: true, diff };
     } finally {
       _reconcilePromise = null;
@@ -635,10 +753,40 @@ async function translateBatch(input = {}) {
 }
 
 // Semaphore-guarded batch translation with cache population & original-order merging
-async function executeBatchTranslation({ payload = {}, misses = [], hits = [], batchConfigRevision = configRevision }) {
+async function executeBatchTranslation({
+  payload = {},
+  misses = [],
+  hits = [],
+  batchConfigRevision = configRevision,
+  tabId = null,
+  epoch = undefined,
+  origin = null
+}) {
+  let controller = null;
+  if (typeof tabId === 'number') {
+    const prev = activeBatchControllers.get(tabId);
+    if (prev) {
+      try { prev.controller.abort('superseded'); } catch {}
+    }
+    controller = new AbortController();
+    activeBatchControllers.set(tabId, {
+      controller,
+      revision: batchConfigRevision,
+      epoch,
+      origin
+    });
+  }
+
+  const signal = controller ? controller.signal : payload.signal;
+
   try {
     await providerSemaphore.acquire();
   } catch (err) {
+    if (controller && typeof tabId === 'number') {
+      if (activeBatchControllers.get(tabId)?.controller === controller) {
+        activeBatchControllers.delete(tabId);
+      }
+    }
     if (err?.code === 'TIMEOUT') {
       return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
         maxConcurrentRequests: providerSemaphore.getMaxConcurrency()
@@ -647,14 +795,56 @@ async function executeBatchTranslation({ payload = {}, misses = [], hits = [], b
     throw err;
   }
 
+  // After acquiring semaphore: check if already aborted while waiting for permit
+  if (signal?.aborted) {
+    providerSemaphore.release();
+    if (controller && typeof tabId === 'number') {
+      if (activeBatchControllers.get(tabId)?.controller === controller) {
+        activeBatchControllers.delete(tabId);
+      }
+    }
+    return createTypedError('ABORTED', 'Operation aborted before acquiring provider slot', false, {
+      reason: signal.reason ? String(signal.reason) : 'aborted'
+    });
+  }
+
+  // Pre-dispatch guard: verify configuration revision and tab epoch
+  if (
+    batchConfigRevision !== configRevision ||
+    (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId))
+  ) {
+    providerSemaphore.release();
+    if (controller && typeof tabId === 'number') {
+      if (activeBatchControllers.get(tabId)?.controller === controller) {
+        activeBatchControllers.delete(tabId);
+      }
+    }
+    return {
+      ...createTypedError(
+        'ABORTED',
+        'Translation batch discarded due to configuration change',
+        false,
+        { batchConfigRevision, currentConfigRevision: configRevision }
+      ),
+      configRevision: batchConfigRevision,
+      currentConfigRevision: configRevision
+    };
+  }
+
   let providerRes;
   try {
     providerRes = await translateBatch({
       ...payload,
-      items: misses.map((m) => m.item)
+      items: misses.map((m) => m.item),
+      signal
     });
   } finally {
     providerSemaphore.release();
+    if (controller && typeof tabId === 'number') {
+      if (activeBatchControllers.get(tabId)?.controller === controller) {
+        activeBatchControllers.delete(tabId);
+      }
+    }
   }
 
   if (providerRes && providerRes.error) {
@@ -682,12 +872,22 @@ async function executeBatchTranslation({ payload = {}, misses = [], hits = [], b
     };
   }
 
+  // If tab epoch changed while batch was in-flight, do NOT cache and abort
+  if (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId)) {
+    return createTypedError(
+      'ABORTED',
+      'Translation batch discarded due to epoch change',
+      false,
+      { reason: 'epoch_changed' }
+    );
+  }
+
   // Populate cache for newly translated items
   for (let i = 0; i < misses.length; i++) {
     const miss = misses[i];
     const res = providerRes.results.find((r) => r && r.id === miss.item.id) || providerRes.results[i];
     if (res && typeof res.text === 'string') {
-      translationCache.set(miss.key, res.text);
+      translationCache.set(miss.key, res.text, normalizeSourceText(miss.item?.text));
     }
   }
 
@@ -789,6 +989,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (configChanged) {
           configRevision++;
           translationCache.clear();
+          // Abort active in-flight requests across all tabs
+          for (const [tabId, active] of activeBatchControllers.entries()) {
+            try { active.controller.abort('config_changed'); } catch {}
+          }
+          activeBatchControllers.clear();
           // Abort all queued batches across all tabs
           for (const [tabId, queue] of tabQueues.entries()) {
             for (const entry of queue) {
@@ -844,6 +1049,10 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await ensureStorageAccess();
         configRevision++;
         translationCache.clear();
+        for (const [tabId, active] of activeBatchControllers.entries()) {
+          try { active.controller.abort('credential_changed'); } catch {}
+        }
+        activeBatchControllers.clear();
         for (const [tabId, queue] of tabQueues.entries()) {
           for (const entry of queue) {
             if (entry.timer) clearTimeout(entry.timer);
@@ -872,6 +1081,10 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await ensureStorageAccess();
         configRevision++;
         translationCache.clear();
+        for (const [tabId, active] of activeBatchControllers.entries()) {
+          try { active.controller.abort('credential_changed'); } catch {}
+        }
+        activeBatchControllers.clear();
         for (const [tabId, queue] of tabQueues.entries()) {
           for (const entry of queue) {
             if (entry.timer) clearTimeout(entry.timer);
@@ -1033,6 +1246,35 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           delete sites[normOrigin];
           delete registrations[normOrigin];
           await chrome.storage.local.set({ sites, registrations });
+
+          // Abort active translation batches and purge queue entries for this origin
+          for (const [tId, active] of activeBatchControllers.entries()) {
+            if (active.origin === normOrigin) {
+              try { active.controller.abort('site_disabled'); } catch {}
+              activeBatchControllers.delete(tId);
+            }
+          }
+          for (const [tId, queue] of tabQueues.entries()) {
+            const remaining = [];
+            for (const entry of queue) {
+              if (entry.origin === normOrigin) {
+                if (entry.timer) clearTimeout(entry.timer);
+                entry.resolve(createTypedError(
+                  'OPT_IN_REQUIRED',
+                  'Translation is disabled for site',
+                  false,
+                  { origin: normOrigin, effectiveConsent: 'off' }
+                ));
+              } else {
+                remaining.push(entry);
+              }
+            }
+            if (remaining.length > 0) {
+              tabQueues.set(tId, remaining);
+            } else {
+              tabQueues.delete(tId);
+            }
+          }
         }
         return { ok: true };
       }
@@ -1150,15 +1392,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             permissionType: 'host'
           });
         }
-        if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.get === 'function') {
-          try {
-            await chrome.tabs.get(tabId);
-          } catch {
-            return createTypedError('INVALID_SCHEMA', `Tab ${tabId} does not exist`, false, {
-              tabId,
-              reason: 'Tab not found'
-            });
-          }
+        const tabInfo = await resolveTabPolicy(tabId);
+        if (!tabInfo) {
+          return createTypedError('INVALID_SCHEMA', `Tab ${tabId} does not exist`, false, {
+            tabId,
+            reason: 'Tab not found'
+          });
         }
         const val = message.value;
         if (val !== 'on' && val !== 'off' && val !== null && val !== undefined) {
@@ -1178,6 +1417,28 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           delete tabOverrides[key];
         }
         await chrome.storage.session.set({ tab_overrides: tabOverrides });
+
+        if (val === 'off') {
+          const active = activeBatchControllers.get(tabId);
+          if (active) {
+            try { active.controller.abort('tab_disabled'); } catch {}
+            activeBatchControllers.delete(tabId);
+          }
+          const queue = tabQueues.get(tabId);
+          if (queue && queue.length > 0) {
+            for (const entry of queue) {
+              if (entry.timer) clearTimeout(entry.timer);
+              entry.resolve(createTypedError(
+                'OPT_IN_REQUIRED',
+                'Translation disabled by tab override',
+                false,
+                { tabId, effectiveConsent: 'off' }
+              ));
+            }
+            tabQueues.delete(tabId);
+          }
+        }
+
         return { ok: true };
       }
 
@@ -1193,20 +1454,37 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const nextEpoch = typeof message.epoch === 'number' ? message.epoch : ((tabEpochs.get(tabId) || 0) + 1);
         tabEpochs.set(tabId, nextEpoch);
 
+        const active = activeBatchControllers.get(tabId);
+        if (active) {
+          if (typeof message.epoch !== 'number' || active.epoch === undefined || active.epoch < nextEpoch) {
+            try { active.controller.abort('cancel_pending'); } catch {}
+            activeBatchControllers.delete(tabId);
+          }
+        }
+
         const queue = tabQueues.get(tabId);
         let cancelledCount = 0;
         if (queue && queue.length > 0) {
-          cancelledCount = queue.length;
+          const remaining = [];
           for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Pending translation cancelled by new epoch',
-              false,
-              { reason: 'Pending translation cancelled by new epoch' }
-            ));
+            if (typeof message.epoch !== 'number' || entry.epoch === undefined || entry.epoch < nextEpoch) {
+              cancelledCount++;
+              if (entry.timer) clearTimeout(entry.timer);
+              entry.resolve(createTypedError(
+                'ABORTED',
+                'Pending translation cancelled by new epoch',
+                false,
+                { reason: 'Pending translation cancelled by new epoch' }
+              ));
+            } else {
+              remaining.push(entry);
+            }
           }
-          tabQueues.delete(tabId);
+          if (remaining.length > 0) {
+            tabQueues.set(tabId, remaining);
+          } else {
+            tabQueues.delete(tabId);
+          }
         }
         return { ok: true, cancelled: cancelledCount };
       }
@@ -1306,8 +1584,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
+          const normText = normalizeSourceText(it?.text);
           const key = cacheKey(it, cacheContext);
-          const cachedText = translationCache.get(key);
+          const cachedText = translationCache.get(key, normText);
           if (cachedText !== undefined) {
             hits.push({
               index: i,
@@ -1351,6 +1630,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const totalCodePoints = misses.reduce((sum, m) => sum + countCodePoints(m.item?.text), 0);
         const cost = { batches: 1, codePoints: totalCodePoints };
 
+        const reqEpoch = typeof message.epoch === 'number' ? message.epoch : (tabEpochs.get(sender.tab.id) || 0);
+        if (!tabEpochs.has(sender.tab.id)) {
+          tabEpochs.set(sender.tab.id, reqEpoch);
+        }
+
         // 7. Admission check inside mutex (throws typed RATE_STATE_UNAVAILABLE on storage failure)
         const admission = await checkAdmission(sender.tab.id, origin, cost);
 
@@ -1366,16 +1650,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             return admission.rateLimitedError;
           }
 
-          const reqEpoch = typeof message.epoch === 'number' ? message.epoch : (tabEpochs.get(sender.tab.id) || 0);
-          if (!tabEpochs.has(sender.tab.id)) {
-            tabEpochs.set(sender.tab.id, reqEpoch);
-          }
-
           // Enqueue and defer response
           return new Promise((resolve, reject) => {
             const entry = {
               id: 'req_' + Math.random().toString(36).slice(2),
               tabId,
+              tabUrl: senderRawUrl,
               origin,
               epoch: reqEpoch,
               configRevision: batchConfigRevision,
@@ -1401,7 +1681,10 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           payload: message.payload || {},
           misses,
           hits,
-          batchConfigRevision
+          batchConfigRevision,
+          tabId: sender.tab.id,
+          epoch: reqEpoch,
+          origin
         });
       }
 
@@ -1448,6 +1731,7 @@ self.__translatorSw = {
   _resetStorageAccessStateForTest,
   _setTestMode,
   _setTestPermission,
+  _registerTestTab,
   _setTestRateLimits,
   _setTestRateWindowSeconds,
   _setTestMaxQueue,

@@ -117,8 +117,12 @@ export function createDirect9Router(config = {}) {
       return { models: cachedModels };
     }
 
+    let timeoutTriggered = false;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), listModelsTimeoutMs);
+    const timeoutId = setTimeout(() => {
+      timeoutTriggered = true;
+      try { controller.abort(); } catch {}
+    }, listModelsTimeoutMs);
 
     try {
       const url = `${baseURL}/models`;
@@ -130,8 +134,6 @@ export function createDirect9Router(config = {}) {
         },
         signal: controller.signal
       });
-
-      clearTimeout(timeoutId);
 
       if (!resp.ok) {
         if (resp.status === 401) {
@@ -153,12 +155,62 @@ export function createDirect9Router(config = {}) {
       }
 
       let json;
-      try {
-        json = await resp.json();
-      } catch {
-        return createTypedError('INVALID_SCHEMA', 'Invalid JSON from provider', false, {
-          schemaErrors: ['Failed to parse JSON response']
-        });
+      if (resp.body && typeof resp.body.getReader === 'function') {
+        const reader = resp.body.getReader();
+        const onStreamAbort = () => {
+          try { reader.cancel(controller.signal.reason); } catch {}
+        };
+        if (controller.signal.aborted) {
+          onStreamAbort();
+        } else {
+          controller.signal.addEventListener('abort', onStreamAbort, { once: true });
+        }
+        const chunks = [];
+        try {
+          while (true) {
+            if (controller.signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+            const { done, value } = await reader.read();
+            if (controller.signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+            if (done) break;
+            chunks.push(value);
+          }
+        } finally {
+          controller.signal.removeEventListener('abort', onStreamAbort);
+        }
+        let totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const rawText = new TextDecoder().decode(merged);
+        try {
+          json = JSON.parse(rawText);
+        } catch {
+          return createTypedError('INVALID_SCHEMA', 'Invalid JSON from provider', false, {
+            schemaErrors: ['Failed to parse JSON response']
+          });
+        }
+      } else if (typeof resp.json === 'function') {
+        try {
+          json = await Promise.race([
+            resp.json(),
+            new Promise((_, reject) => {
+              if (controller.signal.aborted) reject(new DOMException('Aborted', 'AbortError'));
+              controller.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+            })
+          ]);
+        } catch (e) {
+          if (timeoutTriggered || controller.signal.aborted || e?.name === 'AbortError' || e?.name === 'TimeoutError') {
+            return createTypedError('TIMEOUT', `listModels timed out after ${listModelsTimeoutMs}ms`, false, {
+              timeoutMs: listModelsTimeoutMs
+            });
+          }
+          return createTypedError('INVALID_SCHEMA', 'Invalid JSON from provider', false, {
+            schemaErrors: ['Failed to parse JSON response']
+          });
+        }
       }
 
       let rawModels = [];
@@ -190,8 +242,7 @@ export function createDirect9Router(config = {}) {
 
       return { models };
     } catch (err) {
-      clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
+      if (timeoutTriggered || controller.signal.aborted || err.name === 'AbortError' || err.name === 'TimeoutError') {
         return createTypedError('TIMEOUT', `listModels timed out after ${listModelsTimeoutMs}ms`, false, {
           timeoutMs: listModelsTimeoutMs
         });
@@ -199,6 +250,8 @@ export function createDirect9Router(config = {}) {
       return createTypedError('NETWORK', err && err.message ? String(err.message) : 'Network error during listModels', true, {
         reason: err && err.message ? String(err.message) : 'Network error'
       });
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -327,11 +380,6 @@ export function createDirect9Router(config = {}) {
           body: requestBody,
           signal: internalController.signal
         });
-
-        clearTimeout(timeoutId);
-        if (signal) {
-          signal.removeEventListener('abort', onCallerAbort);
-        }
 
         if (signal?.aborted || callerAborted) {
           return createTypedError('ABORTED', 'Operation aborted by caller', false, {
@@ -481,27 +529,46 @@ export function createDirect9Router(config = {}) {
         let rawText = '';
         if (resp.body && typeof resp.body.getReader === 'function') {
           const reader = resp.body.getReader();
+          const onStreamAbort = () => {
+            try { reader.cancel(internalController.signal.reason); } catch {}
+          };
+          if (internalController.signal.aborted) {
+            onStreamAbort();
+          } else {
+            internalController.signal.addEventListener('abort', onStreamAbort, { once: true });
+          }
+
           const chunks = [];
           let totalBytesReceived = 0;
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            totalBytesReceived += value.length;
-            if (totalBytesReceived > batchConfig.maxResponseBytes) {
-              try {
-                internalController.abort();
-              } catch {}
-              const err = createTypedError('CAP_EXCEEDED', `Response body exceeded limit of ${batchConfig.maxResponseBytes} bytes`, false, {
-                capType: 'responseBytes',
-                limit: batchConfig.maxResponseBytes,
-                actual: totalBytesReceived
-              });
-              err.elapsedMs = now() - batchStart;
-              err.model = targetModel;
-              return err;
+          try {
+            while (true) {
+              if (internalController.signal.aborted) {
+                throw new DOMException('The operation was aborted', 'AbortError');
+              }
+              const { done, value } = await reader.read();
+              if (internalController.signal.aborted) {
+                throw new DOMException('The operation was aborted', 'AbortError');
+              }
+              if (done) break;
+              totalBytesReceived += value.length;
+              if (totalBytesReceived > batchConfig.maxResponseBytes) {
+                try {
+                  internalController.abort();
+                } catch {}
+                const err = createTypedError('CAP_EXCEEDED', `Response body exceeded limit of ${batchConfig.maxResponseBytes} bytes`, false, {
+                  capType: 'responseBytes',
+                  limit: batchConfig.maxResponseBytes,
+                  actual: totalBytesReceived
+                });
+                err.elapsedMs = now() - batchStart;
+                err.model = targetModel;
+                return err;
+              }
+              chunks.push(value);
             }
-            chunks.push(value);
+          } finally {
+            internalController.signal.removeEventListener('abort', onStreamAbort);
           }
 
           const merged = new Uint8Array(totalBytesReceived);
@@ -512,7 +579,13 @@ export function createDirect9Router(config = {}) {
           }
           rawText = new TextDecoder().decode(merged);
         } else if (typeof resp.text === 'function') {
-          rawText = await resp.text();
+          rawText = await Promise.race([
+            resp.text(),
+            new Promise((_, reject) => {
+              if (internalController.signal.aborted) reject(new DOMException('Aborted', 'AbortError'));
+              internalController.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+            })
+          ]);
           const byteLen = countUtf8Bytes(rawText);
           if (byteLen > batchConfig.maxResponseBytes) {
             const err = createTypedError('CAP_EXCEEDED', `Response body exceeded limit of ${batchConfig.maxResponseBytes} bytes`, false, {
@@ -632,18 +705,13 @@ export function createDirect9Router(config = {}) {
           elapsedMs
         };
       } catch (err) {
-        clearTimeout(timeoutId);
-        if (signal) {
-          signal.removeEventListener('abort', onCallerAbort);
-        }
-
         if (signal?.aborted || callerAborted) {
           return createTypedError('ABORTED', 'Operation aborted by caller', false, {
             reason: signal?.reason ? String(signal.reason) : 'Caller aborted'
           });
         }
 
-        if (timeoutTriggered || err.name === 'AbortError') {
+        if (timeoutTriggered || err.name === 'AbortError' || err.name === 'TimeoutError') {
           lastErrorResult = createTypedError('TIMEOUT', `Request timed out after ${timeoutMs}ms`, false, {
             timeoutMs
           });
@@ -681,6 +749,11 @@ export function createDirect9Router(config = {}) {
           continue;
         }
         return lastErrorResult;
+      } finally {
+        clearTimeout(timeoutId);
+        if (signal) {
+          signal.removeEventListener('abort', onCallerAbort);
+        }
       }
     }
   }

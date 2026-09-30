@@ -25,6 +25,7 @@
   const restoreKept = new Map();
 
   let isTranslating = false;
+  let activeRunToken = 0;
   let lastTranslateStatus = {
     state: 'idle',
     totalCollected: 0,
@@ -457,6 +458,8 @@
   async function executeTranslation(settings = {}) {
     if (isTranslating && !settings.force) return { alreadyRunning: true };
     isTranslating = true;
+    const runToken = ++activeRunToken;
+    const finishRun = () => { if (activeRunToken === runToken) isTranslating = false; };
     epoch++;
     const currentEpoch = epoch;
     const startTime = Date.now();
@@ -490,7 +493,7 @@
 
       if (items.length === 0) {
         const elapsedMs = Date.now() - startTime;
-        isTranslating = false;
+        finishRun();
         lastTranslateStatus.state = 'done';
         lastTranslateStatus.elapsedMs = elapsedMs;
         return { ok: true, collected: 0, applied: 0, failed: 0, model: targetModel, elapsedMs };
@@ -551,6 +554,7 @@
       await Promise.all(workers);
 
       if (epoch !== currentEpoch && !runAborted) {
+        finishRun();
         return { cancelled: true };
       }
 
@@ -565,7 +569,7 @@
       if ((totalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'Tất cả các chunk đều thất bại' };
-        isTranslating = false;
+        finishRun();
         return {
           ok: false,
           error: lastTranslateStatus.error,
@@ -579,7 +583,7 @@
 
       lastTranslateStatus.state = 'done';
       lastTranslateStatus.error = null;
-      isTranslating = false;
+      finishRun();
       return {
         ok: true,
         collected: items.length,
@@ -590,7 +594,7 @@
       };
     } catch (err) {
       if (epoch === currentEpoch) {
-        isTranslating = false;
+        finishRun();
         const elapsedMs = Date.now() - startTime;
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = { code: 'INTERNAL', message: err && err.message ? String(err.message) : 'Translation failed' };
