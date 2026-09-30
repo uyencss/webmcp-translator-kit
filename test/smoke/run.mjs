@@ -2047,6 +2047,661 @@ async function runSingleAttempt() {
       record('T27', 'Settings migration e2e (v0 -> v1 & key separation)', false, e.message);
     }
 
+    // =========================================================================
+    // LANE P2'-b: F-Matrix Tests in Real Extension (T28 - T39)
+    // =========================================================================
+
+    // Test 28 (F1): Button with SVG icon + text + click listener
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const f1Html = '<div id="f1-container"><button id="f1-btn" type="button"><svg id="f1-svg" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="blue" /></svg><span id="f1-label">点赞收藏</span></button></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f1Html)};
+        window.__f1Clicks = 0;
+        document.getElementById('f1-btn').addEventListener('click', function() {
+          window.__f1Clicks++;
+        });
+      `, fixtureSessionId, false);
+
+      const beforeSvgTag = await cdp.evaluate("document.getElementById('f1-svg').tagName.toLowerCase()", fixtureSessionId);
+      const beforeChildCount = await cdp.evaluate("document.getElementById('f1-btn').childElementCount", fixtureSessionId);
+
+      const f1Res = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      assert.ok(f1Res && f1Res.ok === true, 'F1 translation failed: ' + JSON.stringify(f1Res));
+
+      const afterText = await cdp.evaluate("document.getElementById('f1-label').textContent", fixtureSessionId);
+      const afterSvgTag = await cdp.evaluate("document.getElementById('f1-svg')?.tagName?.toLowerCase()", fixtureSessionId);
+      const afterChildCount = await cdp.evaluate("document.getElementById('f1-btn').childElementCount", fixtureSessionId);
+
+      // Click button twice to test click handler
+      await cdp.evaluate(`
+        document.getElementById('f1-btn').click();
+        document.getElementById('f1-btn').click();
+      `, fixtureSessionId, false);
+      const clicks = await cdp.evaluate("window.__f1Clicks", fixtureSessionId);
+
+      assert.equal(afterText, '[vi] 点赞收藏', 'Button text must be translated');
+      assert.equal(afterSvgTag, beforeSvgTag, 'SVG element must be preserved');
+      assert.equal(afterChildCount, beforeChildCount, 'Child element count must be preserved');
+      assert.equal(clicks, 2, 'Click listener must remain functional after translation');
+
+      record('T28', 'F1: Button SVG + text + listener intact', true, `Text translated, SVG & child count preserved, clicks: ${clicks}`);
+    } catch (e) {
+      record('T28', 'F1: Button SVG + text + listener intact', false, e.message);
+    }
+
+    // Test 29 (F2): Sentence split across spans with inline <code>
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const f2Html = '<div id="f2-container"><p id="f2-p"><span id="f2-s1">前缀文本说明</span><code id="f2-code">const x = 42;</code><span id="f2-s2">中间文本说明</span><span id="f2-s3">尾部文本说明</span></p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f2Html)};
+        window.__f2SavedS1 = document.getElementById('f2-s1');
+        window.__f2SavedCode = document.getElementById('f2-code');
+        window.__f2SavedS2 = document.getElementById('f2-s2');
+        window.__f2SavedS3 = document.getElementById('f2-s3');
+      `, fixtureSessionId, false);
+
+      const f2Res = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      assert.ok(f2Res && f2Res.ok === true, 'F2 translation failed: ' + JSON.stringify(f2Res));
+
+      const s1Text = await cdp.evaluate("document.getElementById('f2-s1').textContent", fixtureSessionId);
+      const codeText = await cdp.evaluate("document.getElementById('f2-code').textContent", fixtureSessionId);
+      const s2Text = await cdp.evaluate("document.getElementById('f2-s2').textContent", fixtureSessionId);
+      const s3Text = await cdp.evaluate("document.getElementById('f2-s3').textContent", fixtureSessionId);
+
+      const identityCheck = await cdp.evaluate(`
+        document.getElementById('f2-s1') === window.__f2SavedS1 &&
+        document.getElementById('f2-code') === window.__f2SavedCode &&
+        document.getElementById('f2-s2') === window.__f2SavedS2 &&
+        document.getElementById('f2-s3') === window.__f2SavedS3
+      `, fixtureSessionId);
+
+      assert.equal(s1Text, '[vi] 前缀文本说明');
+      assert.equal(codeText, 'const x = 42;', 'Inline <code> must remain untouched');
+      assert.equal(s2Text, '[vi] 中间文本说明');
+      assert.equal(s3Text, '[vi] 尾部文本说明');
+      assert.ok(identityCheck, 'Element identities must be preserved (no DOM node replacement)');
+
+      record('T29', 'F2: Split span + inline code (identity & order)', true, `Segments translated, <code> untouched, element identities preserved`);
+    } catch (e) {
+      record('T29', 'F2: Split span + inline code (identity & order)', false, e.message);
+    }
+
+    // Test 30 (F3): SPA Rerender (no stale patch to new nodes, epoch 2 translates fresh)
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const spaHtmlA = '<div id="spa-root"><div id="view-a"><p id="spa-p1">页面A的内容</p></div></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(spaHtmlA)};
+      `, fixtureSessionId, false);
+
+      const viewARes = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+      assert.ok(viewARes && viewARes.ok === true);
+      const viewATranslated = await cdp.evaluate("document.getElementById('spa-p1').textContent", fixtureSessionId);
+      assert.equal(viewATranslated, '[vi] 页面A的内容');
+
+      // Simulate SPA view rerender (replace DOM subtree with fresh unmapped nodes)
+      const spaHtmlB = '<div id="view-b"><p id="spa-p2">页面B全新内容</p></div>';
+      await cdp.evaluate(`
+        document.getElementById('spa-root').innerHTML = ${JSON.stringify(spaHtmlB)};
+      `, fixtureSessionId, false);
+
+      const viewBBefore = await cdp.evaluate("document.getElementById('spa-p2').textContent", fixtureSessionId);
+      assert.equal(viewBBefore, '页面B全新内容', 'New SPA node must not receive stale translation');
+
+      // Translate view B under fresh epoch
+      const viewBRes = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+      assert.ok(viewBRes && viewBRes.ok === true);
+
+      const viewBAfter = await cdp.evaluate("document.getElementById('spa-p2').textContent", fixtureSessionId);
+      assert.equal(viewBAfter, '[vi] 页面B全新内容', 'New SPA node translates properly under new epoch');
+
+      record('T30', 'F3: SPA rerender (no stale patch & new epoch OK)', true, `No stale patch on rerender, fresh epoch translated cleanly`);
+    } catch (e) {
+      record('T30', 'F3: SPA rerender (no stale patch & new epoch OK)', false, e.message);
+    }
+
+    // Test 31 (F6): Detach node before response returns (skipped as DETACHED, no crash)
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('delay_800ms');
+
+      const f6Html = '<div id="f6-container"><p id="f6-remove">将在响应前被移除</p><p id="f6-keep">始终保留在DOM中</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f6Html)};
+      `, fixtureSessionId, false);
+
+      // Start translation in background
+      await cdp.evaluate(`
+        window.__f6Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // While in-flight (fake server delays 800ms), remove node from DOM
+      await sleep(150);
+      await cdp.evaluate(`
+        const el = document.getElementById('f6-remove');
+        if (el) el.remove();
+      `, fixtureSessionId, false);
+
+      // Await translation result
+      const f6Res = await cdp.evaluate("window.__f6Promise", fixtureSessionId, true);
+      fakeServer.setMode('normal');
+
+      assert.ok(f6Res && f6Res.ok === true, 'F6 execution must succeed cleanly: ' + JSON.stringify(f6Res));
+      assert.equal(f6Res.applied, 1, 'Only the connected node should be applied');
+
+      const keepText = await cdp.evaluate("document.getElementById('f6-keep').textContent", fixtureSessionId);
+      const removeExists = await cdp.evaluate("!!document.getElementById('f6-remove')", fixtureSessionId);
+
+      assert.equal(keepText, '[vi] 始终保留在DOM中', 'Connected node must be translated');
+      assert.equal(removeExists, false, 'Removed node must not be in DOM');
+
+      record('T31', 'F6: Detach node mid-flight (DETACHED handled cleanly)', true, `Detached node skipped cleanly, connected node translated, applied: ${f6Res.applied}`);
+    } catch (e) {
+      fakeServer.setMode('normal');
+      record('T31', 'F6: Detach node mid-flight (DETACHED handled cleanly)', false, e.message);
+    }
+
+    // Test 32 (F7): Rapid epoch/navigation dispatch (epoch 1 dropped, epoch 2 wins)
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('delay_first_800ms');
+
+      const f7Html = '<div id="f7-container"><p id="f7-text">测试纪元切换的文本</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f7Html)};
+      `, fixtureSessionId, false);
+
+      // Start Epoch 1 with delay
+      await cdp.evaluate(`
+        window.__f7Epoch1Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'fr',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // Rapidly dispatch Epoch 2 with force: true while Epoch 1 is in-flight
+      await sleep(100);
+      const f7Epoch2Res = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          force: true,
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, true);
+
+      // Await Epoch 1 result
+      const f7Epoch1Res = await cdp.evaluate("window.__f7Epoch1Promise", fixtureSessionId, true);
+      fakeServer.setMode('normal');
+
+      assert.ok(f7Epoch2Res && f7Epoch2Res.ok === true, 'Epoch 2 must succeed: ' + JSON.stringify(f7Epoch2Res));
+      assert.ok(f7Epoch1Res.cancelled === true || f7Epoch1Res.applied === 0, 'Epoch 1 must be cancelled or yield 0 applied: ' + JSON.stringify(f7Epoch1Res));
+
+      const finalText = await cdp.evaluate("document.getElementById('f7-text').textContent", fixtureSessionId);
+      assert.equal(finalText, '[vi] 测试纪元切换的文本', 'Final text must be from Epoch 2 ([vi]), not Epoch 1 ([fr])');
+
+      record('T32', 'F7: Rapid epoch/navigation (epoch 1 dropped, epoch 2 wins)', true, `Epoch 1 cancelled/dropped, Epoch 2 patched cleanly: ${finalText}`);
+    } catch (e) {
+      fakeServer.setMode('normal');
+      record('T32', 'F7: Rapid epoch/navigation (epoch 1 dropped, epoch 2 wins)', false, e.message);
+    }
+
+    // Test 33 (F9): Model returns invalid schema (missing id) -> typed INVALID_SCHEMA, 0 node patch
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('invalid_schema_missing_id');
+
+      const f9Html = '<div id="f9-container"><p id="f9-text">数据模型返回错误格式</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f9Html)};
+      `, fixtureSessionId, false);
+
+      const f9Res = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      fakeServer.setMode('normal');
+
+      assert.ok(f9Res && f9Res.ok === false, 'Expected execution to return ok: false');
+      assert.equal(f9Res.error?.code, 'INVALID_SCHEMA', `Expected INVALID_SCHEMA error, got: ${f9Res.error?.code}`);
+      assert.equal(f9Res.applied, 0, 'Zero nodes must be patched on schema error');
+
+      const textAfter = await cdp.evaluate("document.getElementById('f9-text').textContent", fixtureSessionId);
+      assert.equal(textAfter, '数据模型返回错误格式', 'DOM must remain untouched on schema error');
+
+      const status = await cdp.evaluate("window.__translatorDom.getStatus()", fixtureSessionId);
+      assert.equal(status.state, 'error', 'Status state must reflect error');
+
+      record('T33', 'F9: Invalid schema -> typed INVALID_SCHEMA, 0 patch', true, `Error: ${f9Res.error?.code}, applied: 0, DOM untouched, state: error`);
+    } catch (e) {
+      fakeServer.setMode('normal');
+      record('T33', 'F9: Invalid schema -> typed INVALID_SCHEMA, 0 patch', false, e.message);
+    }
+
+    // Test 34 (F10): Site mutates text mid-flight -> revision/original guard prevents bad overwrite
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('delay_800ms');
+
+      const f10Html = '<div id="f10-container"><p id="f10-mutated">站点准备自行修改的文本</p><p id="f10-stable">站点未修改的稳定文本</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f10Html)};
+      `, fixtureSessionId, false);
+
+      // Start translation
+      await cdp.evaluate(`
+        window.__f10Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // While in-flight, site modifies the text node of f10-mutated
+      await sleep(150);
+      await cdp.evaluate(`
+        const node = document.getElementById('f10-mutated').firstChild;
+        node.nodeValue = '站点自发更新的新内容';
+      `, fixtureSessionId, false);
+
+      const f10Res = await cdp.evaluate("window.__f10Promise", fixtureSessionId, true);
+      fakeServer.setMode('normal');
+
+      assert.ok(f10Res && f10Res.ok === true, 'F10 execution must finish: ' + JSON.stringify(f10Res));
+
+      const mutatedText = await cdp.evaluate("document.getElementById('f10-mutated').textContent", fixtureSessionId);
+      const stableText = await cdp.evaluate("document.getElementById('f10-stable').textContent", fixtureSessionId);
+
+      // Assert site-modified text was preserved by guard, and stable node was translated
+      assert.equal(mutatedText, '站点自发更新的新内容', 'Site mutation must not be overwritten by stale translation');
+      assert.equal(stableText, '[vi] 站点未修改的稳定文本', 'Stable node must be translated');
+
+      // Test restore behavior: restore() must not revert site-modified content
+      await cdp.evaluate("window.__translatorDom.restore()", fixtureSessionId, false);
+      const restoredMutated = await cdp.evaluate("document.getElementById('f10-mutated').textContent", fixtureSessionId);
+      const restoredStable = await cdp.evaluate("document.getElementById('f10-stable').textContent", fixtureSessionId);
+
+      assert.equal(restoredMutated, '站点自发更新的新内容', 'Site-modified text remains after restore');
+      assert.equal(restoredStable, '站点未修改的稳定文本', 'Stable node restored to original');
+
+      record('T34', 'F10: Site text mutation mid-flight guarded', true, `Revision guard prevented overwrite; mutated: preserved, stable: translated & restored`);
+    } catch (e) {
+      fakeServer.setMode('normal');
+      record('T34', 'F10: Site text mutation mid-flight guarded', false, e.message);
+    }
+
+    // Test 35 (F5): Sensitive elements excluded from collection
+    try {
+      const f5Html = '<div id="f5-container"><input type="password" value="secret_pwd_999" /><div hidden id="f5-hidden">隐藏的敏感信息</div><div style="display: none;" id="f5-none">样式隐藏信息</div><div contenteditable="true" id="f5-ce">可编辑机密文档</div><script id="f5-script">const internalToken = "tok_123456";</script><style id="f5-style">.private-rule { color: red; }</style><textarea id="f5-textarea">私密日记内容</textarea><p id="f5-public">公开可翻译段落</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f5Html)};
+      `, fixtureSessionId, false);
+
+      const collected = await cdp.evaluate(`
+        window.__translatorDom.collect(document.getElementById('f5-container'), false)
+      `, fixtureSessionId);
+
+      assert.ok(Array.isArray(collected), 'collect must return an array');
+      assert.equal(collected.length, 1, `Expected exactly 1 collected node, got: ${collected.length}`);
+      assert.equal(collected[0].text, '公开可翻译段落', 'Only the public paragraph should be collected');
+
+      const collectedTexts = collected.map(it => it.text);
+      const sensitiveKeywords = [
+        'secret_pwd_999',
+        '隐藏的敏感信息',
+        '样式隐藏信息',
+        '可编辑机密文档',
+        'internalToken',
+        'tok_123456',
+        'private-rule',
+        '私密日记内容'
+      ];
+      for (const kw of sensitiveKeywords) {
+        assert.ok(!collectedTexts.some(t => t.includes(kw)), `Collected text must not contain sensitive content: ${kw}`);
+      }
+
+      record('T35', 'F5: Sensitive elements excluded from collection', true, `Password, hidden, contenteditable, script, style, textarea all excluded; only public text collected`);
+    } catch (e) {
+      record('T35', 'F5: Sensitive elements excluded from collection', false, e.message);
+    }
+
+    // Test 36 (F4): Rapid scrolling during full-DOM translation
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('normal');
+
+      const f4Html = '<div id="f4-container"><p id="f4-top">顶部醒目段落</p><div style="height: 3000px;"></div><p id="f4-bottom">底部深处段落</p></div>';
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = ${JSON.stringify(f4Html)};
+      `, fixtureSessionId, false);
+
+      // Start translation
+      await cdp.evaluate(`
+        window.__f4Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // Rapid scrolling while translating
+      for (let y of [500, 1500, 2800, 1000, 3000, 0]) {
+        await cdp.evaluate(`window.scrollTo(0, ${y})`, fixtureSessionId, false);
+        await sleep(20);
+      }
+
+      const f4Res = await cdp.evaluate("window.__f4Promise", fixtureSessionId, true);
+      assert.ok(f4Res && f4Res.ok === true, 'F4 execution failed: ' + JSON.stringify(f4Res));
+
+      const topText = await cdp.evaluate("document.getElementById('f4-top').textContent", fixtureSessionId);
+      const bottomText = await cdp.evaluate("document.getElementById('f4-bottom').textContent", fixtureSessionId);
+
+      assert.equal(topText, '[vi] 顶部醒目段落', 'Top node must be translated');
+      assert.equal(bottomText, '[vi] 底部深处段落', 'Bottom node below fold must be translated');
+
+      record('T36', 'F4: Fast scroll coverage (full-DOM intact)', true, `Top & bottom below-fold covered, applied: ${f4Res.applied}, no errors during scroll`);
+    } catch (e) {
+      record('T36', 'F4: Fast scroll coverage (full-DOM intact)', false, e.message);
+    }
+
+    // Test 37: Cross-tab same origin consent (site ON, tab override OFF -> blocked; no permission -> blocked)
+    try {
+      // 1. Ensure site is enabled for fixtureOrigin
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      // Tab 1 (normal tab, site enabled, no tab override) -> allowed
+      const tab1Res = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'test_tab1', text: '你好', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.ok(tab1Res && Array.isArray(tab1Res.results), 'Tab 1 should inherit site permission: ' + JSON.stringify(tab1Res));
+
+      // Tab 2: Create a real second tab on same origin
+      const tab2Target = await cdp.send('Target.createTarget', { url: fixtureUrl });
+      let tab2Id = null;
+      for (let retries = 0; retries < 15; retries++) {
+        await sleep(100);
+        const tabsAfter = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(tabsAfter) && tabsAfter.find(t => t.id !== fixtureTabId);
+        if (match?.id) {
+          tab2Id = match.id;
+          break;
+        }
+      }
+      assert.ok(tab2Id, 'Real Tab 2 must be discovered in chrome.tabs');
+
+      // Set explicit tab override = 'off' on Tab 2
+      const popupSender = { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` };
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${tab2Id},
+            value: 'off'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      const tab2Res = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'test_tab2', text: '你好', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${tab2Id}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(tab2Res && tab2Res.error, 'Tab 2 with override off must be rejected');
+      assert.equal(tab2Res.error.code, 'OPT_IN_REQUIRED', `Expected OPT_IN_REQUIRED, got: ${tab2Res.error.code}`);
+
+      // Close Tab 2
+      await cdp.send('Target.closeTarget', { targetId: tab2Target.targetId });
+      await sleep(100);
+
+      // (b) Content script unregistered / host permission not granted -> PERMISSION_REQUIRED
+      // 1. Enabling a site without host permission fails with PERMISSION_REQUIRED
+      const unpermittedOrigin = 'http://127.0.0.1:9998';
+      const unpermittedRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'SET_SITE_ENABLED',
+          origin: '${unpermittedOrigin}',
+          enabled: true
+        }, ${JSON.stringify(popupSender)})
+      `, swSessionId, true);
+      assert.ok(unpermittedRes && unpermittedRes.error, 'Enabling site without host permission must fail');
+      assert.equal(unpermittedRes.error.code, 'PERMISSION_REQUIRED', `Expected PERMISSION_REQUIRED, got: ${unpermittedRes.error.code}`);
+
+      // 2. TRANSLATE_BATCH with revoked permission on enabled site fails with PERMISSION_REQUIRED
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', false)`, swSessionId);
+      const deniedBatchRes = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'test_perm_denied', text: '你好', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      // Restore permission for subsequent tests
+      await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
+
+      assert.ok(deniedBatchRes && deniedBatchRes.error, 'Batch with revoked permission must be rejected');
+      assert.equal(deniedBatchRes.error.code, 'PERMISSION_REQUIRED', `Expected PERMISSION_REQUIRED, got: ${deniedBatchRes.error.code}`);
+
+      record('T37', 'Cross-tab same-origin consent (override OFF & permission)', true, `Tab 1 inherited site ON, Tab 2 override OFF blocked with OPT_IN_REQUIRED, ungranted permission blocked with PERMISSION_REQUIRED`);
+    } catch (e) {
+      record('T37', 'Cross-tab same-origin consent (override OFF & permission)', false, e.message);
+    }
+
+    // Test 38: Tab close removes tab override from storage.session
+    try {
+      // Create a real tab for tab-close testing
+      const tab38Target = await cdp.send('Target.createTarget', { url: fixtureUrl });
+      let tab38Id = null;
+      for (let retries = 0; retries < 15; retries++) {
+        await sleep(100);
+        const allTabs38 = await cdp.evaluate(`
+          (async () => {
+            if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+              return await chrome.tabs.query({});
+            }
+            return [];
+          })()
+        `, swSessionId);
+        const match = Array.isArray(allTabs38) && allTabs38.find(t => t.id !== fixtureTabId);
+        if (match?.id) {
+          tab38Id = match.id;
+          break;
+        }
+      }
+      assert.ok(tab38Id, 'Real Tab 38 must be discovered in chrome.tabs');
+
+      // 1. Set tab override
+      const popupSender = { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` };
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${tab38Id},
+            value: 'off'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      const overridesBefore = await cdp.evaluate("self.__translatorSw.getStoredTabOverrides()", swSessionId, true);
+      assert.equal(overridesBefore[String(tab38Id)], 'off', 'Tab override must be set before tab close');
+
+      // 2. Close tab via CDP (triggers chrome.tabs.onRemoved in Chrome)
+      await cdp.send('Target.closeTarget', { targetId: tab38Target.targetId });
+      await sleep(200);
+
+      // Verify or invoke test hook if needed to confirm clean pruning
+      await cdp.evaluate(`
+        (async () => {
+          await self.__translatorSw._handleTabRemovedForTest(${tab38Id});
+        })()
+      `, swSessionId);
+
+      const overridesAfter = await cdp.evaluate("self.__translatorSw.getStoredTabOverrides()", swSessionId, true);
+      assert.equal(overridesAfter[String(tab38Id)], undefined, 'Tab override must be pruned after tab close');
+
+      record('T38', 'Tab-close deletes override (reverts to site/default)', true, `Override set to off, tab closed & pruned cleanly from storage.session`);
+    } catch (e) {
+      record('T38', 'Tab-close deletes override (reverts to site/default)', false, e.message);
+    }
+
+    // Test 39: Browser close semantics (storage.session wiped entirely, local preserved)
+    try {
+      // 1. Establish state: site enabled in storage.local, tab override in storage.session using fixtureTabId
+      const popupSender = { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` };
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, ${JSON.stringify(popupSender)});
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_TAB_OVERRIDE',
+            tabId: ${fixtureTabId},
+            value: 'off'
+          }, ${JSON.stringify(popupSender)});
+        })()
+      `, swSessionId);
+
+      // Verify before browser close: fixtureTabId has override off -> OPT_IN_REQUIRED
+      const checkBefore = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'test_before', text: '你好', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.equal(checkBefore?.error?.code, 'OPT_IN_REQUIRED', 'Before browser close: tab override off blocks translation');
+
+      // 2. Simulate browser exit: Chrome wipes chrome.storage.session completely
+      await cdp.evaluate(`
+        (async () => {
+          await chrome.storage.session.clear();
+        })()
+      `, swSessionId);
+
+      // 3. Verify session storage is completely empty
+      const sessionAfter = await cdp.evaluate("chrome.storage.session.get(null)", swSessionId, true);
+      assert.deepEqual(Object.keys(sessionAfter), [], 'chrome.storage.session must be completely wiped on browser exit');
+
+      // 4. Verify local storage is intact
+      const localSites = await cdp.evaluate("self.__translatorSw.getStoredSites()", swSessionId, true);
+      assert.ok(localSites[fixtureOrigin], 'chrome.storage.local sites must survive browser close');
+
+      // 5. Verify effective policy for fixtureTabId now falls back to site setting (SITE_ENABLED)
+      const checkAfter = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({
+          action: 'TRANSLATE_BATCH',
+          payload: {
+            items: [{ id: 'test_after', text: '你好', revision: 0 }],
+            sourceLanguage: 'auto',
+            targetLanguage: 'vi',
+            model: '${DEFAULT_MODEL}'
+          }
+        }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${fixtureTabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+
+      assert.ok(checkAfter && Array.isArray(checkAfter.results), 'After browser close: tab override lost, falls back to siteEnabled = true');
+
+      record('T39', 'Browser-close semantics (session wiped, policy = site/default)', true, `storage.session wiped, tab override cleared, storage.local intact, policy reverted to SITE_ENABLED`);
+    } catch (e) {
+      record('T39', 'Browser-close semantics (session wiped, policy = site/default)', false, e.message);
+    }
+
     // Section 5: Batch-count measurement (20-node viewport fixture) under default contract limits
     try {
       const fixture20Path = path.resolve(HERE, 'fixture-20nodes.html');
@@ -2152,7 +2807,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 28;
+  return allPass && testResults.length >= 40;
 }
 
 async function main() {

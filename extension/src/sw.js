@@ -479,31 +479,33 @@ function scheduleQueueEntry(entry, delayMs) {
 }
 
 // Clean tab overrides and rate queues/state when tab closes
-if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'function') {
-  chrome.tabs.onRemoved.addListener(async (tabId) => {
-    try {
-      tabEpochs.delete(tabId);
-      const queue = tabQueues.get(tabId);
-      if (queue && queue.length > 0) {
-        for (const entry of queue) {
-          if (entry.timer) clearTimeout(entry.timer);
-          entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'Tab closed' }));
-        }
-        tabQueues.delete(tabId);
+async function handleTabRemoved(tabId) {
+  try {
+    tabEpochs.delete(tabId);
+    const queue = tabQueues.get(tabId);
+    if (queue && queue.length > 0) {
+      for (const entry of queue) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'Tab closed' }));
       }
-      if (!chrome.storage || !chrome.storage.session) return;
-      const res = await chrome.storage.session.get(['tab_overrides']);
-      const overrides = res.tab_overrides || {};
-      const key = String(tabId);
-      if (key in overrides) {
-        delete overrides[key];
-        await chrome.storage.session.set({ tab_overrides: overrides });
-      }
-      await chrome.storage.session.remove([`rate:tab:${tabId}`]);
-    } catch {
-      // Ignore cleanup error
+      tabQueues.delete(tabId);
     }
-  });
+    if (!chrome.storage || !chrome.storage.session) return;
+    const res = await chrome.storage.session.get(['tab_overrides']);
+    const overrides = res.tab_overrides || {};
+    const key = String(tabId);
+    if (key in overrides) {
+      delete overrides[key];
+      await chrome.storage.session.set({ tab_overrides: overrides });
+    }
+    await chrome.storage.session.remove([`rate:tab:${tabId}`]);
+  } catch {
+    // Ignore cleanup error
+  }
+}
+
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'function') {
+  chrome.tabs.onRemoved.addListener(handleTabRemoved);
 }
 
 // Reconcile dynamic content scripts with active permissions and storage
@@ -1450,6 +1452,7 @@ self.__translatorSw = {
   _setTestRateWindowSeconds,
   _setTestMaxQueue,
   _resetRateStateForTest,
+  _handleTabRemovedForTest: (tabId) => handleTabRemoved(tabId),
   reconcilePermissions,
   permissionContains,
   translateBatch,

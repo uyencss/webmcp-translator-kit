@@ -174,6 +174,73 @@ export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089
           }
         }
 
+        if (mode === 'invalid_schema_missing_id') {
+          const responseContent = JSON.stringify({
+            results: [
+              { revision: 0, text: '[vi] missing id' }
+            ]
+          });
+          res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'chatcmpl-fake-' + Date.now(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: 'ag/gemini-3.1-pro-low',
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: 'assistant',
+                  content: responseContent
+                },
+                finish_reason: 'stop'
+              }
+            ]
+          }));
+          return;
+        }
+
+        if (mode === 'invalid_schema_duplicate_id') {
+          const responseContent = JSON.stringify({
+            results: [
+              { id: 'T1', revision: 0, text: '[vi] item 1' },
+              { id: 'T1', revision: 0, text: '[vi] item 1 duplicate' }
+            ]
+          });
+          res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'chatcmpl-fake-' + Date.now(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: 'ag/gemini-3.1-pro-low',
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: 'assistant',
+                  content: responseContent
+                },
+                finish_reason: 'stop'
+              }
+            ]
+          }));
+          return;
+        }
+
+        if (mode === 'delay_first_800ms') {
+          mode = 'normal';
+          setTimeout(respondNormal, 800);
+          return;
+        }
+
+        const delayMatch = typeof mode === 'string' && mode.match(/^delay_(\d+)(ms|s)?$/);
+        if (delayMatch) {
+          const val = parseInt(delayMatch[1], 10);
+          const ms = delayMatch[2] === 's' ? val * 1000 : val;
+          setTimeout(respondNormal, ms);
+          return;
+        }
+
         if (mode === 'hold_5s' || mode === 'delay_5s') {
           setTimeout(respondNormal, 5000);
           return;

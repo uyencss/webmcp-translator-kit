@@ -455,7 +455,7 @@
 
   // Full page translate execution
   async function executeTranslation(settings = {}) {
-    if (isTranslating) return { alreadyRunning: true };
+    if (isTranslating && !settings.force) return { alreadyRunning: true };
     isTranslating = true;
     epoch++;
     const currentEpoch = epoch;
