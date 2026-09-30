@@ -268,6 +268,17 @@
     return chunks;
   }
 
+  function isDroppedOnRestartError(errMessage) {
+    if (!errMessage || typeof errMessage !== 'string') return false;
+    const msg = errMessage.toLowerCase();
+    return (
+      msg.includes('message port closed') ||
+      msg.includes('receiving end does not exist') ||
+      msg.includes('port closed') ||
+      msg.includes('service worker')
+    );
+  }
+
   // Send chunk wrapper
   function sendChunk(items, settings = {}, chunkEpoch = epoch) {
     return new Promise((resolve) => {
@@ -284,7 +295,19 @@
         },
         (response) => {
           if (chrome.runtime.lastError) {
-            resolve({ error: { code: 'NETWORK', message: chrome.runtime.lastError.message } });
+            const lastErrMsg = chrome.runtime.lastError.message || '';
+            if (isDroppedOnRestartError(lastErrMsg)) {
+              resolve({
+                error: {
+                  code: 'DROPPED_ON_RESTART',
+                  message: 'Yêu cầu bị mất khi service worker khởi động lại',
+                  retryable: false,
+                  details: { originalError: lastErrMsg }
+                }
+              });
+            } else {
+              resolve({ error: { code: 'NETWORK', message: lastErrMsg } });
+            }
           } else {
             resolve(response);
           }
@@ -303,6 +326,7 @@
     }
 
     const NON_RETRYABLE_CODES = new Set([
+      'DROPPED_ON_RESTART',
       'OPT_IN_REQUIRED',
       'SITE_NOT_ALLOWED',
       'PERMISSION_REQUIRED',
@@ -438,10 +462,11 @@
       let totalFailed = 0;
       let chunksDone = 0;
       let lastError = null;
+      let runAborted = false;
 
       async function worker() {
         while (nextIndex < chunks.length) {
-          if (epoch !== currentEpoch) break;
+          if (epoch !== currentEpoch || runAborted) break;
           const chunkIdx = nextIndex++;
           const chunk = chunks[chunkIdx];
 
@@ -456,7 +481,7 @@
             currentEpoch
           );
 
-          if (epoch !== currentEpoch) break;
+          if (epoch !== currentEpoch || runAborted) break;
 
           totalApplied += chunkRes.applied || 0;
           totalFailed += chunkRes.failed || 0;
@@ -470,6 +495,7 @@
           lastTranslateStatus.chunksDone = chunksDone;
 
           if (chunkRes.fatal) {
+            runAborted = true;
             break;
           }
         }
@@ -493,14 +519,15 @@
       lastTranslateStatus.totalFailed = totalFailed;
       lastTranslateStatus.model = targetModel;
 
-      // Chỉ khi applied === 0 && failed > 0 mới trả về dạng lỗi để popup hiện lỗi
-      if (totalApplied === 0 && totalFailed > 0) {
+      // Nếu có lỗi fatal (như DROPPED_ON_RESTART) hoặc toàn bộ chunk thất bại -> trả về lỗi
+      if ((totalApplied === 0 && totalFailed > 0) || (lastError && lastError.code === 'DROPPED_ON_RESTART') || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'Tất cả các chunk đều thất bại' };
         isTranslating = false;
         return {
+          ok: false,
           error: lastTranslateStatus.error,
-          applied: 0,
+          applied: totalApplied,
           failed: totalFailed,
           model: targetModel,
           elapsedMs
@@ -526,7 +553,7 @@
         lastTranslateStatus.error = { code: 'INTERNAL', message: err && err.message ? String(err.message) : 'Translation failed' };
         lastTranslateStatus.model = targetModel;
         lastTranslateStatus.elapsedMs = elapsedMs;
-        return { error: lastTranslateStatus.error, applied: 0, failed: 0, model: targetModel, elapsedMs };
+        return { ok: false, error: lastTranslateStatus.error, applied: 0, failed: 0, model: targetModel, elapsedMs };
       }
       return { cancelled: true };
     }

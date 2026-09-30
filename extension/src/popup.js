@@ -322,6 +322,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const err = data.error || {};
       const code = err.code || 'ERROR';
       const msg = err.message || '';
+      if (code === 'DROPPED_ON_RESTART') {
+        return `[DROPPED_ON_RESTART] Yêu cầu bị mất khi service worker khởi động lại — bấm "Dịch trang này" để chạy lại`;
+      }
       if (code === 'TIMEOUT') {
         return `[TIMEOUT] ${msg || 'Quá thời gian chờ'}${metaStr}. Gợi ý: chọn model nhanh hơn hoặc giảm số node.`;
       }

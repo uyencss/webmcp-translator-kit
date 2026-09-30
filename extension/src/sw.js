@@ -22,10 +22,31 @@ import {
   resolveLimits,
   DEFAULT_RATE_LIMITS
 } from './rate-limits.mjs';
+import {
+  createTranslationCache,
+  cacheKey,
+  PROMPT_VERSION
+} from './cache.mjs';
+import {
+  createSemaphore
+} from './semaphore.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
 const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
+
+// Ephemeral In-Memory Cache: destroyed upon SW restart per contract/lifecycle.md §3.3
+const translationCache = createTranslationCache({
+  ttlMs: 600000,
+  maxEntries: 500,
+  maxSizeBytes: 2097152
+});
+
+// Provider concurrency semaphore = 2
+const providerSemaphore = createSemaphore({
+  maxConcurrency: 2,
+  timeoutMs: 120000
+});
 
 let storageAccessInitialized = false;
 let storageAccessFailed = false;
@@ -409,7 +430,9 @@ function scheduleQueueEntry(entry, delayMs) {
       const admission = await checkAdmission(entry.tabId, entry.origin, entry.cost);
       if (admission.allowed) {
         removeEntryFromQueue(entry);
-        const result = await translateBatch(entry.payload || {});
+        const result = entry.misses
+          ? await executeBatchTranslation({ payload: entry.payload, misses: entry.misses, hits: entry.hits })
+          : await translateBatch(entry.payload || {});
         entry.resolve(result);
         return;
       }
@@ -590,6 +613,70 @@ async function translateBatch(input = {}) {
   return await router.translateBatch(input);
 }
 
+// Semaphore-guarded batch translation with cache population & original-order merging
+async function executeBatchTranslation({ payload = {}, misses = [], hits = [] }) {
+  try {
+    await providerSemaphore.acquire();
+  } catch (err) {
+    if (err?.code === 'TIMEOUT') {
+      return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
+        maxConcurrentRequests: providerSemaphore.getMaxConcurrency()
+      });
+    }
+    throw err;
+  }
+
+  let providerRes;
+  try {
+    providerRes = await translateBatch({
+      ...payload,
+      items: misses.map((m) => m.item)
+    });
+  } finally {
+    providerSemaphore.release();
+  }
+
+  if (providerRes && providerRes.error) {
+    return providerRes;
+  }
+
+  if (!providerRes || !Array.isArray(providerRes.results)) {
+    return providerRes;
+  }
+
+  // Populate cache for newly translated items
+  for (let i = 0; i < misses.length; i++) {
+    const miss = misses[i];
+    const res = providerRes.results.find((r) => r && r.id === miss.item.id) || providerRes.results[i];
+    if (res && typeof res.text === 'string') {
+      translationCache.set(miss.key, res.text);
+    }
+  }
+
+  // Merge hits and misses preserving the exact original order
+  const totalCount = hits.length + misses.length;
+  const merged = new Array(totalCount);
+
+  for (const h of hits) {
+    merged[h.index] = h.result;
+  }
+
+  for (let i = 0; i < misses.length; i++) {
+    const miss = misses[i];
+    const res = providerRes.results.find((r) => r && r.id === miss.item.id) || providerRes.results[i];
+    merged[miss.index] = {
+      id: miss.item.id,
+      revision: miss.item.revision,
+      text: res ? res.text : miss.item.text
+    };
+  }
+
+  return {
+    ...providerRes,
+    results: merged
+  };
+}
+
 // Startup hooks
 if (typeof chrome !== 'undefined' && chrome.runtime) {
   chrome.runtime.onInstalled?.addListener(() => {
@@ -639,6 +726,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
+        translationCache.clear();
         if (message.settings) {
           await chrome.storage.local.set({ settings: message.settings });
           if (message.settings.baseURL) routerConfig.baseURL = message.settings.baseURL;
@@ -654,6 +742,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
+        translationCache.clear();
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
           routerConfig.apiKey = message.key;
@@ -668,6 +757,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
         await ensureStorageAccess();
+        translationCache.clear();
         await chrome.storage.local.remove(['api_key']);
         routerConfig.apiKey = '';
         return { ok: true };
@@ -1047,12 +1137,54 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // 5. Calculate cost (Unicode code points, NOT UTF-16 length)
+        // 5. Cache lookup (after consent & permission, BEFORE rate admission)
+        const storedSettings = await getStoredSettings();
+        const cacheContext = {
+          baseURL: storedSettings.baseURL || '',
+          model: message.payload?.model || storedSettings.model || DEFAULT_MODEL,
+          sourceLanguage: message.payload?.sourceLanguage || 'auto',
+          targetLanguage: message.payload?.targetLanguage || 'vi',
+          promptVersion: PROMPT_VERSION
+        };
+
         const items = message.payload?.items || [];
-        const totalCodePoints = items.reduce((sum, it) => sum + countCodePoints(it?.text), 0);
+        const hits = [];
+        const misses = [];
+
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          const key = cacheKey(it, cacheContext);
+          const cachedText = translationCache.get(key);
+          if (cachedText !== undefined) {
+            hits.push({
+              index: i,
+              result: {
+                id: it.id,
+                revision: it.revision,
+                text: cachedText
+              }
+            });
+          } else {
+            misses.push({
+              index: i,
+              item: it,
+              key
+            });
+          }
+        }
+
+        // Fast path: full cache hit bypasses rate admission & provider calls completely
+        if (misses.length === 0) {
+          return {
+            results: hits.map((h) => h.result)
+          };
+        }
+
+        // 6. Calculate cost on MISSES only (Unicode code points)
+        const totalCodePoints = misses.reduce((sum, m) => sum + countCodePoints(m.item?.text), 0);
         const cost = { batches: 1, codePoints: totalCodePoints };
 
-        // 6. Admission check inside mutex (throws typed RATE_STATE_UNAVAILABLE on storage failure)
+        // 7. Admission check inside mutex (throws typed RATE_STATE_UNAVAILABLE on storage failure)
         const admission = await checkAdmission(sender.tab.id, origin, cost);
 
         if (!admission.allowed) {
@@ -1081,6 +1213,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               epoch: reqEpoch,
               cost,
               payload: message.payload,
+              misses,
+              hits,
               sender,
               resolve,
               reject,
@@ -1092,8 +1226,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // 7. Dispatch batch (payload items only; metadata completely ignored)
-        return await translateBatch(message.payload || {});
+        // 8. Dispatch batch under semaphore concurrency limit 2
+        return await executeBatchTranslation({
+          payload: message.payload || {},
+          misses,
+          hits
+        });
       }
 
       default:
@@ -1155,5 +1293,7 @@ self.__translatorSw = {
   getStoredRegistrations,
   DEFAULT_MODEL,
   TRANSLATE_TIMEOUT_MS,
-  LIST_MODELS_TIMEOUT_MS
+  LIST_MODELS_TIMEOUT_MS,
+  translationCache,
+  providerSemaphore
 };

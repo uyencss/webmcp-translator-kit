@@ -124,45 +124,53 @@ export function createFakeServer(port = 8089) {
           return;
         }
 
-        // Normal mode: parse items from prompt and echo translation
-        try {
-          const payload = JSON.parse(body);
-          const messages = payload.messages || [];
-          const userMsg = messages.find((m) => m.role === 'user');
-          let items = [];
-          if (userMsg && userMsg.content) {
-            items = JSON.parse(userMsg.content);
+        function respondNormal() {
+          try {
+            const payload = JSON.parse(body);
+            const messages = payload.messages || [];
+            const userMsg = messages.find((m) => m.role === 'user');
+            let items = [];
+            if (userMsg && userMsg.content) {
+              items = JSON.parse(userMsg.content);
+            }
+
+            const results = items.map((it) => ({
+              id: it.id,
+              revision: it.revision,
+              text: `[vi] ${it.text}`
+            }));
+
+            const responseContent = JSON.stringify({ results });
+
+            res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              id: 'chatcmpl-fake-' + Date.now(),
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: payload.model || 'do/deepseek-v4.1-flash',
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    content: responseContent
+                  },
+                  finish_reason: 'stop'
+                }
+              ]
+            }));
+          } catch (err) {
+            res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'Invalid request: ' + err.message } }));
           }
-
-          const results = items.map((it) => ({
-            id: it.id,
-            revision: it.revision,
-            text: `[vi] ${it.text}`
-          }));
-
-          const responseContent = JSON.stringify({ results });
-
-          res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            id: 'chatcmpl-fake-' + Date.now(),
-            object: 'chat.completion',
-            created: Math.floor(Date.now() / 1000),
-            model: payload.model || 'do/deepseek-v4.1-flash',
-            choices: [
-              {
-                index: 0,
-                message: {
-                  role: 'assistant',
-                  content: responseContent
-                },
-                finish_reason: 'stop'
-              }
-            ]
-          }));
-        } catch (err) {
-          res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Invalid request: ' + err.message } }));
         }
+
+        if (mode === 'hold_6s') {
+          setTimeout(respondNormal, 6000);
+          return;
+        }
+
+        respondNormal();
       });
       return;
     }
@@ -177,7 +185,9 @@ export function createFakeServer(port = 8089) {
     stop: () => new Promise((resolve) => server.close(resolve)),
     setMode: (m) => { mode = m; },
     getMode: () => mode,
-    clearLog: () => { requestLog = []; }
+    clearLog: () => { requestLog = []; },
+    getLogs: () => [...requestLog],
+    getLog: () => [...requestLog]
   };
 }
 

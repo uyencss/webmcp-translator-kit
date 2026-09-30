@@ -76,12 +76,25 @@ class CdpConnection {
             if (msg.error) rej(new Error('CDP error: ' + JSON.stringify(msg.error)));
             else res(msg.result);
           }
+          if (msg.method === 'Inspector.targetCrashed') {
+            this.rejectSessionCallbacks(msg.sessionId, new Error('The message port closed before a response was received.'));
+          }
           for (const listener of this.eventListeners) {
             listener(msg);
           }
         } catch {}
       };
     });
+  }
+
+  rejectSessionCallbacks(sessionId, err) {
+    if (!sessionId) return;
+    for (const [id, cb] of this.callbacks.entries()) {
+      if (cb.sessionId === sessionId) {
+        this.callbacks.delete(id);
+        cb.reject(err);
+      }
+    }
   }
 
   addEventListener(listener) {
@@ -100,7 +113,8 @@ class CdpConnection {
 
       this.callbacks.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
-        reject: (e) => { clearTimeout(timer); reject(e); }
+        reject: (e) => { clearTimeout(timer); reject(e); },
+        sessionId
       });
 
       const payload = { id, method, params };
@@ -219,7 +233,8 @@ async function runSingleAttempt() {
       targetId: swTarget.targetId,
       flatten: true
     });
-    const swSessionId = attachSwRes.sessionId;
+    let swSessionId = attachSwRes.sessionId;
+    let currentSwTargetId = swTarget.targetId;
     console.log(`Attached to Service Worker targetId=${swTarget.targetId}, sessionId=${swSessionId}`);
 
     // Enable runtime domain on SW and wait briefly for execution context
@@ -299,8 +314,17 @@ async function runSingleAttempt() {
             false
           );
         } catch (err) {
+          const isClosed = err.message && (
+            err.message.includes('closed') ||
+            err.message.includes('crashed') ||
+            err.message.includes('detached') ||
+            err.message.includes('Session')
+          );
+          const lastError = isClosed
+            ? 'The message port closed before a response was received.'
+            : (err.message || 'Unknown bridge error');
           await cdp.evaluate(
-            `window.__cdpReply(${JSON.stringify(callId)}, { error: { message: ${JSON.stringify(err.message)} } })`,
+            `window.__cdpReply(${JSON.stringify(callId)}, undefined, ${JSON.stringify(lastError)})`,
             fixtureSessionId,
             false
           );
@@ -312,11 +336,20 @@ async function runSingleAttempt() {
     await cdp.evaluate(`
       window.__bridgePending = new Map();
       window.__bridgeCallId = 1;
-      window.__cdpReply = function(callId, response) {
+      window.__cdpReply = function(callId, response, lastError) {
         if (window.__bridgePending.has(callId)) {
           const cb = window.__bridgePending.get(callId);
           window.__bridgePending.delete(callId);
-          cb(response);
+          if (lastError) {
+            window.chrome.runtime.lastError = { message: lastError };
+          } else {
+            delete window.chrome.runtime.lastError;
+          }
+          try {
+            cb(response);
+          } finally {
+            delete window.chrome.runtime.lastError;
+          }
         }
       };
 
@@ -604,6 +637,9 @@ async function runSingleAttempt() {
 
       // Reset fake-server request counter
       fakeServer.clearLog();
+
+      // Clear translation cache so T9 starts with a cold cache
+      await cdp.evaluate('self.__translatorSw.translationCache.clear()', swSessionId);
 
       // Run executeTranslation
       const t9Result = await cdp.evaluate(`
@@ -1195,6 +1231,162 @@ async function runSingleAttempt() {
       } catch {}
     }
 
+    // Test 19: Translation cache hit on identical text-set
+    try {
+      const uniqueSuffix = Date.now();
+      const uniqueText1 = `缓存测试独创标题_${uniqueSuffix}`;
+      const uniqueText2 = `缓存测试独创段落_${uniqueSuffix}`;
+
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t19-title">${uniqueText1}</h1><p id="t19-para">${uniqueText2}</p>';
+      `, fixtureSessionId, false);
+
+      // Run 1 (cold): Cache miss -> calls provider
+      const logsBefore1 = fakeServer.getLogs().length;
+      const res1 = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      assert.ok(res1 && res1.ok === true, 'T19 Run 1 failed: ' + JSON.stringify(res1));
+      assert.equal(res1.applied, 2, 'Expected 2 nodes translated in Run 1');
+      const text1_run1 = await cdp.evaluate('document.getElementById("t19-title").textContent', fixtureSessionId);
+      const text2_run1 = await cdp.evaluate('document.getElementById("t19-para").textContent', fixtureSessionId);
+      assert.equal(text1_run1, `[vi] ${uniqueText1}`);
+      assert.equal(text2_run1, `[vi] ${uniqueText2}`);
+
+      const logsAfter1 = fakeServer.getLogs().length;
+      assert.ok(logsAfter1 > logsBefore1, `Expected fakeServer requests to increase in Run 1 (got ${logsBefore1} -> ${logsAfter1})`);
+      const reqCount1 = logsAfter1 - logsBefore1;
+
+      // Restore between runs
+      const restoreRes = await cdp.evaluate('window.__translatorDom.restore()', fixtureSessionId, false);
+      assert.equal(restoreRes.restored, 2, 'Expected 2 nodes restored');
+      const text1_restored = await cdp.evaluate('document.getElementById("t19-title").textContent', fixtureSessionId);
+      assert.equal(text1_restored, uniqueText1, 'Expected restored text to match original');
+
+      // Run 2 (warm): Cache hit -> 0 provider requests, identical output
+      const logsBefore2 = fakeServer.getLogs().length;
+      const res2 = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      assert.ok(res2 && res2.ok === true, 'T19 Run 2 failed: ' + JSON.stringify(res2));
+      assert.equal(res2.applied, 2, 'Expected 2 nodes translated in Run 2');
+      const text1_run2 = await cdp.evaluate('document.getElementById("t19-title").textContent', fixtureSessionId);
+      const text2_run2 = await cdp.evaluate('document.getElementById("t19-para").textContent', fixtureSessionId);
+      assert.equal(text1_run2, text1_run1, 'Expected Run 2 text to equal Run 1 text');
+      assert.equal(text2_run2, text2_run1, 'Expected Run 2 text to equal Run 1 text');
+
+      const logsAfter2 = fakeServer.getLogs().length;
+      assert.equal(logsAfter2, logsBefore2, `Expected zero additional requests to fakeServer on cache hit (was ${logsBefore2}, now ${logsAfter2})`);
+
+      await cdp.evaluate('window.__translatorDom.restore()', fixtureSessionId, false);
+
+      record('T19', 'Translation cache hit (zero provider requests)', true, `Run 1 sent ${reqCount1} req(s), Run 2 sent 0 req(s), output identical`);
+    } catch (e) {
+      record('T19', 'Translation cache hit (zero provider requests)', false, e.message);
+    }
+
+    // Test 20: DROPPED_ON_RESTART & recovery after SW crash/restart
+    try {
+      const droppedText = '待杀测试文本_' + Date.now();
+      await cdp.evaluate(`
+        window.__translatorDom.restore();
+        document.body.innerHTML = '<h1 id="t20-node">${droppedText}</h1>';
+      `, fixtureSessionId, false);
+
+      const restorableBefore = (await cdp.evaluate('window.__translatorDom.getStatus()', fixtureSessionId))?.restorable || 0;
+
+      fakeServer.setMode('hold_6s');
+
+      await cdp.evaluate(`
+        window.__t20Promise = window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        });
+      `, fixtureSessionId, false);
+
+      // Wait 1.5s while request is in flight
+      await sleep(1500);
+
+      // Kill Service Worker target via CDP
+      await cdp.send('Target.closeTarget', { targetId: currentSwTargetId });
+
+      // Await translation result from content script
+      const t20Res = await cdp.evaluate('window.__t20Promise', fixtureSessionId, true);
+      assert.ok(t20Res && (t20Res.ok === false || t20Res.error), 'Expected executeTranslation to fail on dropped SW: ' + JSON.stringify(t20Res));
+      assert.equal(t20Res.error?.code, 'DROPPED_ON_RESTART', `Expected DROPPED_ON_RESTART error code, got ${t20Res.error?.code}`);
+      assert.equal(t20Res.error?.retryable, false, 'Expected non-retryable error');
+
+      // Verify DOM node was NOT marked translated and retains original text
+      const nodeTextAfter = await cdp.evaluate('document.getElementById("t20-node").textContent', fixtureSessionId);
+      assert.equal(nodeTextAfter, droppedText, 'DOM text should remain untouched');
+
+      const statusAfter = await cdp.evaluate('window.__translatorDom.getStatus()', fixtureSessionId);
+      assert.equal(statusAfter.restorable, restorableBefore, 'No new restorable nodes should be recorded on dropped translation');
+      assert.equal(statusAfter.totalApplied, 0, 'No nodes should have been applied');
+
+      // Restore fake server mode
+      fakeServer.setMode('normal');
+
+      // Revive SW by opening popup target
+      const popupTarget = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
+
+      let newSwTarget = null;
+      for (let i = 0; i < 30; i++) {
+        const targets = await cdp.send('Target.getTargets');
+        newSwTarget = targets.targetInfos.find(t => t.type === 'service_worker' && t.url.includes(EXPECTED_EXT_ID));
+        if (newSwTarget) break;
+        await sleep(100);
+      }
+      assert.ok(newSwTarget, 'Expected Service Worker target to respawn');
+
+      const attachNew = await cdp.send('Target.attachToTarget', { targetId: newSwTarget.targetId, flatten: true });
+      swSessionId = attachNew.sessionId;
+      currentSwTargetId = newSwTarget.targetId;
+      await cdp.send('Runtime.enable', {}, swSessionId);
+      await cdp.send('Runtime.runIfWaitingForDebugger', {}, swSessionId);
+
+      // Re-enable test permissions on fresh SW instance
+      await cdp.evaluate(`
+        self.__translatorSw._setTestMode(true);
+        self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+      `, swSessionId);
+
+      // Close popup target
+      await cdp.send('Target.closeTarget', { targetId: popupTarget.targetId });
+
+      // Dispatch new translation — should succeed cleanly
+      const t20SecondRes = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: '${DEFAULT_MODEL}'
+        })
+      `, fixtureSessionId, true);
+
+      assert.ok(t20SecondRes && t20SecondRes.ok === true, 'Second translation after restart failed: ' + JSON.stringify(t20SecondRes));
+      assert.equal(t20SecondRes.applied, 1, 'Expected 1 node applied');
+
+      const finalNodeText = await cdp.evaluate('document.getElementById("t20-node").textContent', fixtureSessionId);
+      assert.equal(finalNodeText, `[vi] ${droppedText}`, 'Node should be successfully translated after SW revival');
+
+      record('T20', 'DROPPED_ON_RESTART & SW revival', true, 'Handled dropped request cleanly without retries, recovered after SW restart');
+    } catch (e) {
+      try { fakeServer.setMode('normal'); } catch {}
+      record('T20', 'DROPPED_ON_RESTART & SW revival', false, e.message);
+    }
+
   } finally {
     console.log('[5/6] Cleaning up test processes...');
     try { cdp?.close(); } catch {}
@@ -1227,7 +1419,7 @@ async function runSingleAttempt() {
   }
   console.log('==========================================================\n');
 
-  return allPass && testResults.length >= 18;
+  return allPass && testResults.length >= 20;
 }
 
 async function main() {
