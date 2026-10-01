@@ -1508,11 +1508,11 @@
       effective: 'off',
       siteEnabled: false,
       tabOverride: null,
-      permission: true,
+      permission: false,
       mode: 'scroll-follow',
       widgetVisible: true,
       position: null,
-      hasKey: true
+      hasKey: false
     };
 
     function setPanelVisibility(open) {

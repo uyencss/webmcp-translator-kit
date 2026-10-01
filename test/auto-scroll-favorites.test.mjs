@@ -710,12 +710,21 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     parent.parentElement = bodyFake;
     const tn = { nodeType: 3, nodeValue: 'hello world smoke bridge', parentElement: parent, isConnected: true };
     let yielded = false;
+    let callbackInvalidated = false;
+    let translationRequests = 0;
     // Smoke bridge: sendMessage exists, runtime.id absent.
     globalThis.chrome = {
       runtime: {
         onMessage: { addListener() {} },
         sendMessage: (msg, cb) => {
           if (msg && msg.action === 'TRANSLATE_BATCH') {
+            translationRequests++;
+            if (callbackInvalidated) {
+              globalThis.chrome.runtime.lastError = { message: 'Extension context invalidated' };
+              if (typeof cb === 'function') cb(undefined);
+              globalThis.chrome.runtime.lastError = null;
+              return;
+            }
             const results = (msg.payload.items || []).map((it) => ({ id: it.id, text: '[vi] ' + it.text, revision: it.revision }));
             if (typeof cb === 'function') cb({ results });
           } else if (typeof cb === 'function') { cb({ ok: true }); }
@@ -755,6 +764,17 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     assert.notEqual(res && res.cancelled, true, 'no-id bridge must not cancel: ' + JSON.stringify(res));
     assert.equal(res && res.ok, true, 'no-id bridge must start translation: ' + JSON.stringify(res));
     assert.ok((res.applied || 0) >= 1, 'expected applied>=1: ' + JSON.stringify(res));
+    dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
+    assert.equal(dom.getStatus().watching, true, 'scroll-follow must be active before callback invalidation');
+    callbackInvalidated = true;
+    const stale = await dom.sendChunk([{ id: 'stale-callback', text: 'stale callback', revision: 0 }], {}, dom.getEpoch());
+    assert.equal(stale.error?.code, 'ABORTED', 'lastError invalidation callback must resolve ABORTED');
+    assert.equal(stale.error?.retryable, false, 'invalidation must not retry');
+    assert.equal(dom.getStatus().watching, false, 'lastError invalidation must stop active scroll-follow');
+    const countAfterHalt = translationRequests;
+    const followup = await dom.sendChunk([{ id: 'stale-followup', text: 'must not resend', revision: 0 }], {}, dom.getEpoch());
+    assert.equal(followup.error?.code, 'ABORTED');
+    assert.equal(translationRequests, countAfterHalt, 'halted script must not resend after invalidation');
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];
@@ -845,6 +865,11 @@ test('content: stale send throw halts silently (no throw, cancelled)', async () 
 test('content: auto-start is gated and retried without manual interaction', () => {
   assert.ok(contentSrc.includes('st.hasKey !== true'), 'auto-start must fail closed when hasKey is not true');
   assert.ok(contentSrc.includes('st.permission !== true'), 'auto-start must fail closed when permission is not true');
+  const stateIdx = contentSrc.indexOf('let widgetState = {');
+  const stateEnd = contentSrc.indexOf('\n    };', stateIdx);
+  const stateDefaults = contentSrc.slice(stateIdx, stateEnd);
+  assert.ok(stateDefaults.includes('permission: false') && stateDefaults.includes('hasKey: false'),
+    'initial merged widget-state defaults must fail closed');
   assert.ok(contentSrc.includes("st.effective !== 'on'"), 'auto-start must require effective consent');
   assert.ok(!contentSrc.includes("st.effective && st.effective !== 'on'"), 'missing effective field must not pass the gate');
   assert.ok(contentSrc.includes('AUTO_QUERY_MAX_RETRIES') && contentSrc.includes('autoStartQueryRetries'),
@@ -1067,10 +1092,12 @@ test('content: auto-start fails closed for missing key/permission and still star
 test('popup: footer shows live applied/collected (+failed), keeps polling, never false-completes', () => {
   assert.ok(popupSrc.includes('Đang theo scroll ${'), 'watching text must embed live applied/collected counts');
   assert.ok(popupSrc.includes('(lỗi)') || popupSrc.includes('lỗi)'), 'watching text must surface failed count');
-  assert.ok(popupSrc.includes("state === 'error' && data && data.totalFailed > 0"),
-    'all-failed scroll batches must retain failure progress in the footer');
+  assert.ok(popupSrc.includes("(state === 'error' || state === 'translated') && data && data.totalFailed > 0"),
+    'all-failed and completed partial-failure scroll batches must retain footer counts');
   const failedScrollBranch = popupSrc.slice(popupSrc.indexOf('if (st.lastError && (st.totalFailed'), popupSrc.indexOf("} else if (st.watching === true"));
   assert.ok(failedScrollBranch.includes('}), st);'), 'failed scroll status must pass counters into footer rendering');
+  const completedScrollBranch = popupSrc.slice(popupSrc.indexOf("} else if (st.state === 'done')"), popupSrc.indexOf("} else if (st.state === 'restored')"));
+  assert.ok(completedScrollBranch.includes('}), st);'), 'completed scroll status must pass counters into footer rendering');
   assert.ok(popupSrc.includes('v0.1.0 · ${'), 'footer slot must mirror live progress');
   // Watching branch must keep polling (refresh while open + recover on reopen)
   const watchingIdx = popupSrc.indexOf("updateStatus('watching'");
