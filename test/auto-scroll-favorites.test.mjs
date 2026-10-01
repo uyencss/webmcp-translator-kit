@@ -1122,8 +1122,10 @@ test('content: auto-start fails closed for missing key/permission and still star
 test('popup: footer shows live applied/collected (+failed), keeps polling, never false-completes', () => {
   assert.ok(popupSrc.includes('Đang theo scroll ${'), 'watching text must embed live applied/collected counts');
   assert.ok(popupSrc.includes('(lỗi)') || popupSrc.includes('lỗi)'), 'watching text must surface failed count');
-  assert.ok(popupSrc.includes("(state === 'error' || state === 'translated') && data && data.totalFailed > 0"),
-    'all-failed and completed partial-failure scroll batches must retain footer counts');
+  assert.ok(popupSrc.includes("state === 'translated' && data && typeof data.totalCollected === 'number' && data.totalCollected > 0"),
+    'completed scroll batches must retain final progress counts');
+  assert.ok(popupSrc.includes("state === 'error' && data && data.totalFailed > 0"),
+    'failed scroll batches must retain failure counts');
   const failedScrollBranch = popupSrc.slice(popupSrc.indexOf('if (st.lastError && (st.totalFailed'), popupSrc.indexOf("} else if (st.watching === true"));
   assert.ok(failedScrollBranch.includes('}), st);'), 'failed scroll status must pass counters into footer rendering');
   const completedScrollBranch = popupSrc.slice(popupSrc.indexOf("} else if (st.state === 'done')"), popupSrc.indexOf("} else if (st.state === 'restored')"));

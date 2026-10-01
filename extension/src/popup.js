@@ -252,7 +252,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // version string otherwise. Never shows a completed state while watching —
     // callers keep the watching branch ahead of the done branch.
     if (footerStatusSummary) {
-      const showProgress = state === 'watching' || ((state === 'error' || state === 'translated') && data && data.totalFailed > 0);
+      const showProgress = state === 'watching' ||
+        (state === 'translated' && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) ||
+        (state === 'error' && data && data.totalFailed > 0);
       if (showProgress && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
         const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
         const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ` (${data.totalFailed} lỗi)` : '';
