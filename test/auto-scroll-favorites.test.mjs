@@ -841,8 +841,8 @@ test('content: stale send throw halts silently (no throw, cancelled)', async () 
 });
 
 test('content: auto-start is gated and retried without manual interaction', () => {
-  assert.ok(contentSrc.includes('st.hasKey === false'), 'auto-start must not fire without key');
-  assert.ok(contentSrc.includes('st.permission === false'), 'auto-start must not fire without permission');
+  assert.ok(contentSrc.includes('st.hasKey !== true'), 'auto-start must fail closed when hasKey is not true');
+  assert.ok(contentSrc.includes('st.permission !== true'), 'auto-start must fail closed when permission is not true');
   assert.ok(contentSrc.includes("st.effective !== 'on'"), 'auto-start must require effective consent');
   assert.ok(!contentSrc.includes("st.effective && st.effective !== 'on'"), 'missing effective field must not pass the gate');
   assert.ok(contentSrc.includes('AUTO_QUERY_MAX_RETRIES') && contentSrc.includes('autoStartQueryRetries'),
@@ -954,6 +954,102 @@ test('content: disabled first state does not consume auto-start; later enabled p
     dom.startScrollFollowSession({});
     const again = dom.getStatus();
     assert.equal(again.watching, true, 'explicit re-enable must start a new session');
+  } finally {
+    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+      if (k in saved) globalThis[k] = saved[k];
+      else delete globalThis[k];
+    }
+  }
+});
+
+test('content: auto-start fails closed for missing key/permission and still starts when complete', async () => {
+  const saved = {};
+  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+    if (k in globalThis) saved[k] = globalThis[k];
+  }
+  try {
+    function fakeEl() {
+      return {
+        style: {}, dataset: {},
+        setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
+        classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+        addEventListener() {}, removeEventListener() {}, appendChild() {},
+        querySelector: () => fakeEl(), querySelectorAll: () => [],
+        setPointerCapture() {}, releasePointerCapture() {}, attachShadow: () => fakeEl(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }),
+        textContent: '', innerHTML: '', value: '', checked: false, disabled: false, title: '',
+        focus() {}, click() {}
+      };
+    }
+    const runtimeHandlers = [];
+    const baseState = {
+      effective: 'on', siteEnabled: true, tabOverride: null, mode: 'scroll-follow',
+      sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m', widgetVisible: true,
+      position: null, autoStart: true,
+      siteConfig: { origin: 'http://127.0.0.1:8091', mode: 'scroll-follow', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
+    };
+    const states = {
+      missingKey: { ...baseState, permission: true },
+      missingPermission: { ...baseState, hasKey: true },
+      enabled: { ...baseState, hasKey: true, permission: true }
+    };
+    assert.ok(!('hasKey' in states.missingKey));
+    assert.ok(!('permission' in states.missingPermission));
+    let stateName = 'missingKey';
+    globalThis.chrome = {
+      runtime: {
+        id: 'test-ext-id', lastError: null,
+        sendMessage: (msg, cb) => {
+          if (msg?.action === 'WIDGET_GET_STATE') {
+            if (typeof cb === 'function') cb({ ...states[stateName] });
+          } else if (typeof cb === 'function') cb({ ok: true });
+        },
+        onMessage: { addListener: (handler) => runtimeHandlers.push(handler) }
+      }
+    };
+    const win = {
+      innerHeight: 800, innerWidth: 1200, top: null,
+      addEventListener() {}, removeEventListener() {},
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', overflowY: 'visible' }),
+      scrollTo() {}
+    };
+    win.top = win;
+    globalThis.window = win;
+    globalThis.document = {
+      documentElement: fakeEl(), body: null,
+      getElementById: () => null, createElement: () => fakeEl(),
+      createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [],
+      addEventListener() {}, removeEventListener() {}
+    };
+    globalThis.location = { protocol: 'http:' };
+    globalThis.NodeFilter = { SHOW_TEXT: 4 };
+    globalThis.requestAnimationFrame = () => 0;
+    globalThis.cancelAnimationFrame = () => {};
+    globalThis.setInterval = () => 0;
+    class FakeObserver { constructor(cb) { this.cb = cb; } observe() {} unobserve() {} disconnect() {} }
+    globalThis.IntersectionObserver = FakeObserver;
+    globalThis.MutationObserver = FakeObserver;
+
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom = win.__translatorDom;
+    assert.ok(dom, 'content must expose __translatorDom');
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(dom.getStatus().watching, false, 'missing hasKey must not begin translating');
+
+    stateName = 'missingPermission';
+    for (const handler of runtimeHandlers) {
+      try { handler({ action: 'WIDGET_STATE_CHANGED', ...states.missingPermission }, {}, () => {}); } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(dom.getStatus().watching, false, 'missing permission must not begin translating');
+
+    stateName = 'enabled';
+    for (const handler of runtimeHandlers) {
+      try { handler({ action: 'WIDGET_STATE_CHANGED', ...states.enabled }, {}, () => {}); } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    assert.equal(dom.getStatus().watching, true, 'complete positive response must still begin translating');
+    assert.equal(dom.getStatus().mode, 'scroll-follow');
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];

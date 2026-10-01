@@ -1582,8 +1582,8 @@
       // when consent is off, permission/key is missing, or context is stale.
       // Effective consent is required (missing field means not enabled).
       if (st.effective !== 'on') return;
-      if (st.hasKey === false) return;
-      if (st.permission === false) return;
+      if (st.hasKey !== true) return;
+      if (st.permission !== true) return;
       if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
 
       // Consume the one-shot attempt only once a valid enabled state is ready

@@ -125,10 +125,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     return getFavoritesForKey(lastFavKey);
   }
 
-  function setFavoritesForKey(key, list) {
-    favoriteModelsByBaseURL[key] = [...list].slice(0, 50);
-  }
-
   // Base URL scope for a fallback row: its own Base URL, else the displayed primary.
   // Returns null when the effective URL is invalid (star disabled).
   function favKeyForFallback(fb) {
