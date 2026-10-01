@@ -44,13 +44,13 @@ No changes to package metadata, credentials, or provider settings. The implement
 - AGY Claude Opus 4.6 Thinking passed an exact-model canary through WebMCP AI CLI when `--effort` was omitted; the model does not accept that flag. A plan-mode pre-accept attempt on a read-only copy then timed out after 300 seconds (`PROVIDER_TIMEOUT`) and is not a review verdict. The copy's before/after SHA-256 manifests match.
 - Sonnet 5.5 was used through WebMCP AI CLI for read-only race diagnosis, as authorized. The wrapper rejected both structured outputs (`REVIEW_RESULT_INCOMPLETE`), so neither is counted as a review verdict. Its source-level diagnosis matched the instrumented Chrome trace; the coordinator implemented and tested the fix.
 - Claude Opus 5.5 approved commit `3dbceab` with three low findings and an informational note, then approved `7461868` with two more low findings, then approved `30962ed` with two more low findings: favorite stars sent the full map, and all-failed scroll status dropped failure counts from the footer. All seven low findings across those reviews have now been addressed; their receipts are stale. The informational stale-widget note is outside the fresh-page reload acceptance scope.
-- User-authorized Muse 1.3 pre-acceptance on commit `2b3f205` returned `approve`, but is stale after the provider-bucket merge and failure-footer fixes. Muse authored the initial c2 implementation, so its hygiene pass is advisory for its own changes.
-- Run fresh Muse pre-acceptance and independent Claude Opus 5.5 final review on the newly frozen source+doc tree. Record actual model/route and artifact hashes in `candidate-ledger.md`; do not edit this record after the final review.
+- User-authorized Muse 1.3 pre-acceptance on code commit `e90cb56` returned `approve`, no findings, `review-readonly`; result artifact SHA-256 `ffefaaf31698cb1703ce0e2a8e14a12ab1d524b616867d501578b8e9f51b28cf`, prompt SHA-256 `0f7c97f936e4c1273d5028b21c8ebea135260f5e628618de8d5a4959ca3e4b72`. The read-only copy manifest matched before/after. Muse authored the initial c2 implementation, so this is advisory for its own changes.
+- Independent final Opus 5.5 review is pending on the final source+doc commit/tree recorded in `candidate-ledger.md`; do not edit this record after that review.
 
 ## Open gates
 
-- [ ] Run user-authorized pre-acceptance review on the updated candidate source; previous Muse receipt is stale and AGY Opus route timed out.
+- [x] User-authorized Muse 1.3 pre-acceptance on current code commit `e90cb56` returned `approve`; same-lineage advisory status is recorded above.
 - [ ] Run fresh direct Claude Opus 5.5 read-only review on the final candidate commit/tree recorded in `candidate-ledger.md`. Any source/doc fix creates a new candidate tree and invalidates that receipt.
-- [ ] Recheck owner checkout HEAD/tree/status. If it remains exactly at the baseline, fast-forward the reviewed commit and rerun package checks; if it drifted, stop with `RECONCILIATION_BLOCKED_OWNER_DRIFT` and preserve both sides.
+- [ ] Owner reconciliation: the owner checkout contains unrelated dirty Chrome Web Store docs/assets with no candidate path overlap. Keep them untouched and follow `candidate-ledger.md` reconciliation status before any promotion.
 - [ ] After promotion, rerun `npm test`, contract, closure and isolated Chrome smoke against the authoritative owner tree.
 - [ ] Push and production/Chrome Web Store release remain outside this task.
