@@ -86,8 +86,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
 
 /**
  * Normalizes a provider Base URL into a stable favorites-scope key.
- * Lowercases scheme/host, strips trailing slashes, preserves path and port
- * (different paths or ports MUST NOT merge). Never derived from API keys.
+ * Lowercases scheme/host, strips query/fragment and trailing slashes, preserves
+ * path/non-default port, and normalizes default ports per URL parsing. Never
+ * derived from API keys.
  *
  * @param {unknown} input
  * @returns {string|null}

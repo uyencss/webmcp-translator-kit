@@ -25,11 +25,13 @@ const swSrc = fs.readFileSync(path.join(SRC, 'sw.js'), 'utf8');
 // (4) settings: per-Base-URL favorites
 // ============================================================================
 
-test('favorites: normalizeBaseURLKey normalizes scheme/host/slashes, keeps path+port', () => {
+test('favorites: normalizeBaseURLKey normalizes URL identity and keeps path/non-default port', () => {
   assert.equal(normalizeBaseURLKey('http://localhost:8080/v1/'), 'http://localhost:8080/v1');
   assert.equal(normalizeBaseURLKey('HTTP://Example.COM/v1'), 'http://example.com/v1');
   assert.equal(normalizeBaseURLKey('https://a.com///'), 'https://a.com');
   assert.equal(normalizeBaseURLKey('https://a.com/'), 'https://a.com');
+  assert.equal(normalizeBaseURLKey('https://a.com:443/v1?tenant=one#section'), 'https://a.com/v1');
+  assert.equal(normalizeBaseURLKey('https://a.com/v1?tenant=two'), 'https://a.com/v1');
   // Different paths / ports must NOT merge
   assert.notEqual(
     normalizeBaseURLKey('http://h.test:8080/v1'),
