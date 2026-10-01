@@ -394,9 +394,9 @@ test('settings: migrateSettings normalizes autoTranslateSites (normalizes to ori
   const migrated = migrateSettings(raw);
 
   assert.deepEqual(migrated.autoTranslateSites, [
-    { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
-    { origin: 'http://127.0.0.1:8089', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
-    { origin: 'http://site.org:8080', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+    { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null },
+    { origin: 'http://127.0.0.1:8089', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null },
+    { origin: 'http://site.org:8080', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
   ]);
 
   // Test capping to 200 items
@@ -408,14 +408,16 @@ test('settings: migrateSettings normalizes autoTranslateSites (normalizes to ori
     mode: 'inherit',
     autoStart: true,
     sourceLanguage: null,
-    targetLanguage: null
+    targetLanguage: null,
+    model: null
   });
   assert.deepEqual(migratedCapped.autoTranslateSites[199], {
     origin: 'https://site-199.com',
     mode: 'inherit',
     autoStart: true,
     sourceLanguage: null,
-    targetLanguage: null
+    targetLanguage: null,
+    model: null
   });
 });
 
@@ -427,7 +429,8 @@ test('settings: migrateSettings preserves and normalizes per-site object configu
         mode: 'full',
         autoStart: false,
         sourceLanguage: ' zh ',
-        targetLanguage: 'en'
+        targetLanguage: 'en',
+        model: ' do/glm-5.3-flash '
       },
       {
         origin: 'http://scroll-site.org',
@@ -453,21 +456,24 @@ test('settings: migrateSettings preserves and normalizes per-site object configu
       mode: 'full',
       autoStart: false,
       sourceLanguage: 'zh',
-      targetLanguage: 'en'
+      targetLanguage: 'en',
+      model: 'do/glm-5.3-flash'
     },
     {
       origin: 'http://scroll-site.org',
       mode: 'scroll-follow',
       autoStart: true,
       sourceLanguage: null,
-      targetLanguage: null
+      targetLanguage: null,
+      model: null
     },
     {
       origin: 'https://invalid-mode.com',
       mode: 'inherit',
       autoStart: true,
       sourceLanguage: null,
-      targetLanguage: null
+      targetLanguage: null,
+      model: null
     }
   ]);
 });
@@ -558,8 +564,8 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
 
   assert.equal(merged.model, 'new-model');
   assert.deepEqual(merged.autoTranslateSites, [
-    { origin: 'https://auto1.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null },
-    { origin: 'https://auto2.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+    { origin: 'https://auto1.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null },
+    { origin: 'https://auto2.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
   ]);
 
   // Updating autoTranslateSites partially preserves other fields
@@ -569,7 +575,7 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
   });
   assert.equal(updatedAuto.model, 'new-model');
   assert.deepEqual(updatedAuto.autoTranslateSites, [
-    { origin: 'https://auto3.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+    { origin: 'https://auto3.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
   ]);
 });
 

@@ -238,22 +238,16 @@
       <div id="config-message-connect" class="config-message" aria-live="polite"></div>
     </section>
 
-    <!-- Status Strip (bottom): progress + status in one compact line -->
-    <div class="status-strip" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
-      <div class="status-indicator">
+    <!-- Footer (right side = live translate status) -->
+    <footer class="footer">
+      <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.0</span></span>
+      <span class="status-indicator status-footer" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
         <span class="status-icon" id="status-icon" aria-hidden="true">
           <span class="status-dot"></span>
         </span>
         <span class="status-text" id="status-text">Đang tải...</span>
-      </div>
+      </span>
       <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
-    </div>
-
-    <!-- Footer -->
-    <footer class="footer">
-      <span>WebMCP Translator</span>
-      <span class="footer-dot">•</span>
-      <span class="footer-mode" id="footer-status-summary">v0.1.0</span>
     </footer>
   </div>
 

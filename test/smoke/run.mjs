@@ -3666,7 +3666,7 @@ async function runSingleAttempt() {
         self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
       `, swSessionId, true);
       assert.deepEqual(afterAuto.settings.autoTranslateSites, [
-        { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
+        { origin: 'https://example.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
       ]);
       assert.equal(afterAuto.configRevision, revAfterModel, `configRevision must NOT bump when only autoTranslateSites change (expected ${revAfterModel}, got ${afterAuto.configRevision})`);
 
@@ -5765,6 +5765,7 @@ async function runSingleAttempt() {
     let t53Tab1 = null;
     let t53Tab2 = null;
     let t53Tab3 = null;
+    let t53Tab4 = null;
     try {
       // Ensure test permission and site enabled
       await cdp.evaluate(`self.__translatorSw._setTestPermission('${fixtureOrigin}', true)`, swSessionId);
@@ -5888,13 +5889,68 @@ async function runSingleAttempt() {
       await t53Tab3.close();
       t53Tab3 = null;
 
-      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages)', true, 'autoStart:false 0 reqs, mode:full override, per-site lang zh->en received by provider');
+      // (d) Subtest 4: site with model override (global model is DEFAULT) ->
+      // WIDGET_GET_STATE returns the site model and the provider receives it
+      await cdp.evaluate(`
+        (async () => {
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              model: '${DEFAULT_MODEL}',
+              translationMode: 'scroll-follow',
+              sourceLanguage: 'auto',
+              targetLanguage: 'vi',
+              autoTranslateSites: [
+                { origin: '${fixtureOrigin}', autoStart: true, mode: 'inherit', sourceLanguage: null, targetLanguage: null, model: 'do/glm-5.3-flash' }
+              ]
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      // Fresh tab: subtest 3 closed t53Tab3, and a new document also proves
+      // the per-site model applies to auto-start (not just the gate query).
+      // Reset rate windows: subtests 1-3 (plus T52) may have exhausted the
+      // 12 batches/60s site quota, which would park this probe past the poll.
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          await self.__translatorSw._resetRateStateForTest();
+        })()
+      `, swSessionId);
+      t53Tab4 = await createBridgedFixtureTab(fixtureUrl);
+      await t53Tab4.injectContentScript();
+
+      const gate4 = await cdp.evaluate(`
+        self.__translatorSw.dispatchMessage({ action: 'WIDGET_GET_STATE' }, { frameId: 0, url: '${fixtureUrl}', tab: { id: ${t53Tab4.tabId}, url: '${fixtureUrl}' } })
+      `, swSessionId, true);
+      assert.equal(gate4.model, 'do/glm-5.3-flash', `WIDGET_GET_STATE must return per-site model, got ${gate4.model}`);
+
+      fakeServer.clearLog();
+      await cdp.evaluate(`document.body.insertAdjacentHTML('beforeend', '<p id="t53-model-probe">UNIQUE_T53M_' + Date.now() + '_模型测试文本</p>')`, t53Tab4.sessionId);
+      let modelLog = null;
+      const t0_4 = Date.now();
+      while (Date.now() - t0_4 < 15000) {
+        await sleep(250);
+        const logs = fakeServer.getLogs();
+        modelLog = logs.find((l) => l.body && l.body.model === 'do/glm-5.3-flash');
+        if (modelLog) break;
+      }
+      if (!modelLog) {
+        const st44diag = await cdp.evaluate('window.__translatorDom.getStatus()', t53Tab4.sessionId).catch((e) => ({ diagError: String(e) }));
+        const detCount = fakeServer.getDetailedLogs().length;
+        assert.ok(false, `Subtest 4: provider must receive per-site model do/glm-5.3-flash (detailedLogs=${detCount}, status=${JSON.stringify(st44diag)})`);
+      }
+
+      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages, model)', true, 'autoStart:false 0 reqs, mode:full override, per-site lang zh->en + model glm received by provider');
     } catch (e) {
-      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages)', false, e.message);
+      record('T53', 'Per-site autoTranslateSites overrides (mode, autoStart, languages, model)', false, e.message);
     } finally {
       if (t53Tab1) { try { await t53Tab1.close(); } catch {} }
       if (t53Tab2) { try { await t53Tab2.close(); } catch {} }
       if (t53Tab3) { try { await t53Tab3.close(); } catch {} }
+      if (t53Tab4) { try { await t53Tab4.close(); } catch {} }
       try {
         await cdp.evaluate(`
           (async () => {

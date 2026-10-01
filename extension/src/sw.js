@@ -1204,6 +1204,36 @@ function isPrivilegedSender(sender) {
   return false;
 }
 
+// Effective per-tab config: per-site overrides win, otherwise globals.
+// `model: null` / langs null on the site entry mean "follow global".
+function resolveEffectiveSiteConfig(settings, origin) {
+  const autoSites = Array.isArray(settings.autoTranslateSites) ? settings.autoTranslateSites : [];
+  const raw = autoSites.find((e) => (typeof e === 'string' ? e : e?.origin) === origin);
+  const siteConfig = raw ? (normalizePerSiteConfig(raw) || {
+    origin,
+    mode: 'inherit',
+    autoStart: true,
+    sourceLanguage: null,
+    targetLanguage: null,
+    model: null
+  }) : null;
+  return {
+    siteConfig,
+    mode: (siteConfig && siteConfig.mode && siteConfig.mode !== 'inherit')
+      ? siteConfig.mode
+      : (settings.translationMode || 'scroll-follow'),
+    sourceLanguage: (siteConfig && siteConfig.sourceLanguage)
+      ? siteConfig.sourceLanguage
+      : (settings.sourceLanguage || 'auto'),
+    targetLanguage: (siteConfig && siteConfig.targetLanguage)
+      ? siteConfig.targetLanguage
+      : (settings.targetLanguage || 'vi'),
+    model: (siteConfig && siteConfig.model)
+      ? siteConfig.model
+      : (settings.model || DEFAULT_MODEL)
+  };
+}
+
 function verifyWidgetSender(sender) {
   if (!sender || !sender.tab || typeof sender.tab.id !== 'number' || sender.frameId !== 0) {
     return {
@@ -1538,7 +1568,13 @@ async function executeBatchTranslation({
     storedFbKeys = fbKeysRes.fallback_api_keys || {};
   } catch {}
 
-  const chain = resolveFallbackChain(storedSettings, storedFbKeys, primaryKey);
+  const chain = resolveFallbackChain(
+    (payload && typeof payload.model === 'string' && payload.model.trim())
+      ? { ...storedSettings, model: payload.model.trim() }
+      : storedSettings,
+    storedFbKeys,
+    primaryKey
+  );
   const requestedModel = chain[0]?.model || DEFAULT_MODEL;
 
   let currentMisses = [...misses];
@@ -2576,7 +2612,13 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         // 5. Cache lookup on primary model (after consent & permission, BEFORE rate admission)
         const storedSettings = await getStoredSettings();
-        const primaryModel = storedSettings.model || message.payload?.model || DEFAULT_MODEL;
+        // NOTE: payload.model wins — content sends the resolved effective model
+        // (per-site override, else global). Stored model is only the default.
+        // (Same rule as the fallback-chain primary leg in executeBatchTranslation.)
+        const payloadModel = (message.payload && typeof message.payload.model === 'string' && message.payload.model.trim())
+          ? message.payload.model.trim()
+          : null;
+        const primaryModel = payloadModel || storedSettings.model || DEFAULT_MODEL;
         const cacheContext = {
           baseURL: storedSettings.baseURL || '',
           model: primaryModel,
@@ -2721,15 +2763,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const tabOverride = tabOverrides[String(gate.tabId)] || null;
         const effective = getEffectivePolicy({ tabOverride, siteEnabled });
 
-        const autoSites = Array.isArray(settings.autoTranslateSites) ? settings.autoTranslateSites : [];
-        const rawSiteEntry = autoSites.find((s) => (typeof s === 'string' ? s : s?.origin) === gate.origin);
-        const siteConfig = rawSiteEntry ? (normalizePerSiteConfig(rawSiteEntry) || {
-          origin: gate.origin,
-          mode: 'inherit',
-          autoStart: true,
-          sourceLanguage: null,
-          targetLanguage: null
-        }) : null;
+        const { siteConfig } = resolveEffectiveSiteConfig(settings, gate.origin);
 
         const urlMatchesSender = !sender.url || !sender.tab?.url || (normalizeOrigin(sender.url) === normalizeOrigin(sender.tab.url));
 
@@ -2752,27 +2786,17 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           reason = 'not_in_list';
         }
 
-        const effectiveMode = (siteConfig && siteConfig.mode && siteConfig.mode !== 'inherit')
-          ? siteConfig.mode
-          : (settings.translationMode || 'scroll-follow');
-
-        const effectiveSrcLang = (siteConfig && siteConfig.sourceLanguage)
-          ? siteConfig.sourceLanguage
-          : (settings.sourceLanguage || 'auto');
-
-        const effectiveTgtLang = (siteConfig && siteConfig.targetLanguage)
-          ? siteConfig.targetLanguage
-          : (settings.targetLanguage || 'vi');
+        const eff = resolveEffectiveSiteConfig(settings, gate.origin);
 
         return {
           effective,
           siteEnabled,
           tabOverride,
           permission: hasPerm,
-          mode: effectiveMode,
-          sourceLanguage: effectiveSrcLang,
-          targetLanguage: effectiveTgtLang,
-          model: settings.model || DEFAULT_MODEL,
+          mode: eff.mode,
+          sourceLanguage: eff.sourceLanguage,
+          targetLanguage: eff.targetLanguage,
+          model: eff.model,
           widgetVisible: settings.widgetVisible ?? true,
           position,
           hasKey,
@@ -2836,12 +2860,16 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const posRes = await chrome.storage.local.get(['widgetPositions']);
         const widgetPositions = posRes.widgetPositions || {};
 
+        const eff = resolveEffectiveSiteConfig(settings, gate.origin);
         const state = {
           effective,
           siteEnabled,
           tabOverride,
           permission: hasPerm,
-          mode: settings.translationMode || 'scroll-follow',
+          mode: eff.mode,
+          sourceLanguage: eff.sourceLanguage,
+          targetLanguage: eff.targetLanguage,
+          model: eff.model,
           widgetVisible: settings.widgetVisible ?? true,
           position: widgetPositions[gate.origin] || null,
           hasKey

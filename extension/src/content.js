@@ -1515,16 +1515,26 @@
       const targetMode = st.mode || 'scroll-follow';
       autoStartTimer = setTimeout(() => {
         autoStartTimer = null;
-        if (userRestored) return;
-        if (isTranslating || scrollSession.watching) return;
+        try {
+          if (userRestored) return;
+          if (isTranslating || scrollSession.watching) return;
+          if (!lastTranslateStatus) return;
 
-        currentMode = targetMode;
-        lastTranslateStatus.mode = targetMode;
+          currentMode = targetMode;
+          lastTranslateStatus.mode = targetMode;
 
-        if (targetMode === 'scroll-follow') {
-          startScrollFollowSession(st);
-        } else {
-          executeTranslation(st);
+          if (targetMode === 'scroll-follow') {
+            startScrollFollowSession(st || {});
+          } else {
+            executeTranslation(st || {});
+          }
+        } catch (err) {
+          try { console.error('[WebMCP Translator] auto-start failed:', err && err.message ? err.message : err); } catch {}
+          try {
+            if (lastTranslateStatus) {
+              lastTranslateStatus.error = { code: 'AUTOSTART_FAILED', message: String((err && err.message) || err) };
+            }
+          } catch {}
         }
       }, AUTO_SETTLE_MS);
     }
@@ -1669,13 +1679,28 @@
         }
         applyState(resp);
         if (!targetEnabled) {
-          // Turning OFF stops session & cancels queue; does not auto-restore text
-          stopScrollFollowSession(true);
+          // Turning OFF restores the original page text (not just stopping)
           try {
-            chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
-              if (chrome.runtime.lastError) {}
-            });
-          } catch {}
+            restore();
+          } catch {
+            stopScrollFollowSession(true);
+            try {
+              chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
+                if (chrome.runtime.lastError) {}
+              });
+            } catch {}
+          }
+        } else if (widgetState.effective === 'on') {
+          // Turning ON starts translating immediately (scroll-aware), same as Dịch ngay
+          try {
+            if (currentMode === 'scroll-follow' || widgetState.mode === 'scroll-follow') {
+              startScrollFollowSession(widgetState);
+            } else {
+              executeTranslation(widgetState);
+            }
+          } catch (err) {
+            try { console.error('[WebMCP Translator] widget enable-start failed:', err && err.message ? err.message : err); } catch {}
+          }
         }
       });
     });

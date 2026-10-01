@@ -13,7 +13,7 @@ export const VALID_PER_SITE_MODES = Object.freeze(['inherit', 'scroll-follow', '
  * Returns { origin, mode, autoStart, sourceLanguage, targetLanguage } or null.
  *
  * @param {unknown} item
- * @returns {{ origin: string, mode: 'inherit'|'scroll-follow'|'full', autoStart: boolean, sourceLanguage: string|null, targetLanguage: string|null }|null}
+ * @returns {{ origin: string, mode: 'inherit'|'scroll-follow'|'full', autoStart: boolean, sourceLanguage: string|null, targetLanguage: string|null, model: string|null }|null}
  */
 export function normalizePerSiteConfig(item) {
   if (typeof item === 'string') {
@@ -24,7 +24,8 @@ export function normalizePerSiteConfig(item) {
       mode: 'inherit',
       autoStart: true,
       sourceLanguage: null,
-      targetLanguage: null
+      targetLanguage: null,
+      model: null
     };
   }
 
@@ -41,13 +42,17 @@ export function normalizePerSiteConfig(item) {
     const targetLanguage = (typeof item.targetLanguage === 'string' && item.targetLanguage.trim())
       ? item.targetLanguage.trim()
       : null;
+    const model = (typeof item.model === 'string' && item.model.trim())
+      ? item.model.trim()
+      : null;
 
     return {
       origin: norm,
       mode,
       autoStart,
       sourceLanguage,
-      targetLanguage
+      targetLanguage,
+      model
     };
   }
 
@@ -424,6 +429,10 @@ export function validateSettings(settings) {
           }
           if (site.targetLanguage !== undefined && site.targetLanguage !== null && typeof site.targetLanguage !== 'string') {
             errors.push(`autoTranslateSites[${i}].targetLanguage must be a string or null`);
+            break;
+          }
+          if (site.model !== undefined && site.model !== null && (typeof site.model !== 'string' || !site.model.trim())) {
+            errors.push(`autoTranslateSites[${i}].model must be a non-empty string or null`);
             break;
           }
         } else {

@@ -1710,10 +1710,48 @@ document.addEventListener('DOMContentLoaded', async () => {
         markDirty();
       });
 
+      const modelSelect = document.createElement('select');
+      modelSelect.className = 'select-mini auto-site-model';
+      modelSelect.id = `select-site-model-${idx}`;
+      modelSelect.setAttribute('aria-label', `Model dịch riêng cho ${site.origin}`);
+      modelSelect.title = 'Model dịch riêng (mặc định: theo chung)';
+      {
+        const seen = new Set();
+        const opts = [{ value: '', label: 'Model: theo chung' }];
+        const pushOpt = (v) => {
+          const val = (v || '').trim();
+          if (val && !seen.has(val)) { seen.add(val); opts.push({ value: val, label: val }); }
+        };
+        pushOpt(savedSettings.model || DEFAULT_MODEL);
+        (favoriteModels || []).forEach(pushOpt);
+        (typeof RECOMMENDED_MODELS !== 'undefined' ? RECOMMENDED_MODELS : []).forEach(pushOpt);
+        (discoveredModels || []).map((m) => (typeof m === 'string' ? m : m && m.id)).forEach(pushOpt);
+        for (const o of opts) {
+          const opt = document.createElement('option');
+          opt.value = o.value;
+          opt.textContent = o.label;
+          modelSelect.appendChild(opt);
+        }
+      }
+      modelSelect.value = site.model || '';
+      // Unknown stored model (renamed upstream): keep visible, don't silently drop
+      if (site.model && modelSelect.value !== site.model) {
+        const opt = document.createElement('option');
+        opt.value = site.model;
+        opt.textContent = site.model;
+        modelSelect.appendChild(opt);
+        modelSelect.value = site.model;
+      }
+      modelSelect.addEventListener('change', () => {
+        site.model = modelSelect.value || null;
+        markDirty();
+      });
+
       subRow.appendChild(langIcon);
       subRow.appendChild(srcSelect);
       subRow.appendChild(arrowSpan);
       subRow.appendChild(tgtSelect);
+      subRow.appendChild(modelSelect);
 
       card.appendChild(mainRow);
       card.appendChild(subRow);
@@ -1925,10 +1963,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const effectiveSiteMode = (matchingSite && matchingSite.mode && matchingSite.mode !== 'inherit')
           ? matchingSite.mode
           : (savedSettings.translationMode || currentMode || 'scroll-follow');
+        const effectiveSiteModel = (matchingSite && matchingSite.model)
+          ? matchingSite.model
+          : (savedSettings.model || selectModel?.value || DEFAULT_MODEL);
 
         const currentSettings = {
           baseURL: savedSettings.baseURL || 'http://localhost:8080/v1',
-          model: savedSettings.model || selectModel?.value || DEFAULT_MODEL,
+          model: effectiveSiteModel,
           sourceLanguage: savedSettings.sourceLanguage || selectSrcLang?.value || 'auto',
           targetLanguage: savedSettings.targetLanguage || selectTgtLang?.value || 'vi',
           translationMode: effectiveSiteMode
