@@ -799,6 +799,7 @@
     mutationObserver: null,
     scrollListener: null,
     readyBlocks: new Set(),
+    blockedIds: new Set(),
     debounceTimer: null,
     retryTimer: null,
     scrollRaf: null,
@@ -869,6 +870,7 @@
         if (!eligibleTextNode(tn)) continue;
         const rec = ensureRec(tn);
         refreshIfExternallyModified(rec);
+        if (scrollSession.blockedIds.has(rec.id)) continue;
         if (rec.translated !== null && tn.nodeValue === rec.translated) continue;
 
         // Skip pending items by (id, revision, epoch)
@@ -970,6 +972,9 @@
 
       if (res.fatal) {
         batchFatal = true;
+        if (res.error?.code !== 'RATE_LIMITED') {
+          for (const item of chunk) scrollSession.blockedIds.add(item.id);
+        }
         // Lifecycle aborts stop this batch without replay; the watcher stays
         // available for a later scroll after config changes or SW restart.
         if (!['RATE_LIMITED', 'ABORTED', 'DROPPED_ON_RESTART'].includes(res.error?.code)) cancelActiveTranslation();
@@ -1018,6 +1023,7 @@
     scrollSession.active = true;
     scrollSession.watching = true;
     scrollSession.settings = settings || {};
+    scrollSession.blockedIds.clear();
     updateFabBusy();
     scrollSession.epoch = epoch;
 
@@ -1096,6 +1102,7 @@
     // Fallback scroll listener for rapid scroll updates (rAF-coalesced so
     // very fast up/down flings don't run full scans more than once per frame)
     scrollSession.scrollListener = () => {
+      scrollSession.blockedIds.clear();
       if (scrollSession.scrollRaf) return;
       scrollSession.scrollRaf = requestAnimationFrame(() => {
         scrollSession.scrollRaf = null;

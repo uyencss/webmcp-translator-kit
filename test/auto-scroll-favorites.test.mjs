@@ -1481,6 +1481,9 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
     };
     win.top = win;
     let batchErrorCode = 'PERMISSION_REQUIRED';
+    let mixedBatch = false;
+    let mixedRequests = 0;
+    let textNodes = [textNode];
     const runtime = {
       id: 'test-ext-id', lastError: null, onMessage: { addListener() {} },
       sendMessage: (msg, cb) => {
@@ -1488,6 +1491,10 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
           cb({ effective: 'on', permission: true, hasKey: true, autoStart: false, widgetVisible: true });
         } else if (msg?.action === 'TRANSLATE_BATCH') {
           translationRequests++;
+          if (mixedBatch && ++mixedRequests > 1) {
+            setTimeout(() => cb({ results: msg.payload.items.map(it => ({ ...it, text: '[vi] ' + it.text })) }), 20);
+            return;
+          }
           cb({ error: { code: batchErrorCode, message: 'Batch stopped', retryable: false } });
         } else if (typeof cb === 'function') cb({ ok: true });
       }
@@ -1500,8 +1507,8 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
       getElementById: () => null,
       createElement: (tag) => fakeEl(tag),
       createTreeWalker: () => {
-        let yielded = false;
-        return { nextNode: () => (yielded ? null : (yielded = true, textNode)) };
+        let cursor = 0;
+        return { nextNode: () => textNodes[cursor++] || null };
       },
       querySelectorAll: (selector) => selector === 'p, h1, h2, h3, h4, h5, h6, li, article, td, blockquote' ? [paragraph] : [],
       addEventListener() {}, removeEventListener() {}
@@ -1530,6 +1537,17 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
       await new Promise((resolve) => setTimeout(resolve, 500));
       assert.equal(translationRequests - before, 1, `${code} must not automatically replay the batch`);
       assert.equal(dom.getStatus().watching, true, `${code} must keep watching for later user scroll`);
+      dom.stopScrollFollowSession();
+    }
+    for (const code of ['ABORTED', 'DROPPED_ON_RESTART']) {
+      batchErrorCode = code;
+      mixedBatch = true;
+      mixedRequests = 0;
+      textNodes = Array.from({ length: 17 }, (_, i) => ({ nodeType: 3, nodeValue: `Concurrent lifecycle sentence ${code} number ${i}.`, parentElement: paragraph, isConnected: true }));
+      dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
+      await new Promise(resolve => setTimeout(resolve, 500));
+      assert.equal(mixedRequests, 2, `${code} failed batch must not be replayed by successful sibling`);
+      assert.equal(dom.getStatus().watching, true, 'mixed lifecycle outcome must retain watcher');
       dom.stopScrollFollowSession();
     }
   } finally {

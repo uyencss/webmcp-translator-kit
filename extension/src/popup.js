@@ -438,7 +438,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         throw new Error((err && err.message) || 'Không thể lưu cấu hình');
       }
       savedSettings = { ...savedSettings, ...patch };
-      fallbacks = JSON.parse(JSON.stringify(patch.fallbacks));
 
       // Primary API key (saved on change/blur, then masked)
       const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
@@ -1018,8 +1017,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.addEventListener('input', () => {
         const previousScope = favKeyForFallback(fb);
         fb.baseURL = urlInput.value.trim();
-        if (favKeyForFallback(fb) !== previousScope) renderAllModelDropdowns();
-        else updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, document.getElementById(`select-fallback-${idx}`));
+        const select = document.getElementById(`select-fallback-${idx}`);
+        if (favKeyForFallback(fb) !== previousScope) {
+          populateSelect(select, select?.value || fb.model, {
+            favs: getFavoritesForKey(favKeyForFallback(fb))
+          });
+        }
+        updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, select);
         markDirty();
       });
       urlGroup.appendChild(urlInput);
