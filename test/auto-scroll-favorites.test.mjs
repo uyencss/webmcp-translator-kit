@@ -160,6 +160,12 @@ test('favorites: validateSettings accepts scoped map and rejects bad shapes', ()
     validateSettings({ ...good, favoriteModelsByBaseURL: { k: Array.from({ length: 51 }, (_, i) => `m${i}`) } }).valid,
     false
   );
+  const badScope = validateSettings({ ...good, favoriteModelsByBaseURL: { 'not a url': ['a'] } });
+  assert.equal(badScope.valid, false);
+  assert.ok(
+    badScope.errors.some((e) => /favoriteModelsByBaseURL/i.test(e)),
+    'must report invalid scope key: ' + JSON.stringify(badScope.errors)
+  );
 });
 
 test('favorites: validateSettings rejects duplicate normalized scope keys before any save', () => {

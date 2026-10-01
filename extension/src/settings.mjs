@@ -479,13 +479,15 @@ export function validateSettings(settings) {
           break;
         }
         const scopeKey = normalizeBaseURLKey(k);
-        if (scopeKey) {
-          if (seenScopes.has(scopeKey)) {
-            errors.push(`favoriteModelsByBaseURL contains duplicate scope for normalized Base URL "${scopeKey}"`);
-            break;
-          }
-          seenScopes.add(scopeKey);
+        if (!scopeKey) {
+          errors.push(`favoriteModelsByBaseURL key "${k}" must be a valid HTTP(S) Base URL`);
+          break;
         }
+        if (seenScopes.has(scopeKey)) {
+          errors.push(`favoriteModelsByBaseURL contains duplicate scope for normalized Base URL "${scopeKey}"`);
+          break;
+        }
+        seenScopes.add(scopeKey);
         const list = map[k];
         if (!Array.isArray(list)) {
           errors.push('favoriteModelsByBaseURL values must be arrays of strings');
