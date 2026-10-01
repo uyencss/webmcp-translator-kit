@@ -324,18 +324,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const fbRes = collectCleanFallbacks();
     if (fbRes.error) return { patch: null, error: fbRes.error };
-    // Favorites map is written directly by star toggles / scope switches;
-    // autosave echoes it untouched so typing a new Base URL never copies the
-    // old scope's list into the new scope's bucket.
+    // Favorites are saved only by their star controls. A full form patch must
+    // not echo a stale popup map over changes made in another open popup.
     const patch = {
       sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
       targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
       widgetVisible: checkboxWidgetVisible ? Boolean(checkboxWidgetVisible.checked) : true,
       model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
       fallbacks: fbRes.fallbacks,
-      autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites)),
-      favoriteModels: primaryFavorites(),
-      favoriteModelsByBaseURL: JSON.parse(JSON.stringify(favoriteModelsByBaseURL))
+      autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites))
     };
     if (rawUrl) patch.baseURL = rawUrl;
     return { patch, error: null };
@@ -932,8 +929,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderAllModelDropdowns();
         setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
       } catch (err) {
+        renderAllModelDropdowns();
         setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Lỗi không xác định'), true);
-        updateStarButton();
       } finally {
         btnToggleFavorite.disabled = !lastFavKey;
       }

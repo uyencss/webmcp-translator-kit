@@ -797,6 +797,23 @@ test('popup: favorites are scoped per Base URL with fallback star controls', () 
     'favorites scope must never be keyed by API key');
 });
 
+test('popup: full autosave omits favorites and primary save failure re-renders', () => {
+  const patchStart = popupSrc.indexOf('function collectSettingsPatch');
+  const patchEnd = popupSrc.indexOf('// Autosave: persist every UI change', patchStart);
+  const patchBlock = popupSrc.slice(patchStart, patchEnd > patchStart ? patchEnd : undefined);
+  assert.ok(patchStart > 0, 'missing autosave patch builder');
+  assert.ok(!patchBlock.includes('favoriteModelsByBaseURL'), 'full autosave must not overwrite a newer favorite map');
+  assert.ok(!patchBlock.includes('favoriteModels:'), 'full autosave must not update legacy favorites from stale UI');
+
+  const primaryIdx = popupSrc.indexOf('btnToggleFavorite.addEventListener');
+  const primaryEnd = popupSrc.indexOf('\n  if (selectModel)', primaryIdx);
+  const primaryBlock = popupSrc.slice(primaryIdx, primaryEnd > primaryIdx ? primaryEnd : undefined);
+  const catchIdx = primaryBlock.indexOf('} catch (err) {');
+  assert.ok(catchIdx >= 0, 'primary star must handle save failures');
+  assert.ok(primaryBlock.slice(catchIdx).includes('renderAllModelDropdowns()'),
+    'failed primary favorite save must redraw model/favorite dropdowns after rollback');
+});
+
 test('popup: fallback star saves only its favorites map and reports failures', () => {
   const handlerIdx = popupSrc.indexOf('btnFallbackFav.addEventListener');
   assert.ok(handlerIdx > 0, 'missing fallback star control');

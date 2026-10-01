@@ -4918,9 +4918,12 @@ async function runSingleAttempt() {
         };
         const modelAutosaveTrace = await waitForTrace(trace => trace.some(event =>
           event.phase === 'sent' && event.kind === 'form' && event.settings.fallbacks?.[0]?.model === m2));
-        assert.ok(modelAutosaveTrace.some(event =>
-          event.phase === 'sent' && event.kind === 'form' && event.settings.fallbacks?.[0]?.model === m2),
+        const modelAutosave = modelAutosaveTrace.find(event =>
+          event.phase === 'sent' && event.kind === 'form' && event.settings.fallbacks?.[0]?.model === m2);
+        assert.ok(modelAutosave,
         'fallback model autosave must be in flight before starring');
+        assert.ok(!('favoriteModelsByBaseURL' in modelAutosave.settings) && !('favoriteModels' in modelAutosave.settings),
+          'full autosave must not send an older favorite-map snapshot');
         await cdp.evaluate('document.getElementById("btn-fallback-fav-0")?.click()', pSession2);
         const favoriteSaveTrace = await waitForTrace(trace => trace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'));
         assert.ok(favoriteSaveTrace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'),
