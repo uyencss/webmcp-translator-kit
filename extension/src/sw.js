@@ -1871,9 +1871,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const patch = (message.settings && typeof message.settings === 'object' && !Array.isArray(message.settings))
           ? message.settings
           : {};
+        const favoriteToggle = patch.favoriteToggle;
+        const settingsPatch = { ...patch };
+        delete settingsPatch.favoriteToggle;
 
         // Merge patch with previously saved settings
-        const mergedRaw = { ...oldSettings, ...patch };
+        const mergedRaw = { ...oldSettings, ...settingsPatch };
         if (patch.favoriteModelsByBaseURL && typeof patch.favoriteModelsByBaseURL === 'object' && !Array.isArray(patch.favoriteModelsByBaseURL)) {
           mergedRaw.favoriteModelsByBaseURL = {
             ...(oldSettings.favoriteModelsByBaseURL || {}),
@@ -1898,7 +1901,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         // Backward-compat (T43): explicit legacy favoriteModels without a scoped
         // map updates the active Base URL bucket so GET returns the submitted
         // list. A bare baseURL switch (no explicit list) still starts empty.
-        if (Array.isArray(patch.favoriteModels) && !('favoriteModelsByBaseURL' in patch)) {
+        if (Array.isArray(patch.favoriteModels) && !('favoriteModelsByBaseURL' in patch) && !favoriteToggle) {
           const activeBase = (typeof patch.baseURL === 'string' && patch.baseURL.trim())
             ? patch.baseURL
             : oldSettings.baseURL;
@@ -1909,6 +1912,25 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               : {};
             mergedRaw.favoriteModelsByBaseURL = { ...prevMap, [scopeKey]: [...patch.favoriteModels] };
           }
+        }
+
+        let favoriteToggleResult = null;
+        if (favoriteToggle !== undefined) {
+          const scopeKey = normalizeBaseURLKey(favoriteToggle && favoriteToggle.scopeKey);
+          const model = (favoriteToggle && typeof favoriteToggle.model === 'string') ? favoriteToggle.model.trim() : '';
+          if (!scopeKey || !model) {
+            return createTypedError('INVALID_SCHEMA', 'favoriteToggle requires a valid Base URL scope and model', false);
+          }
+          const map = (mergedRaw.favoriteModelsByBaseURL && typeof mergedRaw.favoriteModelsByBaseURL === 'object' && !Array.isArray(mergedRaw.favoriteModelsByBaseURL))
+            ? mergedRaw.favoriteModelsByBaseURL
+            : {};
+          const bucket = Array.isArray(map[scopeKey]) ? map[scopeKey] : [];
+          const favorites = bucket.includes(model)
+            ? bucket.filter((item) => item !== model)
+            : [...bucket, model].slice(0, 50);
+          mergedRaw.favoriteModelsByBaseURL = { ...map, [scopeKey]: favorites };
+          if (normalizeBaseURLKey(mergedRaw.baseURL) === scopeKey) mergedRaw.favoriteModels = favorites;
+          favoriteToggleResult = { scopeKey, favorites };
         }
 
         const validation = validateSettings(mergedRaw);
@@ -1987,7 +2009,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           notifyAllWidgetStateChanged();
         }
 
-        return { ok: true, configRevision };
+        return { ok: true, configRevision, ...(favoriteToggleResult ? { favoriteToggle: favoriteToggleResult } : {}) };
         });
       }
 

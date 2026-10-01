@@ -371,23 +371,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       favoriteWriteInFlight = true;
-      const previousMap = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
-      const isPrimaryScope = scopeKey === lastFavKey;
-      const bucket = Array.isArray(previousMap[scopeKey]) ? previousMap[scopeKey] : [];
-      const nextFavorites = bucket.includes(model)
-        ? bucket.filter(id => id !== model)
-        : [...bucket, model].slice(0, 50);
-      const nextMap = { ...previousMap, [scopeKey]: nextFavorites };
-      const favoriteMapPatch = { [scopeKey]: nextFavorites };
-
-      // Publish the new map before any async save/queued autosave can snapshot it.
-      favoriteModelsByBaseURL = nextMap;
-      savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(nextMap));
-      savedSettings.favoriteModels = primaryFavorites();
-
       try {
-        const settings = { favoriteModelsByBaseURL: favoriteMapPatch };
-        if (isPrimaryScope) settings.favoriteModels = nextFavorites;
+        const settings = { favoriteToggle: { scopeKey, model } };
         const response = await new Promise(resolve => {
           try {
             chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings }, value => {
@@ -401,12 +386,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!response || response.error) {
           throw new Error(response?.error?.message || 'Không thể lưu danh sách yêu thích');
         }
-        return nextFavorites;
-      } catch (err) {
-        favoriteModelsByBaseURL = previousMap;
-        savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(previousMap));
+        const favoriteToggle = response.favoriteToggle;
+        if (favoriteToggle?.scopeKey !== scopeKey || !Array.isArray(favoriteToggle.favorites)) {
+          throw new Error('Phản hồi lưu yêu thích không hợp lệ');
+        }
+        favoriteModelsByBaseURL = {
+          ...favoriteModelsByBaseURL,
+          [scopeKey]: [...favoriteToggle.favorites]
+        };
+        savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
         savedSettings.favoriteModels = primaryFavorites();
-        throw err;
+        return [...favoriteToggle.favorites];
       } finally {
         favoriteWriteInFlight = false;
         if (saveFormAfter) autosaveQueued = true;

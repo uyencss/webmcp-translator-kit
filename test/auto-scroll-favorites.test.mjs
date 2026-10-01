@@ -448,6 +448,36 @@ test('sw: concurrent per-Base-URL favorite patches preserve other providers', as
   }
 });
 
+test('sw: concurrent favorite toggles apply to latest provider bucket', async () => {
+  const A = 'https://provider-a.example/v1';
+  const B = 'https://provider-b.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const keyB = normalizeBaseURLKey(B);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/old',
+    favoriteModels: ['a-old'],
+    favoriteModelsByBaseURL: { [keyA]: ['a-old'], [keyB]: ['b-old'] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+
+  try {
+    const [toggleA, toggleB] = await Promise.all([
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-new' } } }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-second' } } }, popupSender)
+    ]);
+    assert.ok(toggleA?.ok && toggleB?.ok, 'both favorite toggles must succeed');
+    assert.deepEqual(toggleA.favoriteToggle.favorites, ['a-old', 'a-new']);
+    assert.deepEqual(toggleB.favoriteToggle.favorites, ['a-old', 'a-new', 'a-second']);
+    const final = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['a-old', 'a-new', 'a-second']);
+    assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyB], ['b-old']);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
 test('sw: v4 favorites migration is serialized with a concurrent settings save', async () => {
   const previousSettings = store.local.settings;
   store.local.settings = {
@@ -852,7 +882,7 @@ test('popup: full autosave omits favorites and primary save failure re-renders',
     'failed primary favorite save must redraw model/favorite dropdowns after rollback');
 });
 
-test('popup: fallback star saves only its favorites map and reports failures', () => {
+test('popup: fallback star sends an atomic toggle and reports failures', () => {
   const handlerIdx = popupSrc.indexOf('btnFallbackFav.addEventListener');
   assert.ok(handlerIdx > 0, 'missing fallback star control');
   const handlerEnd = popupSrc.indexOf('\n      });\n\n      modelWrap.appendChild', handlerIdx);
@@ -863,14 +893,12 @@ test('popup: fallback star saves only its favorites map and reports failures', (
   const toggleIdx = popupSrc.indexOf('function saveFavoriteToggle');
   const toggleEnd = popupSrc.indexOf('\n  async function flushAutosave', toggleIdx);
   const toggleBlock = popupSrc.slice(toggleIdx, toggleEnd > toggleIdx ? toggleEnd : undefined);
-  const publishMap = toggleBlock.indexOf('favoriteModelsByBaseURL = nextMap');
-  const sendMap = toggleBlock.indexOf('chrome.runtime.sendMessage');
-  assert.ok(publishMap >= 0 && sendMap > publishMap, 'favorite map must update before any async save can snapshot it');
-  assert.ok(toggleBlock.includes('const favoriteMapPatch = { [scopeKey]: nextFavorites }'),
-    'favorite writes must send only the changed provider bucket');
-  assert.ok(toggleBlock.includes('favoriteModelsByBaseURL: favoriteMapPatch'),
-    'service worker must merge the partial provider bucket into the latest settings map');
-  assert.ok(toggleBlock.includes('favoriteModelsByBaseURL = previousMap'), 'failed favorite writes must roll back local state');
+  assert.ok(toggleBlock.includes('favoriteToggle: { scopeKey, model }'), 'favorite writes must send a scope+model toggle, not a stale bucket snapshot');
+  const sendToggle = toggleBlock.indexOf('chrome.runtime.sendMessage');
+  const acceptToggle = toggleBlock.indexOf('const favoriteToggle = response.favoriteToggle');
+  assert.ok(sendToggle >= 0 && acceptToggle > sendToggle, 'popup must apply the service worker\'s serialized canonical favorite result');
+  assert.ok(swSrc.includes('favoriteToggle.scopeKey') && swSrc.includes('favoriteToggle.model'),
+    'service worker must compute the toggle against the latest saved provider bucket');
   assert.ok(toggleBlock.includes('favoriteWriteInFlight = false'), 'favorite writes must release the autosave gate');
   assert.ok(popupSrc.includes('if (favoriteWriteInFlight) {\n      autosaveQueued = true;'),
     'full autosaves must queue while a favorite partial write is active');

@@ -4872,13 +4872,14 @@ async function runSingleAttempt() {
                 if (typeof callback !== 'function') return original.apply(this, args);
                 const settings = message.settings || {};
                 const isFormSave = Array.isArray(settings.fallbacks);
+                const isFavoriteToggle = Boolean(settings.favoriteToggle);
                 const isFavoriteMapSave = Boolean(settings.favoriteModelsByBaseURL) &&
                   Object.keys(settings).every(key => key === 'favoriteModelsByBaseURL' || key === 'favoriteModels');
-                const kind = isFormSave ? 'form' : (isFavoriteMapSave ? 'favorite-map' : 'other');
+                const kind = isFormSave ? 'form' : (isFavoriteToggle ? 'favorite-toggle' : (isFavoriteMapSave ? 'favorite-map' : 'other'));
                 const delay = isFormSave ? window.__delayFormSaveMs
-                  : (isFavoriteMapSave ? window.__delayFavoriteMapMs : 0);
+                  : (isFavoriteToggle || isFavoriteMapSave ? window.__delayFavoriteMapMs : 0);
                 window.__fallbackSaveTrace.push({ phase: 'sent', kind, settings });
-                if (kind === 'favorite-map' && window.__failNextFavoriteMapWrite) {
+                if (kind === 'favorite-toggle' && window.__failNextFavoriteMapWrite) {
                   window.__failNextFavoriteMapWrite = false;
                   const response = { error: { code: 'TEST_FAILURE', message: 'injected favorite write failure' } };
                   const complete = () => {
@@ -4925,8 +4926,8 @@ async function runSingleAttempt() {
         assert.ok(!('favoriteModelsByBaseURL' in modelAutosave.settings) && !('favoriteModels' in modelAutosave.settings),
           'full autosave must not send an older favorite-map snapshot');
         await cdp.evaluate('document.getElementById("btn-fallback-fav-0")?.click()', pSession2);
-        const favoriteSaveTrace = await waitForTrace(trace => trace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'));
-        assert.ok(favoriteSaveTrace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'),
+        const favoriteSaveTrace = await waitForTrace(trace => trace.some(event => event.phase === 'sent' && event.kind === 'favorite-toggle'));
+        assert.ok(favoriteSaveTrace.some(event => event.phase === 'sent' && event.kind === 'favorite-toggle'),
           `fallback star must issue its scoped map write: ${JSON.stringify({ fallbackSaveSpy, trace: favoriteSaveTrace, button: await cdp.evaluate("JSON.stringify({ disabled: document.getElementById('btn-fallback-fav-0')?.disabled, title: document.getElementById('btn-fallback-fav-0')?.title })", pSession2), message: await cdp.evaluate("document.getElementById('config-message-connect')?.textContent || ''", pSession2) })}`);
 
         const srcSelect = await cdp.evaluate(`(() => {
@@ -4984,9 +4985,9 @@ async function runSingleAttempt() {
           document.getElementById('btn-fallback-fav-0')?.click();
         })()`, pSession2);
         const failureTrace = await waitForTrace(trace => trace.some(event =>
-          event.phase === 'callback' && event.kind === 'favorite-map' && event.response?.error?.code === 'TEST_FAILURE'));
+          event.phase === 'callback' && event.kind === 'favorite-toggle' && event.response?.error?.code === 'TEST_FAILURE'));
         assert.ok(failureTrace.some(event =>
-          event.phase === 'callback' && event.kind === 'favorite-map' && event.response?.error?.code === 'TEST_FAILURE'),
+          event.phase === 'callback' && event.kind === 'favorite-toggle' && event.response?.error?.code === 'TEST_FAILURE'),
         'fallback favorite save failure must reach the popup rollback path');
         const rollbackState = await waitSettings(settings =>
           settings.fallbacks?.[0]?.model === mFail && !(settings.favoriteModelsByBaseURL?.[keyA] || []).includes(mFail));
