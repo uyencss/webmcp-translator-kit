@@ -1480,6 +1480,7 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
       scrollTo() {}
     };
     win.top = win;
+    let batchErrorCode = 'PERMISSION_REQUIRED';
     const runtime = {
       id: 'test-ext-id', lastError: null, onMessage: { addListener() {} },
       sendMessage: (msg, cb) => {
@@ -1487,7 +1488,7 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
           cb({ effective: 'on', permission: true, hasKey: true, autoStart: false, widgetVisible: true });
         } else if (msg?.action === 'TRANSLATE_BATCH') {
           translationRequests++;
-          cb({ error: { code: 'PERMISSION_REQUIRED', message: 'Permission was revoked', retryable: false } });
+          cb({ error: { code: batchErrorCode, message: 'Batch stopped', retryable: false } });
         } else if (typeof cb === 'function') cb({ ok: true });
       }
     };
@@ -1522,6 +1523,15 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(translationRequests, 1, 'fatal permission failure must not retry/reschedule the same nodes');
     assert.equal(dom.getStatus().watching, false, 'fatal permission failure must stop the scroll session');
+    for (const code of ['ABORTED', 'DROPPED_ON_RESTART']) {
+      batchErrorCode = code;
+      const before = translationRequests;
+      dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      assert.equal(translationRequests - before, 1, `${code} must not automatically replay the batch`);
+      assert.equal(dom.getStatus().watching, true, `${code} must keep watching for later user scroll`);
+      dom.stopScrollFollowSession();
+    }
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'clearInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];

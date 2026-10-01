@@ -1016,8 +1016,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.autocomplete = 'off';
       urlInput.value = fb.baseURL || '';
       urlInput.addEventListener('input', () => {
+        const previousScope = favKeyForFallback(fb);
         fb.baseURL = urlInput.value.trim();
-        updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, document.getElementById(`select-fallback-${idx}`));
+        if (favKeyForFallback(fb) !== previousScope) renderAllModelDropdowns();
+        else updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, document.getElementById(`select-fallback-${idx}`));
         markDirty();
       });
       urlGroup.appendChild(urlInput);

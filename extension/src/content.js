@@ -970,9 +970,9 @@
 
       if (res.fatal) {
         batchFatal = true;
-        // Rate limits have a bounded retry timer below; other fatal errors
-        // stop observation and cancel any sibling in-flight batch.
-        if (res.error?.code !== 'RATE_LIMITED') cancelActiveTranslation();
+        // Lifecycle aborts stop this batch without replay; the watcher stays
+        // available for a later scroll after config changes or SW restart.
+        if (!['RATE_LIMITED', 'ABORTED', 'DROPPED_ON_RESTART'].includes(res.error?.code)) cancelActiveTranslation();
       }
 
       // Handle RATE_LIMITED with single timer + jitter (no spin)
