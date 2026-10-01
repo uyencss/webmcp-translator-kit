@@ -1874,6 +1874,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         // Merge patch with previously saved settings
         const mergedRaw = { ...oldSettings, ...patch };
+        if (patch.favoriteModelsByBaseURL && typeof patch.favoriteModelsByBaseURL === 'object' && !Array.isArray(patch.favoriteModelsByBaseURL)) {
+          mergedRaw.favoriteModelsByBaseURL = {
+            ...(oldSettings.favoriteModelsByBaseURL || {}),
+            ...patch.favoriteModelsByBaseURL
+          };
+        }
         if (patch.rateLimits && typeof patch.rateLimits === 'object' && !Array.isArray(patch.rateLimits)) {
           mergedRaw.rateLimits = {
             ...oldSettings.rateLimits,

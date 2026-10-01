@@ -420,7 +420,35 @@ test('sw: WIDGET_SET_MODE serializes with favorite SAVE_SETTINGS', async () => {
   assert.equal(final.settings.translationMode, 'full');
 });
 
-test('sw: v4 favorites migration is persisted once on read', async () => {
+test('sw: concurrent per-Base-URL favorite patches preserve other providers', async () => {
+  const A = 'https://provider-a.example/v1';
+  const B = 'https://provider-b.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const keyB = normalizeBaseURLKey(B);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/old',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: { [keyA]: ['a-old'], [keyB]: ['b-old'] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+
+  try {
+    const [saveA, saveB] = await Promise.all([
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModelsByBaseURL: { [keyA]: ['a-new'] } } }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModelsByBaseURL: { [keyB]: ['b-new'] } } }, popupSender)
+    ]);
+    assert.ok(saveA?.ok && saveB?.ok, 'both provider bucket saves must succeed');
+    const final = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['a-new']);
+    assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyB], ['b-new']);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
+test('sw: v4 favorites migration is serialized with a concurrent settings save', async () => {
   const previousSettings = store.local.settings;
   store.local.settings = {
     version: 4,
@@ -443,13 +471,19 @@ test('sw: v4 favorites migration is persisted once on read', async () => {
 
   try {
     const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
-    const first = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    const [first, save] = await Promise.all([
+      sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { widgetVisible: false } }, popupSender)
+    ]);
     assert.equal(first.settings.version, 5);
-    assert.deepEqual(first.settings.favoriteModelsByBaseURL[PROVIDER_A], ['legacy-favorite']);
-    assert.equal(store.local.settings.version, 5);
-
+    assert.ok(save?.ok, 'concurrent settings save must succeed');
+    const current = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.equal(current.settings.version, 5);
+    assert.deepEqual(current.settings.favoriteModelsByBaseURL[PROVIDER_A], ['legacy-favorite']);
+    assert.equal(current.settings.widgetVisible, false, 'concurrent partial settings change must survive migration write');
+    const writesAfterConcurrentRead = settingsWriteCount;
     await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
-    assert.equal(settingsWriteCount, 1, 'subsequent reads must not rewrite the migrated record');
+    assert.equal(settingsWriteCount, writesAfterConcurrentRead, 'subsequent reads must not rewrite the migrated record');
   } finally {
     chrome.storage.local.set = originalSet;
     store.local.settings = previousSettings;
@@ -828,6 +862,10 @@ test('popup: fallback star saves only its favorites map and reports failures', (
   const publishMap = toggleBlock.indexOf('favoriteModelsByBaseURL = nextMap');
   const sendMap = toggleBlock.indexOf('chrome.runtime.sendMessage');
   assert.ok(publishMap >= 0 && sendMap > publishMap, 'favorite map must update before any async save can snapshot it');
+  assert.ok(toggleBlock.includes('const favoriteMapPatch = { [scopeKey]: nextFavorites }'),
+    'favorite writes must send only the changed provider bucket');
+  assert.ok(toggleBlock.includes('favoriteModelsByBaseURL: favoriteMapPatch'),
+    'service worker must merge the partial provider bucket into the latest settings map');
   assert.ok(toggleBlock.includes('favoriteModelsByBaseURL = previousMap'), 'failed favorite writes must roll back local state');
   assert.ok(toggleBlock.includes('favoriteWriteInFlight = false'), 'favorite writes must release the autosave gate');
   assert.ok(popupSrc.includes('if (favoriteWriteInFlight) {\n      autosaveQueued = true;'),

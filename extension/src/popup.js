@@ -377,6 +377,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? bucket.filter(id => id !== model)
         : [...bucket, model].slice(0, 50);
       const nextMap = { ...previousMap, [scopeKey]: nextFavorites };
+      const favoriteMapPatch = { [scopeKey]: nextFavorites };
 
       // Publish the new map before any async save/queued autosave can snapshot it.
       favoriteModelsByBaseURL = nextMap;
@@ -384,7 +385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       savedSettings.favoriteModels = primaryFavorites();
 
       try {
-        const settings = { favoriteModelsByBaseURL: nextMap };
+        const settings = { favoriteModelsByBaseURL: favoriteMapPatch };
         if (isPrimaryScope) settings.favoriteModels = nextFavorites;
         const response = await new Promise(resolve => {
           try {
