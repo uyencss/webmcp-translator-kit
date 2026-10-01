@@ -878,11 +878,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   function updateStarButton() {
     if (!btnToggleFavorite || !selectModel) return;
     const curVal = selectModel.value;
-    const isFav = primaryFavorites().includes(curVal);
+    const liveKey = currentFavKey();
+    const isFav = getFavoritesForKey(liveKey).includes(curVal);
     btnToggleFavorite.innerHTML = isFav ? SVG_ICONS.starFilled : SVG_ICONS.star;
     btnToggleFavorite.classList.toggle('favorited', isFav);
-    btnToggleFavorite.disabled = !lastFavKey;
-    btnToggleFavorite.title = !lastFavKey
+    btnToggleFavorite.disabled = !liveKey;
+    btnToggleFavorite.title = !liveKey
       ? 'Nhập Base URL hợp lệ (http/https) để dùng yêu thích'
       : (isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích');
   }
@@ -912,19 +913,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      const scopeKey = lastFavKey;
+      const scopeKey = currentFavKey();
       if (!scopeKey) return;
       btnToggleFavorite.disabled = true;
       try {
-        const desiredFavorite = !primaryFavorites().includes(curVal);
+        const desiredFavorite = !getFavoritesForKey(scopeKey).includes(curVal);
         await saveFavoriteToggle(scopeKey, curVal, desiredFavorite);
+        // Align displayed scope to the live input without persisting baseURL:
+        // the star must not autosave or otherwise change the configured URL.
+        if (scopeKey !== lastFavKey) {
+          lastFavKey = scopeKey;
+          savedSettings.favoriteModels = getFavoritesForKey(lastFavKey);
+        }
         renderAllModelDropdowns();
         setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
       } catch (err) {
         renderAllModelDropdowns();
         setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Lỗi không xác định'), true);
       } finally {
-        btnToggleFavorite.disabled = !lastFavKey;
+        btnToggleFavorite.disabled = !currentFavKey();
       }
     });
   }
@@ -1316,9 +1323,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (state === 'translated') {
+      const effTranslated = typeof data.totalCollected === 'number'
+        ? Math.min(data.totalApplied || 0, data.totalCollected)
+        : (data.applied || 0);
       const countStr = typeof data.totalCollected === 'number'
-        ? `${data.totalApplied || 0}/${data.totalCollected}`
-        : `${data.applied || 0}`;
+        ? `${effTranslated}/${data.totalCollected}`
+        : `${effTranslated}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : (data.failed || 0);
       if (failed > 0) {
         return `Đã dịch ${countStr} nodes (${failed} lỗi — bấm "Dịch trang" lần nữa để dịch nốt phần còn lại)`;

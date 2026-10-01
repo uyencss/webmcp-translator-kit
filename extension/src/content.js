@@ -1668,6 +1668,7 @@
           // pushed state; only the latest authoritative response may apply.
           if (mySeq < widgetQuerySeq) return;
           if (resp && !resp.error) {
+            autoStartQueryRetries = 0;
             applyState(resp);
             checkAutoStart(resp);
           } else if (resp && resp.error && !autoStartAttempted && autoStartQueryRetries < AUTO_QUERY_MAX_RETRIES && !__wmtHalted && __wmtValidContext()) {
@@ -1936,6 +1937,7 @@
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {
           if (!__wmtHalted && __wmtValidContext() && (!autoStartAttempted || autoStartTimer) && !userRestored && !isTranslating && !scrollSession.watching) {
+            autoStartQueryRetries = 0;
             queryState();
           }
         } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }

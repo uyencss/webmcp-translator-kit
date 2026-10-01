@@ -640,8 +640,10 @@ test('popup: stars send the displayed desired state (favorite true|false)', () =
   assert.ok(primaryIdx > 0, 'missing primary star control');
   const primaryEnd = popupSrc.indexOf('\n  if (selectModel)', primaryIdx);
   const primaryBlock = popupSrc.slice(primaryIdx, primaryEnd > primaryIdx ? primaryEnd : undefined);
-  assert.ok(primaryBlock.includes('!primaryFavorites().includes(curVal)'),
-    'primary star must compute desired state from the displayed bucket');
+  assert.ok(primaryBlock.includes('const scopeKey = currentFavKey()'),
+    'primary star must scope save from the live Base URL input, not only the last change event');
+  assert.ok(primaryBlock.includes('!getFavoritesForKey(scopeKey).includes(curVal)'),
+    'primary star must compute desired state from the live bucket');
   assert.ok(primaryBlock.includes('saveFavoriteToggle(scopeKey, curVal, desiredFavorite)'),
     'primary star must send the displayed desired state');
   assert.ok(primaryBlock.includes('Lỗi cập nhật yêu thích:'), 'primary star must surface the limit error message');
@@ -1399,4 +1401,40 @@ test('sw: malformed favoriteToggle identifies each bad field in schemaErrors', a
   } finally {
     store.local.settings = previousSettings;
   }
+});
+
+test('content: retry budget resets after success and on new push cycle, not stale', () => {
+  const qIdx = contentSrc.indexOf('function queryState()');
+  assert.ok(qIdx > 0, 'missing queryState');
+  const okIdx = contentSrc.indexOf('if (resp && !resp.error)', qIdx);
+  assert.ok(okIdx > qIdx, 'missing success branch');
+  assert.ok(contentSrc.slice(okIdx, okIdx + 250).includes('autoStartQueryRetries = 0'), 'success must reset retry budget');
+  const staleIdx = contentSrc.indexOf('if (mySeq < widgetQuerySeq) return;', qIdx);
+  assert.ok(staleIdx > 0 && staleIdx < okIdx, 'stale guard must precede reset (stale replies never reset)');
+  const pushIdx = contentSrc.indexOf("msg.action === 'WIDGET_STATE_CHANGED'");
+  assert.ok(pushIdx > 0, 'missing push handler');
+  const cycleEnd = contentSrc.indexOf('queryState();', pushIdx);
+  assert.ok(cycleEnd > pushIdx, 'push must start a new query cycle');
+  assert.ok(contentSrc.slice(pushIdx, cycleEnd).includes('autoStartQueryRetries = 0'), 'new push cycle must reset retry budget');
+});
+
+test('popup: primary star renders/saves from live Base URL scope without persisting URL', () => {
+  const starIdx = popupSrc.indexOf('function updateStarButton');
+  const starBlock = popupSrc.slice(starIdx, popupSrc.indexOf('function updateFallbackStar', starIdx));
+  assert.ok(starBlock.includes('currentFavKey()') && starBlock.includes('getFavoritesForKey('), 'star rendering must align with live scope');
+  assert.ok(!starBlock.includes('primaryFavorites()'), 'star rendering must not rely only on last change event');
+  const hIdx = popupSrc.indexOf('btnToggleFavorite.addEventListener');
+  const hBlock = popupSrc.slice(hIdx, popupSrc.indexOf('\n  if (selectModel)', hIdx));
+  assert.ok(hBlock.includes('const scopeKey = currentFavKey()'), 'save scope must be the live input');
+  assert.ok(hBlock.includes('!getFavoritesForKey(scopeKey).includes(curVal)'), 'desired favorite must come from the live bucket');
+  assert.ok(!hBlock.includes('markDirty') && !hBlock.includes('flushAutosave'), 'star must not autosave');
+  assert.ok(!hBlock.includes('savedSettings.baseURL') && !hBlock.includes('inputBaseUrl.value ='), 'star must not change the configured primary URL');
+});
+
+test('popup: translated detail clamps applied at collected like watch/footer', () => {
+  const trIdx = popupSrc.indexOf("if (state === 'translated')");
+  assert.ok(trIdx > 0, 'missing translated detail');
+  const trBlock = popupSrc.slice(trIdx, popupSrc.indexOf("if (state === 'error')", trIdx));
+  assert.ok(trBlock.includes('Math.min(data.totalApplied'), 'translated must cap applied at collected');
+  assert.ok(trBlock.includes('data.totalCollected'), 'translated cap must reference collected count');
 });
