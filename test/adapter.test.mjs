@@ -436,7 +436,8 @@ test('Case 9: Abort signal handling', async () => {
       baseURL,
       apiKey: 'test-key',
       model: 'ag/gemini-3.1-pro-low',
-      ...fastOptions
+      ...fastOptions,
+      timeoutMs: 1000
     });
 
     const items = [{ id: 'abort-1', revision: 0, text: 'abort me' }];
@@ -444,12 +445,17 @@ test('Case 9: Abort signal handling', async () => {
     // 1. Caller aborts during request
     fake.setMode('delay', { delayMs: 250 });
     const controller = new AbortController();
-    setTimeout(() => controller.abort('User navigated away'), 20);
-
-    const resAbort = await router.translateBatch({
+    const pending = router.translateBatch({
       items,
       signal: controller.signal
     });
+    const requestDeadline = Date.now() + 1000;
+    while (fake.getLog().length === 0 && Date.now() < requestDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(fake.getLog().length, 1, 'fake server must receive the request before aborting');
+    controller.abort('User navigated away');
+    const resAbort = await pending;
 
     assert.equal(resAbort.error?.code, 'ABORTED');
     assert.equal(resAbort.error?.retryable, false);
