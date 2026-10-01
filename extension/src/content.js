@@ -35,6 +35,7 @@
   // halt timers/sessions silently (no uncaught errors, no retry spam); a page
   // reload injects a fresh script which works normally.
   let __wmtHalted = false;
+  let widgetProgressIntervalId = null;
   function __wmtValidContext() {
     try { return !!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function'); } catch { return false; }
   }
@@ -46,6 +47,12 @@
     if (__wmtHalted) return;
     __wmtHalted = true;
     try { if (autoStartTimer) { clearTimeout(autoStartTimer); autoStartTimer = null; } } catch {}
+    try {
+      if (widgetProgressIntervalId !== null) {
+        clearInterval(widgetProgressIntervalId);
+        widgetProgressIntervalId = null;
+      }
+    } catch {}
     try { stopScrollFollowSession(false); } catch {}
     try { isTranslating = false; activeRunToken++; } catch {}
     try { updateFabBusy(); } catch {}
@@ -956,6 +963,13 @@
         lastTranslateStatus.lastError = res.error;
       }
 
+      if (res.fatal) {
+        batchFatal = true;
+        // Rate limits have a bounded retry timer below; other fatal errors
+        // stop observation and cancel any sibling in-flight batch.
+        if (res.error?.code !== 'RATE_LIMITED') cancelActiveTranslation();
+      }
+
       // Handle RATE_LIMITED with single timer + jitter (no spin)
       if (res.error && res.error.code === 'RATE_LIMITED') {
         const retryAfterMs = (res.error.details?.retryAfterMs || 2000) + Math.floor(Math.random() * 100) + 50;
@@ -1182,6 +1196,16 @@
         lastTranslateStatus.state = lastTranslateStatus.totalApplied > 0 ? 'done' : 'idle';
       }
     }
+  }
+
+  function cancelActiveTranslation() {
+    epoch++;
+    __wmtFire({ action: 'CANCEL_PENDING', epoch });
+    stopScrollFollowSession(true);
+    isTranslating = false;
+    activeRunToken++;
+    pendingSet.clear();
+    updateFabBusy();
   }
 
   // ============================================================================
@@ -1501,7 +1525,7 @@
       progressEl.textContent = text;
       progressEl.style.display = 'block';
     }
-    setInterval(refreshWidgetProgress, 800);
+    widgetProgressIntervalId = setInterval(refreshWidgetProgress, 800);
 
     let isPanelOpen = false;
     let widgetState = {
@@ -1526,14 +1550,14 @@
 
       // Effective Consent
       const isEffectiveOn = widgetState.effective === 'on';
-      if (!isEffectiveOn) {
+      if (!isEffectiveOn || widgetState.permission !== true || widgetState.hasKey !== true) {
         if (autoStartTimer) {
           clearTimeout(autoStartTimer);
           autoStartTimer = null;
-          autoStartAttempted = false;
         }
-        if (scrollSession.watching) {
-          stopScrollFollowSession(true);
+        autoStartAttempted = false;
+        if (isTranslating || scrollSession.active || scrollSession.watching || scrollSession.inFlight > 0) {
+          cancelActiveTranslation();
         }
       }
 
@@ -1936,7 +1960,7 @@
           applyState(pushedState);
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {
-          if (!__wmtHalted && __wmtValidContext() && (!autoStartAttempted || autoStartTimer) && !userRestored && !isTranslating && !scrollSession.watching) {
+          if (!__wmtHalted && __wmtValidContext()) {
             autoStartQueryRetries = 0;
             queryState();
           }

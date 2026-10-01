@@ -207,6 +207,8 @@ const SITE_URL = `${SITE}/fixture.html`;
 const PROVIDER_A = 'http://127.0.0.1:8089/v1';
 
 function makeChromeStub(store, permState) {
+  const permissionRemovedHandlers = [];
+  const tabMessages = [];
   const area = (bucket) => ({
     get: async (keys) => {
       if (keys === null || keys === undefined) return { ...bucket };
@@ -222,19 +224,26 @@ function makeChromeStub(store, permState) {
     setAccessLevel: async () => {},
     getAccessLevel: async () => 'TRUSTED_CONTEXTS'
   });
-  return {
+  const chrome = {
     storage: { local: area(store.local), session: area(store.session), onChanged: { addListener() {} } },
     tabs: {
-      sendMessage: async () => ({}),
+      sendMessage: async (tabId, msg) => { tabMessages.push({ tabId, msg }); return {}; },
       query: async () => [],
       get: async () => { throw new Error('No tab'); },
       onRemoved: { addListener() {} },
       onUpdated: { addListener() {} }
     },
     runtime: { id: 'test-ext-id', onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
-    permissions: { contains: async () => permState.granted, request: async () => permState.granted, onRemoved: { addListener() {} } },
+    permissions: {
+      contains: async () => permState.granted,
+      request: async () => permState.granted,
+      onRemoved: { addListener: (handler) => permissionRemovedHandlers.push(handler) }
+    },
     scripting: { registerContentScripts: async () => {}, unregisterContentScripts: async () => {}, getRegisteredContentScripts: async () => [], executeScript: async () => [{}] }
   };
+  chrome.__testPermissionRemovedHandlers = permissionRemovedHandlers;
+  chrome.__testTabMessages = tabMessages;
+  return chrome;
 }
 
 function baseSettings(over = {}) {
@@ -327,6 +336,30 @@ test('autostart gate: no requests when key absent / permission revoked / tab ove
   assert.equal(st.autoStart, false);
   assert.equal(st.reason, 'not_in_list');
   store.local.settings = baseSettings();
+});
+
+test('sw: removing host permission broadcasts a state refresh to content tabs', async () => {
+  const chromeStub = globalThis.chrome;
+  const handler = chromeStub.__testPermissionRemovedHandlers[0];
+  assert.equal(typeof handler, 'function', 'service worker must register permission-removal handling');
+  const oldQuery = chromeStub.tabs.query;
+  const oldSendMessage = chromeStub.tabs.sendMessage;
+  const messages = [];
+  chromeStub.tabs.query = async () => [{ id: 7, url: SITE_URL }];
+  chromeStub.tabs.sendMessage = async (tabId, msg) => { messages.push({ tabId, msg }); return {}; };
+  try {
+    sw._setTestPermission(SITE, false);
+    await handler({ origins: [`${SITE}/*`] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(
+      messages.some(({ tabId, msg }) => tabId === 7 && msg?.action === 'WIDGET_STATE_CHANGED'),
+      'permission removal must tell active content scripts to re-query state'
+    );
+  } finally {
+    sw._setTestPermission(SITE, true);
+    chromeStub.tabs.query = oldQuery;
+    chromeStub.tabs.sendMessage = oldSendMessage;
+  }
 });
 
 test('favorites: A → new B → A persists across popup close/reopen (SW storage round-trip)', async () => {
@@ -724,7 +757,7 @@ test('content: stale extension context halts silently instead of throwing', () =
 
 test('content: sendMessage without runtime.id can start translation (smoke bridge)', async () => {
   const saved = {};
-  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'clearInterval', 'IntersectionObserver', 'MutationObserver']) {
     if (k in globalThis) saved[k] = globalThis[k];
   }
   try {
@@ -750,6 +783,9 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     let yielded = false;
     let callbackInvalidated = false;
     let translationRequests = 0;
+    let nextIntervalId = 0;
+    const activeIntervals = new Set();
+    const clearedIntervals = new Set();
     // Smoke bridge: sendMessage exists, runtime.id absent.
     globalThis.chrome = {
       runtime: {
@@ -791,13 +827,22 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     globalThis.NodeFilter = { SHOW_TEXT: 4 };
     globalThis.requestAnimationFrame = () => 0;
     globalThis.cancelAnimationFrame = () => {};
-    globalThis.setInterval = () => 0;
+    globalThis.setInterval = () => {
+      const id = ++nextIntervalId;
+      activeIntervals.add(id);
+      return id;
+    };
+    globalThis.clearInterval = (id) => {
+      activeIntervals.delete(id);
+      clearedIntervals.add(id);
+    };
     class FakeObserver { constructor() {} observe() {} unobserve() {} disconnect() {} }
     globalThis.IntersectionObserver = FakeObserver;
     globalThis.MutationObserver = FakeObserver;
     vm.runInThisContext(contentSrc, { filename: 'content.js' });
     const dom = win.__translatorDom;
     assert.ok(dom, 'content must expose __translatorDom');
+    assert.equal(activeIntervals.size, 1, 'floating widget must register one progress interval');
     const res = await dom.executeTranslation({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
     assert.notEqual(res && res.cancelled, true, 'no-id bridge must not cancel: ' + JSON.stringify(res));
     assert.equal(res && res.ok, true, 'no-id bridge must start translation: ' + JSON.stringify(res));
@@ -809,12 +854,14 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     assert.equal(stale.error?.code, 'ABORTED', 'lastError invalidation callback must resolve ABORTED');
     assert.equal(stale.error?.retryable, false, 'invalidation must not retry');
     assert.equal(dom.getStatus().watching, false, 'lastError invalidation must stop active scroll-follow');
+    assert.equal(activeIntervals.size, 0, 'stale context must clear the widget progress interval');
+    assert.equal(clearedIntervals.size, 1, 'stale halt must clear exactly the registered widget interval');
     const countAfterHalt = translationRequests;
     const followup = await dom.sendChunk([{ id: 'stale-followup', text: 'must not resend', revision: 0 }], {}, dom.getEpoch());
     assert.equal(followup.error?.code, 'ABORTED');
     assert.equal(translationRequests, countAfterHalt, 'halted script must not resend after invalidation');
   } finally {
-    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'clearInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];
       else delete globalThis[k];
     }
@@ -1352,8 +1399,103 @@ test('content: auto-start revalidates permission, key and consent during settle'
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.equal(dom.getStatus().watching, true, 'complete positive state must recover auto-start');
     assert.equal(dom.getStatus().mode, 'scroll-follow');
+
+    // Empty production broadcasts must re-query even during an active session;
+    // each authoritative gate loss then cancels the active watcher.
+    for (const blockedState of [
+      { ...onState, hasKey: false },
+      { ...onState, permission: false },
+      offState
+    ]) {
+      pushState(onState);
+      dom.startScrollFollowSession({});
+      assert.equal(dom.getStatus().watching, true, 'session must be active before testing a gate loss');
+      const readsBefore = getStateCalls;
+      pushEmptyState(blockedState);
+      assert.ok(getStateCalls > readsBefore, 'empty state-change broadcast must query while translating');
+      assert.equal(dom.getStatus().watching, false, 'lost key/permission/consent must stop active scroll-follow');
+    }
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+      if (k in saved) globalThis[k] = saved[k];
+      else delete globalThis[k];
+    }
+  }
+});
+
+test('content: fatal scroll batch stops instead of rescheduling the same nodes', async () => {
+  const saved = {};
+  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'clearInterval', 'IntersectionObserver', 'MutationObserver']) {
+    if (k in globalThis) saved[k] = globalThis[k];
+  }
+  try {
+    function fakeEl(tagName = 'DIV') {
+      return {
+        style: {}, dataset: {}, tagName, id: '', isConnected: true,
+        setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
+        classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+        addEventListener() {}, removeEventListener() {}, appendChild() {},
+        querySelector: () => fakeEl(), querySelectorAll: () => [],
+        setPointerCapture() {}, releasePointerCapture() {}, attachShadow: () => fakeEl(),
+        closest: () => null,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 500, bottom: 100, height: 100 }),
+        textContent: '', innerHTML: '', value: '', checked: false, disabled: false, title: '',
+        focus() {}, click() {}, isContentEditable: false, parentElement: null
+      };
+    }
+    const paragraph = fakeEl('P');
+    const textNode = { nodeType: 3, nodeValue: 'A sufficiently long sentence for the fatal scroll batch test.', parentElement: paragraph, isConnected: true };
+    const win = {
+      innerHeight: 800, innerWidth: 1200, top: null,
+      addEventListener() {}, removeEventListener() {},
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', overflowY: 'visible' }),
+      scrollTo() {}
+    };
+    win.top = win;
+    const runtime = {
+      id: 'test-ext-id', lastError: null, onMessage: { addListener() {} },
+      sendMessage: (msg, cb) => {
+        if (msg?.action === 'WIDGET_GET_STATE') {
+          cb({ effective: 'on', permission: true, hasKey: true, autoStart: false, widgetVisible: true });
+        } else if (msg?.action === 'TRANSLATE_BATCH') {
+          translationRequests++;
+          cb({ error: { code: 'PERMISSION_REQUIRED', message: 'Permission was revoked', retryable: false } });
+        } else if (typeof cb === 'function') cb({ ok: true });
+      }
+    };
+    let translationRequests = 0;
+    globalThis.chrome = { runtime };
+    globalThis.window = win;
+    globalThis.document = {
+      documentElement: fakeEl('HTML'), body: fakeEl('BODY'),
+      getElementById: () => null,
+      createElement: (tag) => fakeEl(tag),
+      createTreeWalker: () => {
+        let yielded = false;
+        return { nextNode: () => (yielded ? null : (yielded = true, textNode)) };
+      },
+      querySelectorAll: (selector) => selector === 'p, h1, h2, h3, h4, h5, h6, li, article, td, blockquote' ? [paragraph] : [],
+      addEventListener() {}, removeEventListener() {}
+    };
+    globalThis.location = { protocol: 'https:' };
+    globalThis.NodeFilter = { SHOW_TEXT: 4 };
+    globalThis.requestAnimationFrame = () => 0;
+    globalThis.cancelAnimationFrame = () => {};
+    globalThis.setInterval = () => 1;
+    globalThis.clearInterval = () => {};
+    class FakeObserver { constructor() {} observe() {} unobserve() {} disconnect() {} }
+    globalThis.IntersectionObserver = FakeObserver;
+    globalThis.MutationObserver = FakeObserver;
+
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom = win.__translatorDom;
+    assert.ok(dom, 'content must expose __translatorDom');
+    dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(translationRequests, 1, 'fatal permission failure must not retry/reschedule the same nodes');
+    assert.equal(dom.getStatus().watching, false, 'fatal permission failure must stop the scroll session');
+  } finally {
+    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'clearInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];
       else delete globalThis[k];
     }

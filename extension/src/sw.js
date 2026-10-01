@@ -1807,6 +1807,7 @@ if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.on
     try {
       await reconcilePermissions();
     } catch {}
+    notifyAllWidgetStateChanged();
   });
 }
 
