@@ -472,10 +472,19 @@ export function validateSettings(settings) {
     if (!map || typeof map !== 'object' || Array.isArray(map)) {
       errors.push('favoriteModelsByBaseURL must be an object');
     } else {
+      const seenScopes = new Set();
       for (const k of Object.keys(map)) {
         if (!k || typeof k !== 'string') {
           errors.push('favoriteModelsByBaseURL keys must be non-empty strings');
           break;
+        }
+        const scopeKey = normalizeBaseURLKey(k);
+        if (scopeKey) {
+          if (seenScopes.has(scopeKey)) {
+            errors.push(`favoriteModelsByBaseURL contains duplicate scope for normalized Base URL "${scopeKey}"`);
+            break;
+          }
+          seenScopes.add(scopeKey);
         }
         const list = map[k];
         if (!Array.isArray(list)) {

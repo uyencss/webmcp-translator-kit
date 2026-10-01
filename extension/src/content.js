@@ -1930,7 +1930,9 @@
           }
         } catch {}
         try {
-          applyState(msg);
+          const { action, ...pushedState } = msg;
+          void action;
+          applyState(pushedState);
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {
           if (!__wmtHalted && __wmtValidContext() && (!autoStartAttempted || autoStartTimer) && !userRestored && !isTranslating && !scrollSession.watching) {

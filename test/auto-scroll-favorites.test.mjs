@@ -162,6 +162,36 @@ test('favorites: validateSettings accepts scoped map and rejects bad shapes', ()
   );
 });
 
+test('favorites: validateSettings rejects duplicate normalized scope keys before any save', () => {
+  const base = {
+    baseURL: 'http://localhost:8080/v1',
+    model: 'm',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: {
+      'https://a.example/v1': ['a'],
+      ' https://a.example/v1/ ': ['b']
+    }
+  };
+  const res = validateSettings(base);
+  assert.equal(res.valid, false);
+  assert.ok(
+    res.errors.some((e) => /favoriteModelsByBaseURL/i.test(e) && /duplicate/i.test(e)),
+    'must report duplicate normalized scope: ' + JSON.stringify(res.errors)
+  );
+  assert.equal(
+    validateSettings({
+      ...base,
+      favoriteModelsByBaseURL: {
+        'https://a.example/v1': ['a'],
+        'https://b.example/v1': ['b']
+      }
+    }).valid,
+    true
+  );
+});
+
 // ============================================================================
 // (2) SW: WIDGET_GET_STATE auto-start gates (behavioral, stubbed chrome)
 // ============================================================================
