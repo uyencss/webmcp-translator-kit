@@ -65,6 +65,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   model: 'ag/gemini-3.1-pro-low',
   fallbacks: Object.freeze([]),
   favoriteModels: Object.freeze([]),
+  favoriteModelsByBaseURL: Object.freeze({}),
   autoTranslateSites: Object.freeze([]),
   translationMode: 'scroll-follow',
   widgetVisible: true,
@@ -82,6 +83,50 @@ export const DEFAULT_SETTINGS = Object.freeze({
     })
   })
 });
+
+/**
+ * Normalizes a provider Base URL into a stable favorites-scope key.
+ * Lowercases scheme/host, strips trailing slashes, preserves path and port
+ * (different paths or ports MUST NOT merge). Never derived from API keys.
+ *
+ * @param {unknown} input
+ * @returns {string|null}
+ */
+export function normalizeBaseURLKey(input) {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    const path = (u.pathname || '').replace(/\/+$/, '');
+    const port = u.port ? `:${u.port}` : '';
+    return `${u.protocol.toLowerCase()}//${u.hostname.toLowerCase()}${port}${path}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cleans a single favorites list: unique non-empty trimmed strings, max 50.
+ *
+ * @param {unknown} list
+ * @returns {string[]}
+ */
+function cleanFavoriteList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    if (typeof item !== 'string') continue;
+    const t = item.trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= 50) break;
+  }
+  return out;
+}
 
 /**
  * Migrates any raw settings object to the canonical SETTINGS_VERSION.
@@ -211,6 +256,52 @@ export function migrateSettings(raw) {
     res.favoriteModels = cleaned.slice(0, 50);
   } else {
     res.favoriteModels = [];
+  }
+
+  // v5: favoriteModelsByBaseURL (per provider Base URL scope).
+  // Keys are normalized via normalizeBaseURLKey (scheme/host case-insensitive,
+  // trailing slashes stripped; path and port preserved so distinct providers
+  // never merge). Values are cleaned favorite lists (max 50 each). Legacy
+  // global favoriteModels migrates into the currently configured Base URL
+  // bucket exactly once (when no scoped buckets exist yet); afterwards the
+  // scoped map is authoritative and the legacy list is never merged again so
+  // unrelated Base URLs cannot pollute each other. Never keyed by API key.
+  {
+    const rawMap = (res.favoriteModelsByBaseURL && typeof res.favoriteModelsByBaseURL === 'object' && !Array.isArray(res.favoriteModelsByBaseURL))
+      ? res.favoriteModelsByBaseURL
+      : {};
+    const map = {};
+    for (const k of Object.keys(rawMap)) {
+      const nk = normalizeBaseURLKey(k);
+      if (!nk) continue;
+      const cleaned = cleanFavoriteList(rawMap[k]);
+      if (map[nk]) {
+        const seen = new Set(map[nk]);
+        for (const m of cleaned) {
+          if (!seen.has(m) && map[nk].length < 50) {
+            seen.add(m);
+            map[nk].push(m);
+          }
+        }
+      } else {
+        map[nk] = cleaned;
+      }
+    }
+    const curKey = normalizeBaseURLKey(res.baseURL);
+    const legacy = cleanFavoriteList(res.favoriteModels);
+    if (curKey && legacy.length > 0 && Object.keys(map).length === 0) {
+      map[curKey] = [...legacy];
+    }
+    if (curKey && map[curKey]) {
+      res.favoriteModels = [...map[curKey]];
+    } else if (!curKey || Object.keys(map).length === 0) {
+      res.favoriteModels = legacy;
+    } else {
+      // Scoped map is authoritative: a new Base URL with no bucket starts
+      // empty — never fall back to another provider's legacy/global list.
+      res.favoriteModels = [];
+    }
+    res.favoriteModelsByBaseURL = map;
   }
 
   // v4: autoTranslateSites (unique normalized origins, max 200, per-site config object)
@@ -370,6 +461,46 @@ export function validateSettings(settings) {
           errors.push('favoriteModels cannot contain duplicate models');
         }
         seen.add(fav);
+      }
+    }
+  }
+
+  // Check favoriteModelsByBaseURL (v5: per provider Base URL scope)
+  if (settings.favoriteModelsByBaseURL !== undefined) {
+    const map = settings.favoriteModelsByBaseURL;
+    if (!map || typeof map !== 'object' || Array.isArray(map)) {
+      errors.push('favoriteModelsByBaseURL must be an object');
+    } else {
+      for (const k of Object.keys(map)) {
+        if (!k || typeof k !== 'string') {
+          errors.push('favoriteModelsByBaseURL keys must be non-empty strings');
+          break;
+        }
+        const list = map[k];
+        if (!Array.isArray(list)) {
+          errors.push('favoriteModelsByBaseURL values must be arrays of strings');
+          break;
+        }
+        if (list.length > 50) {
+          errors.push('favoriteModelsByBaseURL lists cannot have more than 50 models');
+          break;
+        }
+        const seen = new Set();
+        let bad = false;
+        for (const fav of list) {
+          if (typeof fav !== 'string' || !fav.trim()) {
+            errors.push('favoriteModelsByBaseURL elements must be non-empty strings');
+            bad = true;
+            break;
+          }
+          if (seen.has(fav)) {
+            errors.push('favoriteModelsByBaseURL cannot contain duplicate models');
+            bad = true;
+            break;
+          }
+          seen.add(fav);
+        }
+        if (bad) break;
       }
     }
   }

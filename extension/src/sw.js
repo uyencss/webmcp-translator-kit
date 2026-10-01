@@ -36,6 +36,7 @@ import {
   DEFAULT_SETTINGS,
   migrateSettings,
   validateSettings,
+  normalizeBaseURLKey,
   normalizePerSiteConfig
 } from './settings.mjs';
 
@@ -1869,6 +1870,22 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           delete mergedRaw.fallbackModels;
         }
 
+        // Backward-compat (T43): explicit legacy favoriteModels without a scoped
+        // map updates the active Base URL bucket so GET returns the submitted
+        // list. A bare baseURL switch (no explicit list) still starts empty.
+        if (Array.isArray(patch.favoriteModels) && !('favoriteModelsByBaseURL' in patch)) {
+          const activeBase = (typeof patch.baseURL === 'string' && patch.baseURL.trim())
+            ? patch.baseURL
+            : oldSettings.baseURL;
+          const scopeKey = normalizeBaseURLKey(activeBase);
+          if (scopeKey) {
+            const prevMap = (mergedRaw.favoriteModelsByBaseURL && typeof mergedRaw.favoriteModelsByBaseURL === 'object' && !Array.isArray(mergedRaw.favoriteModelsByBaseURL))
+              ? mergedRaw.favoriteModelsByBaseURL
+              : {};
+            mergedRaw.favoriteModelsByBaseURL = { ...prevMap, [scopeKey]: [...patch.favoriteModels] };
+          }
+        }
+
         const validation = validateSettings(mergedRaw);
         if (!validation.valid) {
           return createTypedError('INVALID_SCHEMA', 'Invalid settings: ' + (validation.errors || []).join('; '), false, {
@@ -2776,10 +2793,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           reason = 'auto_off';
         } else if (tabOverride === 'off') {
           reason = 'tab_off';
-        } else if (!siteEnabled) {
+        } else if (effective !== 'on') {
           reason = 'site_off';
         } else if (!hasPerm) {
           reason = 'no_permission';
+        } else if (!hasKey) {
+          reason = 'no_key';
         } else if (urlMatchesSender) {
           autoStart = true;
         } else {

@@ -2,6 +2,7 @@
 // Contract Version: webmcp-translator-contract/1
 
 import { normalizeOrigin } from './consent.mjs';
+import { normalizeBaseURLKey } from './settings.mjs';
 
 export const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
 export const RECOMMENDED_MODELS = [
@@ -102,10 +103,37 @@ document.addEventListener('DOMContentLoaded', async () => {
   let savedSettings = {};
   let discoveredModels = [];
   let favoriteModels = [];
+  // Favorites are scoped per provider Base URL (normalized scheme/host,
+  // preserved path+port; never keyed by API key). `favoriteModels` is the
+  // working copy for the currently displayed Base URL scope.
+  let favoriteModelsByBaseURL = {};
+  let lastFavKey = 'default';
   let fallbacks = []; // Array of { id, model, baseURL?: string }
   let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
   let activeTabNav = 'tab-translate';
+
+  function currentFavKey() {
+    const raw = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
+    return normalizeBaseURLKey(raw) || normalizeBaseURLKey(savedSettings.baseURL || '') || 'default';
+  }
+
+  function getFavoritesForKey(key) {
+    const list = favoriteModelsByBaseURL[key];
+    return Array.isArray(list) ? [...list] : [];
+  }
+
+  function setFavoritesForKey(key, list) {
+    favoriteModelsByBaseURL[key] = [...list].slice(0, 50);
+  }
+
+  // Base URL scope for a fallback row: its own Base URL, else primary.
+  function favKeyForFallback(fb) {
+    const raw = (fb && typeof fb.baseURL === 'string' && fb.baseURL.trim())
+      ? fb.baseURL.trim()
+      : (inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || ''));
+    return normalizeBaseURLKey(raw) || currentFavKey();
+  }
 
   // Autosave state (no save buttons — every change persists to storage)
   let settingsLoaded = false;
@@ -136,8 +164,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // UI Status Indicator (Single-line icon + text + tooltip)
-  function updateStatus(state, detail = '') {
+  // UI Status Indicator (Single-line icon + text + tooltip).
+  // Watching/translating states embed live applied/collected (+ failed) counts
+  // in the visible footer text so progress is readable without tooltips.
+  function updateStatus(state, detail = '', data = null) {
     let iconSvg = '';
     let shortText = '';
     let fullDetail = detail;
@@ -158,11 +188,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         shortText = detail.includes('quota') ? detail : (detail || 'Đang dịch...');
         fullDetail = detail || 'Đang gửi batch dịch nội dung trang.';
         break;
-      case 'watching':
+      case 'watching': {
         iconSvg = SVG_ICONS.scroll;
-        shortText = 'Đang theo scroll';
+        const wApplied = data && typeof data.totalApplied === 'number'
+          ? Math.min(data.totalApplied, typeof data.totalCollected === 'number' ? data.totalCollected : data.totalApplied)
+          : (data && typeof data.applied === 'number' ? data.applied : null);
+        const wCollected = data && typeof data.totalCollected === 'number' ? data.totalCollected : null;
+        const wFailed = data && typeof data.totalFailed === 'number' ? data.totalFailed : 0;
+        shortText = (wApplied !== null && wCollected !== null && wCollected > 0)
+          ? `Đang theo scroll ${wApplied}/${wCollected}`
+          : 'Đang theo scroll';
+        if (wFailed > 0) shortText += ` (${wFailed} lỗi)`;
         fullDetail = detail || 'Đang theo dõi và dịch tự động khi cuộn trang.';
         break;
+      }
       case 'translated':
         iconSvg = SVG_ICONS.check;
         shortText = 'Đã dịch';
@@ -209,7 +248,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (statusText) statusText.textContent = shortText;
     if (statusDetail) statusDetail.textContent = fullDetail;
     if (statusStrip) statusStrip.title = fullDetail;
-    if (footerStatusSummary) footerStatusSummary.textContent = 'v0.1.0';
+    // Footer slot mirrors live scroll progress (applied/collected + failed);
+    // version string otherwise. Never shows a completed state while watching —
+    // callers keep the watching branch ahead of the done branch.
+    if (footerStatusSummary) {
+      if (state === 'watching' && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
+        const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
+        const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ` (${data.totalFailed} lỗi)` : '';
+        footerStatusSummary.textContent = `v0.1.0 · ${fApplied}/${data.totalCollected}${fFailed}`;
+      } else {
+        footerStatusSummary.textContent = 'v0.1.0';
+      }
+    }
   }
 
   // Toast / Status Message Helpers
@@ -270,6 +320,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const fbRes = collectCleanFallbacks();
     if (fbRes.error) return { patch: null, error: fbRes.error };
+    // Favorites map is written directly by star toggles / scope switches;
+    // autosave echoes it untouched so typing a new Base URL never copies the
+    // old scope's list into the new scope's bucket.
     const patch = {
       sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
       targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
@@ -277,7 +330,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
       fallbacks: fbRes.fallbacks,
       autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites)),
-      favoriteModels: [...favoriteModels]
+      favoriteModels: [...favoriteModels],
+      favoriteModelsByBaseURL: JSON.parse(JSON.stringify(favoriteModelsByBaseURL))
     };
     if (rawUrl) patch.baseURL = rawUrl;
     return { patch, error: null };
@@ -664,10 +718,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnOverrideOff.addEventListener('click', () => updateTabOverride('off'));
   }
 
-  // Model Dropdown Builder
-  function populateSelect(selectEl, selectedVal, { allowEmpty = false, emptyLabel = '-- Không chọn --', exclude = [] } = {}) {
+  // Model Dropdown Builder (favorites group is Base URL scoped via `favs`)
+  function populateSelect(selectEl, selectedVal, { allowEmpty = false, emptyLabel = '-- Không chọn --', exclude = [], favs = null } = {}) {
     if (!selectEl) return;
     selectEl.innerHTML = '';
+    const scopeFavs = Array.isArray(favs) ? favs : favoriteModels;
 
     if (allowEmpty) {
       const emptyOpt = document.createElement('option');
@@ -678,8 +733,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const added = new Set(exclude);
 
-    // Group 1: Favorites
-    const validFavs = favoriteModels.filter(id => !added.has(id));
+    // Group 1: Favorites (Base URL scoped)
+    const validFavs = scopeFavs.filter(id => !added.has(id));
     if (validFavs.length > 0) {
       const favGroup = document.createElement('optgroup');
       favGroup.label = '⭐ Yêu thích';
@@ -757,6 +812,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnToggleFavorite.title = isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích';
   }
 
+  // Fallback row star reflects the row's own Base URL scope (own URL else primary)
+  function updateFallbackStar(btn, fb, modelSelect) {
+    if (!btn) return;
+    const scopeKey = favKeyForFallback(fb);
+    const bucket = getFavoritesForKey(scopeKey);
+    const curVal = (modelSelect && modelSelect.value) || (fb && fb.model) || '';
+    const isFav = curVal ? bucket.includes(curVal) : false;
+    btn.innerHTML = isFav ? SVG_ICONS.starFilled : SVG_ICONS.star;
+    btn.classList.toggle('favorited', isFav);
+    btn.title = isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích';
+  }
+
   // Favorite Star Toggle Action (Sends partial SAVE_SETTINGS)
   if (btnToggleFavorite) {
     btnToggleFavorite.addEventListener('click', async () => {
@@ -773,10 +840,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         : [...favoriteModels, curVal];
 
       btnToggleFavorite.disabled = true;
+      let favMapToSave = null;
+      try {
+        const scopeKey = currentFavKey();
+        favMapToSave = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
+        favMapToSave[scopeKey] = [...nextFavorites].slice(0, 50);
+      } catch {}
       const resp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({
           action: 'SAVE_SETTINGS',
-          settings: { favoriteModels: nextFavorites }
+          settings: favMapToSave
+            ? { favoriteModels: nextFavorites, favoriteModelsByBaseURL: favMapToSave }
+            : { favoriteModels: nextFavorites }
         }, resolve);
       });
       btnToggleFavorite.disabled = false;
@@ -788,7 +863,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       favoriteModels = nextFavorites;
+      if (favMapToSave) favoriteModelsByBaseURL = favMapToSave;
       savedSettings.favoriteModels = nextFavorites;
+      savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
       renderAllModelDropdowns();
     });
   }
@@ -874,6 +951,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.value = fb.baseURL || '';
       urlInput.addEventListener('input', () => {
         fb.baseURL = urlInput.value.trim();
+        updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, document.getElementById(`select-fallback-${idx}`));
         markDirty();
       });
       urlGroup.appendChild(urlInput);
@@ -916,23 +994,58 @@ document.addEventListener('DOMContentLoaded', async () => {
       keyGroup.appendChild(keyWrapper);
       inputsGrid.appendChild(keyGroup);
 
-      // Model selector
+      // Model selector + per-provider favorite star (scoped to this row's
+      // Base URL, else primary — same scope rule as favKeyForFallback)
       const modelGroup = document.createElement('div');
       modelGroup.className = 'form-group';
+      const modelWrap = document.createElement('div');
+      modelWrap.className = 'input-with-button';
       const modelSelect = document.createElement('select');
       modelSelect.id = `select-fallback-${idx}`;
       // Also provide alias id select-fallback-1 / select-fallback-2 for backward compat
       modelSelect.setAttribute('data-index', String(idx));
+      modelSelect.setAttribute('aria-label', `Model dự phòng ${idx + 1}`);
       modelSelect.addEventListener('change', () => {
         fb.model = modelSelect.value;
+        updateFallbackStar(btnFallbackFav, fb, modelSelect);
         markDirty();
       });
 
-      modelGroup.appendChild(modelSelect);
+      const btnFallbackFav = document.createElement('button');
+      btnFallbackFav.type = 'button';
+      btnFallbackFav.id = `btn-fallback-fav-${idx}`;
+      btnFallbackFav.className = 'btn-icon btn-star';
+      btnFallbackFav.title = 'Thêm/bỏ yêu thích model dự phòng này';
+      btnFallbackFav.setAttribute('aria-label', `Thêm hoặc bỏ model dự phòng ${idx + 1} khỏi danh sách yêu thích`);
+      btnFallbackFav.innerHTML = SVG_ICONS.star;
+      btnFallbackFav.addEventListener('click', () => {
+        if (!settingsLoaded) {
+          setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+          return;
+        }
+        const curModel = modelSelect.value || fb.model;
+        if (!curModel) return;
+        const scopeKey = favKeyForFallback({ baseURL: (document.getElementById(`input-fallback-url-${idx}`)?.value || fb.baseURL || '') });
+        const bucket = getFavoritesForKey(scopeKey);
+        const next = bucket.includes(curModel)
+          ? bucket.filter(id => id !== curModel)
+          : [...bucket, curModel].slice(0, 50);
+        setFavoritesForKey(scopeKey, next);
+        updateFallbackStar(btnFallbackFav, fb, modelSelect);
+        renderAllModelDropdowns();
+        // Persist immediately (same as the primary star): popup close/reopen
+        // must not depend on the debounced autosave still being pending.
+        flushAutosave();
+      });
+
+      modelWrap.appendChild(modelSelect);
+      modelWrap.appendChild(btnFallbackFav);
+      modelGroup.appendChild(modelWrap);
       inputsGrid.appendChild(modelGroup);
 
       row.appendChild(inputsGrid);
       fallbackListEl.appendChild(row);
+      updateFallbackStar(btnFallbackFav, fb, modelSelect);
     });
 
     if (btnAddFallback) {
@@ -967,18 +1080,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const curPrimary = selectModel?.value || savedSettings.model || DEFAULT_MODEL;
     populateSelect(selectModel, curPrimary, { allowEmpty: false, exclude: [] });
 
-    // Populate dynamic fallback dropdowns
+    // Populate dynamic fallback dropdowns (favorites scoped per row URL)
     fallbacks.forEach((fb, idx) => {
       const selectEl = document.getElementById(`select-fallback-${idx}`);
       if (selectEl) {
         const curFbModel = fb.model || selectEl.value || RECOMMENDED_MODELS[idx + 1] || DEFAULT_MODEL;
         populateSelect(selectEl, curFbModel, {
           allowEmpty: false,
-          exclude: [selectModel.value].filter(Boolean)
+          exclude: [selectModel.value].filter(Boolean),
+          favs: getFavoritesForKey(favKeyForFallback(fb))
         });
         if (selectEl.value) {
           fb.model = selectEl.value;
         }
+        updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, selectEl);
       }
     });
 
@@ -1075,6 +1190,24 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
+          favoriteModelsByBaseURL = (resp.settings.favoriteModelsByBaseURL && typeof resp.settings.favoriteModelsByBaseURL === 'object' && !Array.isArray(resp.settings.favoriteModelsByBaseURL))
+            ? JSON.parse(JSON.stringify(resp.settings.favoriteModelsByBaseURL))
+            : {};
+          // Scope working favorites to the current Base URL. The scoped map is
+          // authoritative: an empty bucket stays empty (never seeded from
+          // another provider's working list). Only when no scopes exist yet
+          // (first run) is the migrated global list kept as-is.
+          lastFavKey = normalizeBaseURLKey(resp.settings.baseURL || '') || 'default';
+          {
+            const scoped = getFavoritesForKey(lastFavKey);
+            if (scoped.length > 0) {
+              favoriteModels = scoped;
+            } else if (Object.keys(favoriteModelsByBaseURL).length === 0) {
+              favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
+            } else {
+              favoriteModels = [];
+            }
+          }
           fallbacks = Array.isArray(resp.settings.fallbacks) ? JSON.parse(JSON.stringify(resp.settings.fallbacks)) : [];
           autoTranslateSites = Array.isArray(resp.settings.autoTranslateSites) ? [...resp.settings.autoTranslateSites] : [];
 
@@ -1228,7 +1361,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           }));
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
-          updateStatus('watching', formatDetail('watching', { ...st, lastError: st.lastError }));
+          // Still watching (even with state done for the current viewport):
+          // keep polling so the footer refreshes live and reopen recovers.
+          startPolling();
+          updateStatus('watching', formatDetail('watching', { ...st, lastError: st.lastError }), st);
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'done') {
           stopPolling();
@@ -1307,6 +1443,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       markDirty();
     });
     inputBaseUrl.addEventListener('change', () => {
+      // Switching Base URL swaps the visible favorites scope: stash the
+      // working copy into the old scope, restore the new scope's list.
+      try {
+        const nextKey = currentFavKey();
+        if (nextKey !== lastFavKey) {
+          setFavoritesForKey(lastFavKey, [...favoriteModels]);
+          const scoped = getFavoritesForKey(nextKey);
+          favoriteModels = [...scoped];
+          lastFavKey = nextKey;
+          savedSettings.favoriteModels = [...favoriteModels];
+          renderAllModelDropdowns();
+          evaluateActionReadiness();
+        }
+      } catch {}
       refreshBasePermState();
     });
   }

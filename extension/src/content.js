@@ -29,6 +29,40 @@
     debounceMaxMs: 300
   };
 
+  // Stale-context guard: after an extension reload/update the old injected
+  // script loses its runtime port and every chrome.runtime.sendMessage throws
+  // synchronously ("Extension context invalidated"). The stale script must
+  // halt timers/sessions silently (no uncaught errors, no retry spam); a page
+  // reload injects a fresh script which works normally.
+  let __wmtHalted = false;
+  function __wmtValidContext() {
+    try { return !!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function'); } catch { return false; }
+  }
+  function __wmtInvalidatedErr(err) {
+    const m = err && err.message ? String(err.message) : String(err || '');
+    return /extension context invalidated|context invalidated/i.test(m);
+  }
+  function __wmtHaltStale() {
+    if (__wmtHalted) return;
+    __wmtHalted = true;
+    try { if (autoStartTimer) { clearTimeout(autoStartTimer); autoStartTimer = null; } } catch {}
+    try { stopScrollFollowSession(false); } catch {}
+    try { isTranslating = false; activeRunToken++; } catch {}
+    try { updateFabBusy(); } catch {}
+  }
+  // Fire-and-forget sender: never throws, never spams after invalidation.
+  function __wmtFire(payload) {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+    try {
+      chrome.runtime.sendMessage(payload, () => {
+        try {
+          const le = chrome.runtime && chrome.runtime.lastError ? (chrome.runtime.lastError.message || '') : '';
+          if (/extension context invalidated|context invalidated/i.test(le)) __wmtHaltStale();
+        } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+      });
+    } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+  }
+
   // Floating-button busy indicator hook (wired up by initFloatingWidget)
   let fabBusySetter = null;
   function setFabBusy(busy) {
@@ -49,9 +83,12 @@
   let currentMode = 'full'; // 'full' | 'scroll-follow'
 
   const AUTO_SETTLE_MS = 500;
+  const AUTO_QUERY_RETRY_MS = 1200;
+  const AUTO_QUERY_MAX_RETRIES = 2;
   let autoStartAttempted = false;
   let userRestored = false;
   let autoStartTimer = null;
+  let autoStartQueryRetries = 0;
 
   const nodeToRec = new WeakMap();
   const idToRec = new Map();
@@ -266,12 +303,8 @@
     epoch++;
     const cancelEpoch = epoch;
 
-    // 2. Fire-and-forget CANCEL_PENDING to Service Worker
-    try {
-      chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch: cancelEpoch }, () => {
-        if (chrome.runtime.lastError) { /* ignore */ }
-      });
-    } catch {}
+    // 2. Fire-and-forget CANCEL_PENDING to Service Worker (stale-safe)
+    __wmtFire({ action: 'CANCEL_PENDING', epoch: cancelEpoch });
 
     // 3. Stop both scroll-follow session and full translation runs
     stopScrollFollowSession(false);
@@ -364,40 +397,65 @@
     );
   }
 
-  // Send chunk wrapper
+  // Send chunk wrapper (stale-context safe: resolves ABORTED, never throws)
   function sendChunk(items, settings = {}, chunkEpoch = epoch) {
+    if (__wmtHalted || !__wmtValidContext()) {
+      __wmtHaltStale();
+      return Promise.resolve({ error: { code: 'ABORTED', message: 'Extension context invalidated', retryable: false } });
+    }
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        {
-          action: 'TRANSLATE_BATCH',
-          epoch: chunkEpoch,
-          payload: {
-            items,
-            sourceLanguage: settings.sourceLanguage || 'auto',
-            targetLanguage: settings.targetLanguage || 'vi',
-            model: settings.model || 'ag/gemini-3.1-pro-low'
-          }
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            const lastErrMsg = chrome.runtime.lastError.message || '';
-            if (isDroppedOnRestartError(lastErrMsg)) {
-              resolve({
-                error: {
-                  code: 'DROPPED_ON_RESTART',
-                  message: 'Yêu cầu bị mất khi service worker khởi động lại',
-                  retryable: false,
-                  details: { originalError: lastErrMsg }
-                }
-              });
-            } else {
-              resolve({ error: { code: 'NETWORK', message: lastErrMsg } });
+      try {
+        chrome.runtime.sendMessage(
+          {
+            action: 'TRANSLATE_BATCH',
+            epoch: chunkEpoch,
+            payload: {
+              items,
+              sourceLanguage: settings.sourceLanguage || 'auto',
+              targetLanguage: settings.targetLanguage || 'vi',
+              model: settings.model || 'ag/gemini-3.1-pro-low'
             }
-          } else {
-            resolve(response);
+          },
+          (response) => {
+            try {
+              if (chrome.runtime && chrome.runtime.lastError) {
+                const lastErrMsg = chrome.runtime.lastError.message || '';
+                if (/extension context invalidated|context invalidated/i.test(lastErrMsg)) {
+                  __wmtHaltStale();
+                  resolve({ error: { code: 'ABORTED', message: 'Extension context invalidated', retryable: false } });
+                } else if (isDroppedOnRestartError(lastErrMsg)) {
+                  resolve({
+                    error: {
+                      code: 'DROPPED_ON_RESTART',
+                      message: 'Yêu cầu bị mất khi service worker khởi động lại',
+                      retryable: false,
+                      details: { originalError: lastErrMsg }
+                    }
+                  });
+                } else {
+                  resolve({ error: { code: 'NETWORK', message: lastErrMsg } });
+                }
+              } else {
+                resolve(response);
+              }
+            } catch (e) {
+              if (__wmtInvalidatedErr(e)) {
+                __wmtHaltStale();
+                resolve({ error: { code: 'ABORTED', message: 'Extension context invalidated', retryable: false } });
+              } else {
+                resolve({ error: { code: 'NETWORK', message: String((e && e.message) || e) } });
+              }
+            }
           }
+        );
+      } catch (e) {
+        if (__wmtInvalidatedErr(e)) {
+          __wmtHaltStale();
+          resolve({ error: { code: 'ABORTED', message: 'Extension context invalidated', retryable: false } });
+        } else {
+          resolve({ error: { code: 'NETWORK', message: String((e && e.message) || e) } });
         }
-      );
+      }
     });
   }
 
@@ -550,6 +608,7 @@
   // Full Page Translate Execution
   // ============================================================================
   async function executeTranslation(settings = {}) {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return { cancelled: true }; }
     if (isTranslating && !settings.force) return { alreadyRunning: true };
 
     // Stop scroll-follow session before starting full page translation
@@ -565,12 +624,8 @@
     const startTime = Date.now();
     const targetModel = settings.model || 'ag/gemini-3.1-pro-low';
 
-    // Cancel pending queue in SW for this tab before starting new epoch (fire-and-forget)
-    try {
-      chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch: currentEpoch }, () => {
-        if (chrome.runtime.lastError) { /* ignore */ }
-      });
-    } catch {}
+    // Cancel pending queue in SW for this tab before starting new epoch (fire-and-forget, stale-safe)
+    __wmtFire({ action: 'CANCEL_PENDING', epoch: currentEpoch });
 
     try {
       const items = collect(document.body, false);
@@ -733,6 +788,7 @@
   };
 
   function scheduleScrollFlush() {
+    if (__wmtHalted) return;
     if (!scrollSession.active) return;
     if (scrollSession.debounceTimer) return;
     const delay = throttle.debounceMinMs || SCROLL_DEBOUNCE_MS;
@@ -743,6 +799,7 @@
   }
 
   async function flushReadyBlocks() {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
     if (!scrollSession.active) return;
     // Dispatch ≤2 batch in-flight; batch 3 waits in readySet
     if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
@@ -861,6 +918,11 @@
     // Fatal outcomes must not reschedule a flush (avoids hot-loop spam)
     let batchFatal = false;
     try {
+      if (__wmtHalted || !__wmtValidContext()) {
+        __wmtHaltStale();
+        batchFatal = true;
+        return;
+      }
       const res = await translateChunkWithRecovery(
         chunk,
         {
@@ -920,6 +982,7 @@
   }
 
   function startScrollFollowSession(settings = {}) {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
     // Stop any running full translation
     isTranslating = false;
     activeRunToken++;
@@ -1506,16 +1569,29 @@
     }
 
     function checkAutoStart(st) {
+      if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
       if (autoStartAttempted) return;
-      autoStartAttempted = true;
 
       if (!st || !st.autoStart || userRestored) return;
+      // Defensive gates mirror the SW WIDGET_GET_STATE gate: never auto-start
+      // when consent is off, permission/key is missing, or context is stale.
+      // Effective consent is required (missing field means not enabled).
+      if (st.effective !== 'on') return;
+      if (st.hasKey === false) return;
+      if (st.permission === false) return;
       if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+
+      // Consume the one-shot attempt only once a valid enabled state is ready
+      // to schedule: an initial disabled (no_key/no_permission/site-off)
+      // response must not block a later enabled push, because the
+      // WIDGET_STATE_CHANGED re-query requires !autoStartAttempted.
+      autoStartAttempted = true;
 
       const targetMode = st.mode || 'scroll-follow';
       autoStartTimer = setTimeout(() => {
         autoStartTimer = null;
         try {
+          if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
           if (userRestored) return;
           if (isTranslating || scrollSession.watching) return;
           if (!lastTranslateStatus) return;
@@ -1526,9 +1602,12 @@
           if (targetMode === 'scroll-follow') {
             startScrollFollowSession(st || {});
           } else {
-            executeTranslation(st || {});
+            executeTranslation(st || {}).catch((e) => {
+              if (__wmtInvalidatedErr(e)) __wmtHaltStale();
+            });
           }
         } catch (err) {
+          if (__wmtInvalidatedErr(err)) { __wmtHaltStale(); return; }
           try { console.error('[WebMCP Translator] auto-start failed:', err && err.message ? err.message : err); } catch {}
           try {
             if (lastTranslateStatus) {
@@ -1540,12 +1619,31 @@
     }
 
     function queryState() {
-      chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (resp) => {
-        if (!chrome.runtime.lastError && resp && !resp.error) {
-          applyState(resp);
-          checkAutoStart(resp);
-        }
-      });
+      if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+      try {
+        chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (resp) => {
+          try {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              const leMsg = chrome.runtime.lastError.message || '';
+              if (/extension context invalidated|context invalidated/i.test(leMsg)) { __wmtHaltStale(); return; }
+              // Transient SW-side failure (e.g. startup race): retry boundedly
+              // so a fresh load still auto-starts without manual interaction.
+              if (!autoStartAttempted && autoStartQueryRetries < AUTO_QUERY_MAX_RETRIES && !__wmtHalted && __wmtValidContext()) {
+                autoStartQueryRetries++;
+                setTimeout(queryState, AUTO_QUERY_RETRY_MS);
+              }
+              return;
+            }
+          } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+          if (resp && !resp.error) {
+            applyState(resp);
+            checkAutoStart(resp);
+          } else if (resp && resp.error && !autoStartAttempted && autoStartQueryRetries < AUTO_QUERY_MAX_RETRIES && !__wmtHalted && __wmtValidContext()) {
+            autoStartQueryRetries++;
+            setTimeout(queryState, AUTO_QUERY_RETRY_MS);
+          }
+        });
+      } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
     }
 
     // Drag implementation using Pointer Events
@@ -1600,7 +1698,7 @@
         const rect = host.getBoundingClientRect();
         const clampedX = Math.max(0, Math.min(window.innerWidth - 50, rect.left));
         const clampedY = Math.max(0, Math.min(window.innerHeight - 50, rect.top));
-        chrome.runtime.sendMessage({
+        __wmtFire({
           action: 'WIDGET_SET_POSITION',
           x: clampedX,
           y: clampedY
@@ -1652,7 +1750,7 @@
     fab.addEventListener('keyup', (e) => {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         const rect = host.getBoundingClientRect();
-        chrome.runtime.sendMessage({
+        __wmtFire({
           action: 'WIDGET_SET_POSITION',
           x: Math.round(rect.left),
           y: Math.round(rect.top)
@@ -1662,15 +1760,22 @@
 
     closeBtn.addEventListener('click', () => setPanelVisibility(false));
 
-    // Tab ON/OFF toggle: sends WIDGET_SET_ENABLED
+    // Tab ON/OFF toggle: sends WIDGET_SET_ENABLED (stale-safe)
     toggleTabBtn.addEventListener('click', () => {
+      if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
       const targetEnabled = widgetState.effective !== 'on';
-      chrome.runtime.sendMessage({
-        action: 'WIDGET_SET_ENABLED',
-        enabled: targetEnabled
-      }, (resp) => {
-        if (chrome.runtime.lastError) return;
-        if (resp && resp.error) {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'WIDGET_SET_ENABLED',
+          enabled: targetEnabled
+        }, (resp) => {
+          try {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              if (/extension context invalidated|context invalidated/i.test(chrome.runtime.lastError.message || '')) { __wmtHaltStale(); return; }
+              return;
+            }
+          } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+          if (resp && resp.error) {
           if (resp.error.code === 'PERMISSION_REQUIRED') {
             warnMsg.textContent = 'Cần cấp quyền host! Hãy mở popup để cấp quyền.';
             warnMsg.style.display = 'block';
@@ -1684,11 +1789,7 @@
             restore();
           } catch {
             stopScrollFollowSession(true);
-            try {
-              chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
-                if (chrome.runtime.lastError) {}
-              });
-            } catch {}
+            __wmtFire({ action: 'CANCEL_PENDING', epoch });
           }
         } else if (widgetState.effective === 'on') {
           // Turning ON starts translating immediately (scroll-aware), same as Dịch ngay
@@ -1696,45 +1797,61 @@
             if (currentMode === 'scroll-follow' || widgetState.mode === 'scroll-follow') {
               startScrollFollowSession(widgetState);
             } else {
-              executeTranslation(widgetState);
+              executeTranslation(widgetState).catch((e) => {
+                if (__wmtInvalidatedErr(e)) __wmtHaltStale();
+              });
             }
           } catch (err) {
+            if (__wmtInvalidatedErr(err)) { __wmtHaltStale(); return; }
             try { console.error('[WebMCP Translator] widget enable-start failed:', err && err.message ? err.message : err); } catch {}
           }
         }
-      });
+        });
+      } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
     });
 
-    // Mode Selector: sends WIDGET_SET_MODE
+    // Mode Selector: sends WIDGET_SET_MODE (stale-safe)
     modeRadios.forEach((r) => {
       r.addEventListener('change', () => {
+        if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
         if (r.checked) {
           const selectedMode = r.value;
-          chrome.runtime.sendMessage({
-            action: 'WIDGET_SET_MODE',
-            mode: selectedMode
-          }, (resp) => {
-            if (!chrome.runtime.lastError && resp && !resp.error) {
-              currentMode = selectedMode;
-              lastTranslateStatus.mode = selectedMode;
-              if (selectedMode === 'scroll-follow' && widgetState.effective === 'on') {
-                startScrollFollowSession();
-              } else if (selectedMode === 'full') {
-                stopScrollFollowSession(true);
+          try {
+            chrome.runtime.sendMessage({
+              action: 'WIDGET_SET_MODE',
+              mode: selectedMode
+            }, (resp) => {
+              try {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                  if (/extension context invalidated|context invalidated/i.test(chrome.runtime.lastError.message || '')) { __wmtHaltStale(); return; }
+                  return;
+                }
+              } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+              if (resp && !resp.error) {
+                currentMode = selectedMode;
+                lastTranslateStatus.mode = selectedMode;
+                if (selectedMode === 'scroll-follow' && widgetState.effective === 'on') {
+                  startScrollFollowSession();
+                } else if (selectedMode === 'full') {
+                  stopScrollFollowSession(true);
+                }
               }
-            }
-          });
+            });
+          } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
         }
       });
     });
 
     // Translate Now Button
     translateBtn.addEventListener('click', () => {
+      if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
       setPanelVisibility(false);
       if (currentMode === 'scroll-follow') {
         startScrollFollowSession(widgetState);
       } else {
-        executeTranslation(widgetState);
+        executeTranslation(widgetState).catch((e) => {
+          if (__wmtInvalidatedErr(e)) __wmtHaltStale();
+        });
       }
     });
 
@@ -1767,10 +1884,18 @@
     document.documentElement.appendChild(host);
     queryState();
 
-    // Listen for push notifications
+    // Listen for push notifications (re-evaluate auto-start when consent /
+    // permission arrives after load; queryState bounds retries internally)
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
-        applyState(msg);
+        try {
+          applyState(msg);
+        } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
+        try {
+          if (!__wmtHalted && __wmtValidContext() && !autoStartAttempted && !userRestored && !isTranslating && !scrollSession.watching) {
+            queryState();
+          }
+        } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
       }
     });
   }
@@ -1782,6 +1907,7 @@
     if (!message || typeof message.action !== 'string') return false;
 
     if (message.action === 'CONTENT_START_TRANSLATION') {
+      if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); try { sendResponse({ ok: false, error: 'STALE_CONTEXT' }); } catch {} return false; }
       const mode = message.mode || message.settings?.translationMode || 'full';
       if (mode === 'scroll-follow') {
         startScrollFollowSession(message.settings || {});
@@ -1797,7 +1923,10 @@
         });
         return false;
       } else {
-        executeTranslation(message.settings || {}).then(sendResponse);
+        executeTranslation(message.settings || {}).then(sendResponse, (e) => {
+          if (__wmtInvalidatedErr(e)) __wmtHaltStale();
+          try { sendResponse({ ok: false, error: String((e && e.message) || e) }); } catch {}
+        });
         return true; // async
       }
     }
@@ -1806,11 +1935,7 @@
       const targetMode = message.mode;
       if (targetMode === 'scroll-follow' || targetMode === 'full') {
         epoch++;
-        try {
-          chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
-            if (chrome.runtime.lastError) {}
-          });
-        } catch {}
+        __wmtFire({ action: 'CANCEL_PENDING', epoch });
         stopScrollFollowSession(false);
         isTranslating = false;
         activeRunToken++;
@@ -1818,18 +1943,38 @@
         currentMode = targetMode;
         lastTranslateStatus.mode = targetMode;
 
-        if (targetMode === 'scroll-follow') {
-          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
-            if (!chrome.runtime.lastError && st && st.effective === 'on') {
-              startScrollFollowSession(st);
-            }
-          });
-        } else if (targetMode === 'full') {
-          chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
-            if (!chrome.runtime.lastError && st && st.effective === 'on') {
-              executeTranslation(st);
-            }
-          });
+        if (!__wmtHalted && __wmtValidContext()) {
+          if (targetMode === 'scroll-follow') {
+            try {
+              chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
+                try {
+                  if (chrome.runtime && chrome.runtime.lastError) {
+                    if (/extension context invalidated|context invalidated/i.test(chrome.runtime.lastError.message || '')) { __wmtHaltStale(); return; }
+                    return;
+                  }
+                } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+                if (st && st.effective === 'on') {
+                  startScrollFollowSession(st);
+                }
+              });
+            } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+          } else if (targetMode === 'full') {
+            try {
+              chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (st) => {
+                try {
+                  if (chrome.runtime && chrome.runtime.lastError) {
+                    if (/extension context invalidated|context invalidated/i.test(chrome.runtime.lastError.message || '')) { __wmtHaltStale(); return; }
+                    return;
+                  }
+                } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+                if (st && st.effective === 'on') {
+                  executeTranslation(st).catch((e) => {
+                    if (__wmtInvalidatedErr(e)) __wmtHaltStale();
+                  });
+                }
+              });
+            } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+          }
         }
 
         sendResponse({
@@ -1950,30 +2095,23 @@
     stopScrollFollowSession
   };
 
-  // Fire-and-forget CANCEL_PENDING on navigation / page hide
+  // Fire-and-forget CANCEL_PENDING on navigation / page hide (stale-safe)
   window.addEventListener('pagehide', () => {
     try {
       epoch++;
-      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
-        chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch, reason: 'pagehide' }, () => {
-          if (chrome.runtime?.lastError) { /* ignore */ }
-        });
-      }
-    } catch {}
+      __wmtFire({ action: 'CANCEL_PENDING', epoch, reason: 'pagehide' });
+    } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
   });
 
   // bfcache restore: re-sync epoch so stale in-flight work cannot patch us
   window.addEventListener('pageshow', (e) => {
     try {
       if (e && e.persisted) {
+        if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
         epoch++;
-        if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
-          chrome.runtime.sendMessage({ action: 'CANCEL_PENDING', epoch }, () => {
-            if (chrome.runtime?.lastError) { /* ignore */ }
-          });
-        }
+        __wmtFire({ action: 'CANCEL_PENDING', epoch });
       }
-    } catch {}
+    } catch (err) { if (__wmtInvalidatedErr(err)) __wmtHaltStale(); }
   });
 
   // Initialize floating widget
