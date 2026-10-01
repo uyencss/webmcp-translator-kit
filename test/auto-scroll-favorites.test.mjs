@@ -802,6 +802,10 @@ test('content: disabled first state does not consume auto-start; later enabled p
 test('popup: footer shows live applied/collected (+failed), keeps polling, never false-completes', () => {
   assert.ok(popupSrc.includes('Đang theo scroll ${'), 'watching text must embed live applied/collected counts');
   assert.ok(popupSrc.includes('(lỗi)') || popupSrc.includes('lỗi)'), 'watching text must surface failed count');
+  assert.ok(popupSrc.includes("state === 'error' && data && data.totalFailed > 0"),
+    'all-failed scroll batches must retain failure progress in the footer');
+  const failedScrollBranch = popupSrc.slice(popupSrc.indexOf('if (st.lastError && (st.totalFailed'), popupSrc.indexOf("} else if (st.watching === true"));
+  assert.ok(failedScrollBranch.includes('}), st);'), 'failed scroll status must pass counters into footer rendering');
   assert.ok(popupSrc.includes('v0.1.0 · ${'), 'footer slot must mirror live progress');
   // Watching branch must keep polling (refresh while open + recover on reopen)
   const watchingIdx = popupSrc.indexOf("updateStatus('watching'");

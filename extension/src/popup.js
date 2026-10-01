@@ -256,7 +256,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // version string otherwise. Never shows a completed state while watching —
     // callers keep the watching branch ahead of the done branch.
     if (footerStatusSummary) {
-      if (state === 'watching' && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
+      const showProgress = state === 'watching' || (state === 'error' && data && data.totalFailed > 0);
+      if (showProgress && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
         const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
         const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ` (${data.totalFailed} lỗi)` : '';
         footerStatusSummary.textContent = `v0.1.0 · ${fApplied}/${data.totalCollected}${fFailed}`;
@@ -1414,7 +1415,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             model: st.model,
             actualModel: st.actualModel,
             fallbackIndex: st.fallbackIndex
-          }));
+          }), st);
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.watching === true || (st.watching !== false && st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
           // Still watching (even with state done for the current viewport):
