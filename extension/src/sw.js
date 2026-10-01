@@ -1919,9 +1919,13 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           const scopeKey = normalizeBaseURLKey(favoriteToggle && favoriteToggle.scopeKey);
           const model = (favoriteToggle && typeof favoriteToggle.model === 'string') ? favoriteToggle.model.trim() : '';
           const wantFavorite = favoriteToggle ? favoriteToggle.favorite : undefined;
-          if (!scopeKey || !model || typeof wantFavorite !== 'boolean') {
+          const toggleSchemaErrors = [];
+          if (!scopeKey) toggleSchemaErrors.push('favoriteToggle.scopeKey must be a valid Base URL');
+          if (!model) toggleSchemaErrors.push('favoriteToggle.model must be a non-empty string');
+          if (typeof wantFavorite !== 'boolean') toggleSchemaErrors.push('favoriteToggle.favorite must be a boolean');
+          if (toggleSchemaErrors.length > 0) {
             return createTypedError('INVALID_SCHEMA', 'favoriteToggle requires a valid Base URL scope, model, and favorite (true|false)', false, {
-              schemaErrors: ['favoriteToggle.favorite must be a boolean']
+              schemaErrors: toggleSchemaErrors
             });
           }
           const map = (mergedRaw.favoriteModelsByBaseURL && typeof mergedRaw.favoriteModelsByBaseURL === 'object' && !Array.isArray(mergedRaw.favoriteModelsByBaseURL))

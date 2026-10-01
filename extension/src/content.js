@@ -1524,6 +1524,7 @@
         if (autoStartTimer) {
           clearTimeout(autoStartTimer);
           autoStartTimer = null;
+          autoStartAttempted = false;
         }
         if (scrollSession.watching) {
           stopScrollFollowSession(true);
@@ -1592,7 +1593,6 @@
       // WIDGET_STATE_CHANGED re-query requires !autoStartAttempted.
       autoStartAttempted = true;
 
-      const targetMode = st.mode || 'scroll-follow';
       autoStartTimer = setTimeout(() => {
         autoStartTimer = null;
         try {
@@ -1601,13 +1601,27 @@
           if (isTranslating || scrollSession.watching) return;
           if (!lastTranslateStatus) return;
 
+          // Re-check the latest state: permission/hasKey/autoStart may have
+          // changed during the settle interval while effective stayed on.
+          // A failed re-check must not start and must leave auto-start
+          // retryable for a later complete positive update.
+          const latest = widgetState || st || {};
+          if (!latest.autoStart || latest.effective !== 'on' || latest.hasKey !== true || latest.permission !== true) {
+            autoStartAttempted = false;
+            return;
+          }
+          if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+            autoStartAttempted = false;
+            return;
+          }
+          const targetMode = latest.mode || 'scroll-follow';
           currentMode = targetMode;
           lastTranslateStatus.mode = targetMode;
 
           if (targetMode === 'scroll-follow') {
-            startScrollFollowSession(st || {});
+            startScrollFollowSession(latest);
           } else {
-            executeTranslation(st || {}).catch((e) => {
+            executeTranslation(latest).catch((e) => {
               if (__wmtInvalidatedErr(e)) __wmtHaltStale();
             });
           }
@@ -1897,7 +1911,7 @@
           applyState(msg);
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {
-          if (!__wmtHalted && __wmtValidContext() && !autoStartAttempted && !userRestored && !isTranslating && !scrollSession.watching) {
+          if (!__wmtHalted && __wmtValidContext() && (!autoStartAttempted || autoStartTimer) && !userRestored && !isTranslating && !scrollSession.watching) {
             queryState();
           }
         } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }

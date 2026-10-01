@@ -1146,3 +1146,160 @@ test('sw: WIDGET_GET_STATE enforces key gate alongside consent/permission', () =
   assert.ok(swSrc.includes("reason = 'no_key'"), 'SW gate must distinguish missing-key from other denials');
   assert.ok(swSrc.includes('effective !== \'on\''), 'SW gate must honor effective (site + tab-override + default OFF) policy');
 });
+
+test('content: auto-start revalidates permission, key and consent during settle', async () => {
+  const saved = {};
+  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+    if (k in globalThis) saved[k] = globalThis[k];
+  }
+  try {
+    function fakeEl() {
+      return {
+        style: {}, dataset: {},
+        setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
+        classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+        addEventListener() {}, removeEventListener() {}, appendChild() {},
+        querySelector: () => fakeEl(), querySelectorAll: () => [],
+        setPointerCapture() {}, releasePointerCapture() {}, attachShadow: () => fakeEl(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }),
+        textContent: '', innerHTML: '', value: '', checked: false, disabled: false, title: '',
+        focus() {}, click() {}
+      };
+    }
+    const runtimeHandlers = [];
+    let getStateCalls = 0;
+    const onState = {
+      effective: 'on', siteEnabled: true, tabOverride: null, mode: 'scroll-follow',
+      sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m', widgetVisible: true,
+      position: null, autoStart: true, permission: true, hasKey: true,
+      siteConfig: { origin: SITE, mode: 'scroll-follow', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
+    };
+    const offState = { ...onState, effective: 'off', siteEnabled: false, autoStart: false, reason: 'site_off' };
+    let current = { ...onState };
+    globalThis.chrome = {
+      runtime: {
+        id: 'test-ext-id', lastError: null,
+        sendMessage: (msg, cb) => {
+          if (msg?.action === 'WIDGET_GET_STATE') {
+            getStateCalls++;
+            if (typeof cb === 'function') cb({ ...current });
+          } else if (typeof cb === 'function') cb({ ok: true });
+        },
+        onMessage: { addListener: (handler) => runtimeHandlers.push(handler) }
+      }
+    };
+    const win = {
+      innerHeight: 800, innerWidth: 1200, top: null,
+      addEventListener() {}, removeEventListener() {},
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', overflowY: 'visible' }),
+      scrollTo() {}
+    };
+    win.top = win;
+    globalThis.window = win;
+    globalThis.document = {
+      documentElement: fakeEl(), body: null,
+      getElementById: () => null, createElement: () => fakeEl(),
+      createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [],
+      addEventListener() {}, removeEventListener() {}
+    };
+    globalThis.location = { protocol: 'http:' };
+    globalThis.NodeFilter = { SHOW_TEXT: 4 };
+    globalThis.requestAnimationFrame = () => 0;
+    globalThis.cancelAnimationFrame = () => {};
+    globalThis.setInterval = () => 0;
+    class FakeObserver { constructor(cb) { this.cb = cb; } observe() {} unobserve() {} disconnect() {} }
+    globalThis.IntersectionObserver = FakeObserver;
+    globalThis.MutationObserver = FakeObserver;
+
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom = win.__translatorDom;
+    assert.ok(dom, 'content must expose __translatorDom');
+    const pushState = (state) => {
+      current = { ...state };
+      for (const handler of [...runtimeHandlers]) {
+        try { handler({ action: 'WIDGET_STATE_CHANGED', ...state }, {}, () => {}); } catch {}
+      }
+    };
+
+    // Start positive, then revoke permission during the settle window. Empty
+    // broadcasts must trigger a fresh state read while the timer is pending.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(dom.getStatus().watching, false);
+    current.permission = false;
+    const readsBefore = getStateCalls;
+    for (const handler of [...runtimeHandlers]) {
+      try { handler({ action: 'WIDGET_STATE_CHANGED' }, {}, () => {}); } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(getStateCalls > readsBefore, 'pending timer broadcast must query current gate state');
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(dom.getStatus().watching, false, 'revoked permission during settle must not start');
+
+    // A missing key also must not start.
+    current = { ...onState, hasKey: false };
+    for (const handler of [...runtimeHandlers]) {
+      try { handler({ action: 'WIDGET_STATE_CHANGED', ...current }, {}, () => {}); } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(dom.getStatus().watching, false, 'missing key must not start');
+
+    // Turn effective consent off during a newly pending timer, then back on.
+    pushState(onState);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    pushState(offState);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(dom.getStatus().watching, false, 'consent off must cancel the pending timer');
+    pushState(onState);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(dom.getStatus().watching, true, 'complete positive state must remain retryable');
+    assert.equal(dom.getStatus().mode, 'scroll-follow');
+  } finally {
+    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+      if (k in saved) globalThis[k] = saved[k];
+      else delete globalThis[k];
+    }
+  }
+});
+
+test('sw: malformed favoriteToggle identifies each bad field in schemaErrors', async () => {
+  const previousSettings = store.local.settings;
+  const A = 'http://127.0.0.1:8089/v1';
+  const keyA = normalizeBaseURLKey(A);
+  store.local.settings = migrateSettings({
+    baseURL: A, model: 'ag/m', favoriteModels: [], favoriteModelsByBaseURL: { [keyA]: [] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  try {
+    const badScope = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: 'not a url', model: 'm1', favorite: true } } },
+      popupSender
+    );
+    assert.ok(badScope?.error && badScope.error.code === 'INVALID_SCHEMA', 'bad scope must reject: ' + JSON.stringify(badScope));
+    assert.ok(badScope.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.scopeKey')), 'must identify scopeKey: ' + JSON.stringify(badScope));
+    assert.ok(!badScope.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.favorite')), 'valid favorite must not be blamed: ' + JSON.stringify(badScope));
+    const badModel = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: '   ', favorite: true } } },
+      popupSender
+    );
+    assert.ok(badModel?.error && badModel.error.code === 'INVALID_SCHEMA', 'bad model must reject: ' + JSON.stringify(badModel));
+    assert.ok(badModel.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.model')), 'must identify model: ' + JSON.stringify(badModel));
+    assert.ok(!badModel.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.favorite')), 'valid favorite must not be blamed: ' + JSON.stringify(badModel));
+    const badFav = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'm1' } } },
+      popupSender
+    );
+    assert.ok(badFav?.error && badFav.error.code === 'INVALID_SCHEMA', 'bad favorite must reject: ' + JSON.stringify(badFav));
+    assert.ok(badFav.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.favorite')), 'must identify favorite: ' + JSON.stringify(badFav));
+    const allBad = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: 'ftp://h.test/v1', model: '', favorite: 'yes' } } },
+      popupSender
+    );
+    assert.ok(allBad?.error && allBad.error.code === 'INVALID_SCHEMA', 'all-bad must reject: ' + JSON.stringify(allBad));
+    assert.ok(allBad.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.scopeKey')), 'all-bad must identify scopeKey');
+    assert.ok(allBad.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.model')), 'all-bad must identify model');
+    assert.ok(allBad.error.details.schemaErrors.some((e) => e.includes('favoriteToggle.favorite')), 'all-bad must identify favorite');
+    assert.equal(allBad.error.details.schemaErrors.length, 3);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
