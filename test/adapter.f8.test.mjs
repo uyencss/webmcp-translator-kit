@@ -109,9 +109,12 @@ test('F8 Case 2: Destroy socket mid-request -> typed NETWORK retryable after 3 a
 
 test('F8 Case 3: Abort mid-batch -> typed ABORTED with 0 retries (1 attempt), zero text leakage', async () => {
   let attempts = 0;
+  let markRequestReceived;
+  const requestReceived = new Promise((resolve) => { markRequestReceived = resolve; });
 
   const server = http.createServer((req) => {
     attempts++;
+    markRequestReceived();
     // Hold request without replying until aborted
     req.on('data', () => {});
   });
@@ -139,10 +142,9 @@ test('F8 Case 3: Abort mid-batch -> typed ABORTED with 0 retries (1 attempt), ze
       signal: controller.signal
     });
 
-    // Abort after 20ms while request is in flight
-    setTimeout(() => {
-      controller.abort('User explicitly aborted translation');
-    }, 20);
+    // Abort only after the local server received the request.
+    await requestReceived;
+    controller.abort('User explicitly aborted translation');
 
     const result = await batchPromise;
 
