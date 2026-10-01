@@ -1530,7 +1530,7 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(translationRequests, 1, 'fatal permission failure must not retry/reschedule the same nodes');
     assert.equal(dom.getStatus().watching, false, 'fatal permission failure must stop the scroll session');
-    for (const code of ['ABORTED', 'DROPPED_ON_RESTART']) {
+    for (const code of ['ABORTED', 'DROPPED_ON_RESTART', 'INVALID_SCHEMA', 'CAP_EXCEEDED']) {
       batchErrorCode = code;
       const before = translationRequests;
       dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
@@ -1539,7 +1539,7 @@ test('content: fatal scroll batch stops instead of rescheduling the same nodes',
       assert.equal(dom.getStatus().watching, true, `${code} must keep watching for later user scroll`);
       dom.stopScrollFollowSession();
     }
-    for (const code of ['ABORTED', 'DROPPED_ON_RESTART']) {
+    for (const code of ['ABORTED', 'DROPPED_ON_RESTART', 'INVALID_SCHEMA', 'CAP_EXCEEDED']) {
       batchErrorCode = code;
       mixedBatch = true;
       mixedRequests = 0;

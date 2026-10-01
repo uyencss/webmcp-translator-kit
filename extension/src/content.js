@@ -977,7 +977,9 @@
         }
         // Lifecycle aborts stop this batch without replay; the watcher stays
         // available for a later scroll after config changes or SW restart.
-        if (!['RATE_LIMITED', 'ABORTED', 'DROPPED_ON_RESTART'].includes(res.error?.code)) cancelActiveTranslation();
+        if (['OPT_IN_REQUIRED', 'SITE_NOT_ALLOWED', 'PERMISSION_REQUIRED',
+          'CONSENT_STATE_UNAVAILABLE', 'CONSENT_DENIED', 'KEY_ACCESS_UNAVAILABLE',
+          'MISSING_CONFIG', 'HTTP_401', 'HTTP_403'].includes(res.error?.code)) cancelActiveTranslation();
       }
 
       // Handle RATE_LIMITED with single timer + jitter (no spin)
@@ -1969,7 +1971,7 @@
         try {
           const { action, ...pushedState } = msg;
           void action;
-          applyState(pushedState);
+          if (Object.keys(pushedState).length > 0) applyState(pushedState);
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {
           if (!__wmtHalted && __wmtValidContext()) {
