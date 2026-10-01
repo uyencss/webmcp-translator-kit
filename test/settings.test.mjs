@@ -7,9 +7,9 @@ import {
   validateSettings
 } from '../extension/src/settings.mjs';
 
-test('settings: SETTINGS_VERSION is defined as 4', () => {
+test('settings: SETTINGS_VERSION is defined as 5', () => {
   assert.equal(typeof SETTINGS_VERSION, 'number');
-  assert.equal(SETTINGS_VERSION, 4);
+  assert.equal(SETTINGS_VERSION, 5);
 });
 
 test('settings: migrateSettings converts v0 (unversioned) to canonical version with defaults', () => {
@@ -40,7 +40,7 @@ test('settings: migrateSettings converts v0 (unversioned) to canonical version w
   assert.deepEqual(migrated.rateLimits, DEFAULT_SETTINGS.rateLimits);
 });
 
-test('settings: migrateSettings converts v1 to canonical v4 with default new fields', () => {
+test('settings: migrateSettings converts v1 to canonical v5 with default new fields', () => {
   const v1Raw = {
     version: 1,
     baseURL: 'http://localhost:8080/v1',
@@ -52,7 +52,7 @@ test('settings: migrateSettings converts v1 to canonical v4 with default new fie
 
   const migrated = migrateSettings(v1Raw);
 
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 5);
   assert.equal(migrated.baseURL, v1Raw.baseURL);
   assert.equal(migrated.model, v1Raw.model);
   assert.equal(migrated.translationMode, 'scroll-follow');
@@ -63,7 +63,7 @@ test('settings: migrateSettings converts v1 to canonical v4 with default new fie
   assert.deepEqual(migrated.autoTranslateSites, []);
 });
 
-test('settings: migrateSettings converts v2 fallbackModels to v4 fallbacks with inherit', () => {
+test('settings: migrateSettings converts v2 fallbackModels to v5 fallbacks with inherit', () => {
   const raw = {
     version: 2,
     baseURL: 'http://localhost:8080/v1',
@@ -73,7 +73,7 @@ test('settings: migrateSettings converts v2 fallbackModels to v4 fallbacks with 
 
   const migrated = migrateSettings(raw);
 
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 5);
   assert.deepEqual(migrated.fallbacks, [
     { id: 'fb1', model: 'fb-1' },
     { id: 'fb2', model: 'fb-2' }
@@ -578,4 +578,3 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
     { origin: 'https://auto3.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
   ]);
 });
-

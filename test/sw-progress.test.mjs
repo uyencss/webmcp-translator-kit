@@ -86,7 +86,7 @@ test('SW forwards SSE progress to tab before final result settles', async () => 
   const store = {
     local: {
       settings: {
-        version: 4, baseURL, model: 'ag/m', fallbacks: [], favoriteModels: [],
+        version: 5, baseURL, model: 'ag/m', fallbacks: [], favoriteModels: [],
         autoTranslateSites: [], translationMode: 'full', widgetVisible: true,
         sourceLanguage: 'auto', targetLanguage: 'vi',
         rateLimits: { windowSeconds: 60, tab: { maxBatches: 100, maxSourceCodePoints: 1e7 }, site: { maxBatches: 100, maxSourceCodePoints: 1e7 } }

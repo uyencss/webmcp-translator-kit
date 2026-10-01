@@ -129,11 +129,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     favoriteModelsByBaseURL[key] = [...list].slice(0, 50);
   }
 
-  // Base URL scope for a fallback row: its own Base URL, else primary.
+  // Base URL scope for a fallback row: its own Base URL, else the displayed primary.
   // Returns null when the effective URL is invalid (star disabled).
   function favKeyForFallback(fb) {
     const own = (fb && typeof fb.baseURL === 'string') ? fb.baseURL.trim() : '';
-    return own ? normalizeBaseURLKey(own) : currentFavKey();
+    return own ? normalizeBaseURLKey(own) : lastFavKey;
   }
 
   // Autosave state (no save buttons — every change persists to storage)
@@ -1103,8 +1103,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           renderAllModelDropdowns();
           setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
         } catch (err) {
-          updateFallbackStar(btnFallbackFav, fb, modelSelect);
-          updateStarButton();
+          renderAllModelDropdowns();
           setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Không thể lưu'), true);
         } finally {
           btnFallbackFav.disabled = !favKeyForFallback({ baseURL: (document.getElementById(`input-fallback-url-${idx}`)?.value || fb.baseURL || '') });
@@ -2203,6 +2202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (currentMode === 'scroll-follow' || resp?.watching) {
+              startPolling();
               updateStatus('watching', formatDetail('watching', {
                 applied: resp?.applied || 0,
                 totalApplied: resp?.applied || 0,

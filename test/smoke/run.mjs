@@ -4489,6 +4489,7 @@ async function runSingleAttempt() {
             settings: {
               baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
               model: '${DEFAULT_MODEL}',
+              translationMode: 'scroll-follow',
               sourceLanguage: 'auto',
               targetLanguage: 'vi'
             }
@@ -4525,14 +4526,16 @@ async function runSingleAttempt() {
       const pSession1 = pAttach1.sessionId;
       await cdp.send('Runtime.enable', {}, pSession1);
       await cdp.send('Runtime.addBinding', { name: '__cdpPopupSendTabMessage' }, pSession1);
+      const t47PopupSessions = new Set([pSession1]);
       const popupMsgListener = async (msg) => {
-        if (msg.sessionId === pSession1 && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpPopupSendTabMessage') {
+        const popupSession = msg.sessionId;
+        if (t47PopupSessions.has(popupSession) && msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__cdpPopupSendTabMessage') {
           const { callId, payload } = JSON.parse(msg.params.payload);
           try {
             const res = await t47Tab.dispatchToContent(payload);
-            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, ${JSON.stringify(res)})`, pSession1, false);
+            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, ${JSON.stringify(res)})`, popupSession, false);
           } catch (err) {
-            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, undefined, ${JSON.stringify(err.message)})`, pSession1, false);
+            await cdp.evaluate(`window.__cdpTabReply(${JSON.stringify(callId)}, undefined, ${JSON.stringify(err.message)})`, popupSession, false);
           }
         }
       };
@@ -4549,9 +4552,12 @@ async function runSingleAttempt() {
         try {
           window.__tabPending = window.__tabPending || new Map();
           window.__tabCallId = window.__tabCallId || 1;
+          window.__popupTabSendTrace = window.__popupTabSendTrace || [];
+          window.__popupTabReplyTrace = window.__popupTabReplyTrace || [];
           if (!window.__cdpTabReply) {
             window.__cdpTabReply = function(callId, response, lastError) {
               if (window.__tabPending.has(callId)) {
+                window.__popupTabReplyTrace.push({ callId, response, lastError: lastError || null });
                 const cb = window.__tabPending.get(callId);
                 window.__tabPending.delete(callId);
                 if (lastError) window.chrome.runtime.lastError = { message: lastError };
@@ -4563,12 +4569,22 @@ async function runSingleAttempt() {
           chrome.tabs.sendMessage = function(tabId, message, options, callback) {
             const cb = typeof options === 'function' ? options : callback;
             const callId = window.__tabCallId++;
+            window.__popupTabSendTrace.push({ callId, tabId, message });
             if (typeof cb === 'function') window.__tabPending.set(callId, cb);
             window.__cdpPopupSendTabMessage(JSON.stringify({ callId, payload: message }));
           };
         } catch (e) {}
       `;
 
+      const waitForFooterProgress = async (sessionId) => {
+        let value = '';
+        for (let w = 0; w < 30; w++) {
+          value = await cdp.evaluate('document.getElementById("footer-status-summary")?.textContent || ""', sessionId);
+          if (/v0\.1\.0 · \d+\/\d+/.test(value)) return value;
+          await sleep(100);
+        }
+        return value;
+      };
 
       // Install page mocks immediately after attach (before init's async work
       // resolves): mock chrome.tabs.query so resolveActiveTab never touches the
@@ -4710,6 +4726,26 @@ async function runSingleAttempt() {
         assert.ok(false, `Clicking Dịch in tab-translate must apply translations on fixture, got ${appliedCount}, statusError=${JSON.stringify(lastStErr)}, diag=${JSON.stringify(diag47)}, swFromPopup=${JSON.stringify(swFromPopup)}, testActiveTabInPage=${JSON.stringify(testActiveTabInPage)}, initTrace=${JSON.stringify(initTrace)}, consoleErr=${JSON.stringify(t47ConsoleErrors.slice(0, 4))}, providerLogs=${logs47}, pageErrors=${JSON.stringify(t47PageErrors.slice(0, 3))}`);
       }
 
+      await t47Tab.dispatchToContent({ action: 'CONTENT_RESTORE' });
+      const footerWatchStart = await t47Tab.dispatchToContent({
+        action: 'CONTENT_START_TRANSLATION',
+        mode: 'scroll-follow',
+        settings: { model: DEFAULT_MODEL, sourceLanguage: 'auto', targetLanguage: 'vi' }
+      });
+      assert.equal(footerWatchStart?.watching, true, 'scroll-follow session must remain active while checking the popup footer');
+      const footerProgressOpen = await waitForFooterProgress(pSession1);
+      if (!/v0\.1\.0 · \d+\/\d+/.test(footerProgressOpen)) {
+        const footerDiag = await cdp.evaluate(`JSON.stringify({
+          footer: document.getElementById('footer-status-summary')?.textContent,
+          strip: document.getElementById('status-strip')?.textContent,
+          detail: document.getElementById('status-detail')?.textContent,
+          activeTab: window.__testActiveTab,
+          sent: (window.__popupTabSendTrace || []).slice(-8),
+          replies: (window.__popupTabReplyTrace || []).slice(-8)
+        })`, pSession1);
+        assert.ok(false, `open popup footer must show live scroll progress, got "${footerProgressOpen}"; content=${JSON.stringify(await t47Tab.dispatchToContent({ action: 'CONTENT_GET_STATUS' }))}; ui=${footerDiag}`);
+      }
+
       // (c) Model list: cache-first (second popup open does NOT request /models)
       const modelsCountBefore = fakeServer.getModelsFetchCount();
       await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId });
@@ -4731,10 +4767,27 @@ async function runSingleAttempt() {
       const pAttach2 = await cdp.send('Target.attachToTarget', { targetId: pTarget2.targetId, flatten: true });
       const pSession2 = pAttach2.sessionId;
       await cdp.send('Runtime.enable', {}, pSession2);
+      await cdp.send('Runtime.addBinding', { name: '__cdpPopupSendTabMessage' }, pSession2);
+      t47PopupSessions.add(pSession2);
+      await cdp.evaluate(t47MocksJs, pSession2).catch(() => {});
+      try { await cdp.send('Page.reload', {}, pSession2); } catch {}
+      await cdp.evaluate(t47MocksJs, pSession2).catch(() => {});
       await sleep(500);
       // Mock chrome.permissions in harness popups (real prompt can hang
       // headless CDP tabs; denial paths are covered at SW-level by T15)
       await cdp.evaluate(`chrome.permissions = { contains: async () => true, request: async () => true };`, pSession2).catch(() => {});
+      const footerProgressReopen = await waitForFooterProgress(pSession2);
+      if (!/v0\.1\.0 · \d+\/\d+/.test(footerProgressReopen)) {
+        const footerDiag = await cdp.evaluate(`JSON.stringify({
+          footer: document.getElementById('footer-status-summary')?.textContent,
+          strip: document.getElementById('status-strip')?.textContent,
+          detail: document.getElementById('status-detail')?.textContent,
+          activeTab: window.__testActiveTab,
+          sent: (window.__popupTabSendTrace || []).slice(-8),
+          replies: (window.__popupTabReplyTrace || []).slice(-8)
+        })`, pSession2);
+        assert.ok(false, `reopened popup footer must recover live scroll progress, got "${footerProgressReopen}"; ui=${footerDiag}`);
+      }
 
       const modelsCountAfter = fakeServer.getModelsFetchCount();
       assert.equal(modelsCountAfter, modelsCountBefore, 'Re-opening popup must use L2 cache and NOT send /models request');
@@ -4825,6 +4878,17 @@ async function runSingleAttempt() {
                 const delay = isFormSave ? window.__delayFormSaveMs
                   : (isFavoriteMapSave ? window.__delayFavoriteMapMs : 0);
                 window.__fallbackSaveTrace.push({ phase: 'sent', kind, settings });
+                if (kind === 'favorite-map' && window.__failNextFavoriteMapWrite) {
+                  window.__failNextFavoriteMapWrite = false;
+                  const response = { error: { code: 'TEST_FAILURE', message: 'injected favorite write failure' } };
+                  const complete = () => {
+                    window.__fallbackSaveTrace.push({ phase: 'callback', kind, response, lastError: null });
+                    callback(response);
+                  };
+                  if (delay) setTimeout(complete, delay);
+                  else complete();
+                  return undefined;
+                }
                 args[args.length - 1] = response => {
                   const lastError = chrome.runtime.lastError?.message || null;
                   const complete = () => {
@@ -4901,9 +4965,44 @@ async function runSingleAttempt() {
         assert.deepEqual(afterPrimary.favoriteModelsByBaseURL?.[FAV_B_KEY], ['b-only'], 'other provider bucket must stay isolated');
         assert.ok(!('default' in (afterPrimary.favoriteModelsByBaseURL || {})), 'favorites must never persist under a fake default key');
 
+        const allFavoritesBeforeFailure = Object.values(afterPrimary.favoriteModelsByBaseURL || {}).flat();
+        const mFail = await cdp.evaluate(`(() => {
+          const sel = document.getElementById('select-fallback-0');
+          const existing = new Set(${JSON.stringify(allFavoritesBeforeFailure)});
+          const model = Array.from(sel.options).map((x) => x.value).find(v => v && !existing.has(v));
+          sel.value = model; sel.dispatchEvent(new Event('change'));
+          return model;
+        })()`, pSession2);
+        assert.ok(mFail, 'fallback selector must offer an unfavorited model for save rollback test');
         await cdp.evaluate(`(() => {
           window.__delayFormSaveMs = 0;
           window.__delayFavoriteMapMs = 0;
+          window.__failNextFavoriteMapWrite = true;
+          document.getElementById('btn-fallback-fav-0')?.click();
+        })()`, pSession2);
+        const failureTrace = await waitForTrace(trace => trace.some(event =>
+          event.phase === 'callback' && event.kind === 'favorite-map' && event.response?.error?.code === 'TEST_FAILURE'));
+        assert.ok(failureTrace.some(event =>
+          event.phase === 'callback' && event.kind === 'favorite-map' && event.response?.error?.code === 'TEST_FAILURE'),
+        'fallback favorite save failure must reach the popup rollback path');
+        const rollbackState = await waitSettings(settings =>
+          settings.fallbacks?.[0]?.model === mFail && !(settings.favoriteModelsByBaseURL?.[keyA] || []).includes(mFail));
+        let rollbackUi = {};
+        for (let w = 0; w < 30; w++) {
+          rollbackUi = await cdp.evaluate(`(() => ({
+            title: document.getElementById('btn-fallback-fav-0')?.title,
+            message: document.getElementById('config-message-connect')?.textContent || ''
+          }))()`, pSession2);
+          if (rollbackUi.title?.includes('Thêm') && rollbackUi.message.includes('injected favorite write failure')) break;
+          await sleep(100);
+        }
+        assert.deepEqual(rollbackState.favoriteModelsByBaseURL?.[keyA], expectedAfterPrimary,
+          `failed partial favorite must roll back without losing existing favorites: ${JSON.stringify({ expected: expectedAfterPrimary, map: rollbackState.favoriteModelsByBaseURL, mFail, rollbackUi, trace: await cdp.evaluate('window.__fallbackSaveTrace || []', pSession2) })}`);
+        assert.ok(rollbackUi.title?.includes('Thêm'),
+          `failed favorite save must restore the non-favorited star state: ${JSON.stringify({ rollbackUi, mFail, primaryUrl: await cdp.evaluate("document.getElementById('input-base-url')?.value", pSession2), fallbackUrl: await cdp.evaluate("document.getElementById('input-fallback-url-0')?.value", pSession2), map: rollbackState.favoriteModelsByBaseURL, failureTrace: await cdp.evaluate('window.__fallbackSaveTrace || []', pSession2) })}`);
+        assert.match(rollbackUi.message || '', /injected favorite write failure/, 'failed favorite save must surface its error');
+
+        await cdp.evaluate(`(() => {
           const select = document.getElementById('select-src-lang');
           select.value = ${JSON.stringify(srcSelect.previous)};
           select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -5100,11 +5199,12 @@ async function runSingleAttempt() {
             action: 'SAVE_SETTINGS',
             settings: {
               baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
-              model: '${DEFAULT_MODEL}',
+              model: 'wmt/auto-start-e2e',
               translationMode: 'scroll-follow',
               autoTranslateSites: ['${fixtureOrigin}']
             }
           }, popupSender);
+          self.__translatorSw.translationCache.clear();
         })()
       `, swSessionId);
 
@@ -5126,7 +5226,14 @@ async function runSingleAttempt() {
           break;
         }
       }
-      assert.ok(posSuccess, 'Positive case: fake server must receive translation request automatically within 2.5s without user click');
+      if (!posSuccess) {
+        const posSettings = await cdp.evaluate(`self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })`, swSessionId);
+        const posGate = await cdp.evaluate(`self.__translatorSw.dispatchMessage({ action: 'WIDGET_GET_STATE' }, {
+          frameId: 0, tab: { id: ${t48TabPos.tabId}, url: '${fixtureUrl}' }, url: '${fixtureUrl}'
+        })`, swSessionId);
+        const posStatus = await cdp.evaluate('window.__translatorDom.getStatus()', t48TabPos.sessionId).catch((err) => ({ error: String(err) }));
+        assert.ok(false, `Positive case: fake server must receive translation request automatically within 2.5s without user click; requests=${fakeServer.getLogs().length}, settings=${JSON.stringify(posSettings?.settings)}, hasKey=${posSettings?.hasKey}, gate=${JSON.stringify(posGate)}, status=${JSON.stringify(posStatus)}`);
+      }
 
       // Poll/verify status: watching === true or totalApplied > 0
       const posStatus = await cdp.evaluate('window.__translatorDom.getStatus()', t48TabPos.sessionId);

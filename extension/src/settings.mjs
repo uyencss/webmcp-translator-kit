@@ -3,7 +3,7 @@
 
 import { normalizeOrigin } from './consent.mjs';
 
-export const SETTINGS_VERSION = 4;
+export const SETTINGS_VERSION = 5;
 
 export const VALID_PER_SITE_MODES = Object.freeze(['inherit', 'scroll-follow', 'full']);
 
@@ -154,7 +154,7 @@ export function migrateSettings(raw) {
   delete res.fallback_api_keys;
   delete res.fallbackApiKeys;
 
-  // Migration to v3
+  // Record the current schema version after normalizing older settings.
   res.version = SETTINGS_VERSION;
 
   // Ensure default string values if missing or empty

@@ -481,13 +481,21 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && t
 }
 
 // Storage helpers
-async function getStoredSettings() {
+async function getStoredSettings({ persistMigration = true } = {}) {
   await ensureStorageAccess();
   const res = await chrome.storage.local.get(['settings']);
   const raw = res.settings;
   const migrated = migrateSettings(raw);
-  if (!raw || raw.version !== SETTINGS_VERSION) {
-    await chrome.storage.local.set({ settings: migrated });
+  if ((!raw || raw.version !== SETTINGS_VERSION) && persistMigration) {
+    return serializeSettingsWrite(async () => {
+      await ensureStorageAccess();
+      const latestRaw = (await chrome.storage.local.get(['settings'])).settings;
+      const latestMigrated = migrateSettings(latestRaw);
+      if (!latestRaw || latestRaw.version !== SETTINGS_VERSION) {
+        await chrome.storage.local.set({ settings: latestMigrated });
+      }
+      return latestMigrated;
+    });
   }
   return migrated;
 }
@@ -1859,7 +1867,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
         await ensureStorageAccess();
 
-        const oldSettings = await getStoredSettings();
+        const oldSettings = await getStoredSettings({ persistMigration: false });
         const patch = (message.settings && typeof message.settings === 'object' && !Array.isArray(message.settings))
           ? message.settings
           : {};
@@ -2919,34 +2927,36 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           return createTypedError('INVALID_SCHEMA', 'Invalid mode. Must be scroll-follow or full', false);
         }
 
-        await ensureStorageAccess();
-        const oldSettings = await getStoredSettings();
-        if (oldSettings.translationMode !== mode) {
-          configRevision++;
-          translationCache.clear();
-          for (const [reqId, active] of activeBatchControllers.entries()) {
-            try { active.controller.abort('config_changed'); } catch {}
-          }
-          activeBatchControllers.clear();
-          for (const [tabId, queue] of tabQueues.entries()) {
-            for (const entry of queue) {
-              if (entry.timer) clearTimeout(entry.timer);
-              entry.resolve(createTypedError(
-                'ABORTED',
-                'Translation request aborted due to mode change',
-                false,
-                { reason: 'Mode changed' }
-              ));
+        return await serializeSettingsWrite(async () => {
+          await ensureStorageAccess();
+          const oldSettings = await getStoredSettings({ persistMigration: false });
+          if (oldSettings.translationMode !== mode) {
+            configRevision++;
+            translationCache.clear();
+            for (const [reqId, active] of activeBatchControllers.entries()) {
+              try { active.controller.abort('config_changed'); } catch {}
             }
+            activeBatchControllers.clear();
+            for (const [tabId, queue] of tabQueues.entries()) {
+              for (const entry of queue) {
+                if (entry.timer) clearTimeout(entry.timer);
+                entry.resolve(createTypedError(
+                  'ABORTED',
+                  'Translation request aborted due to mode change',
+                  false,
+                  { reason: 'Mode changed' }
+                ));
+              }
+            }
+            tabQueues.clear();
+
+            const merged = migrateSettings({ ...oldSettings, translationMode: mode });
+            await chrome.storage.local.set({ settings: merged });
+            notifyAllWidgetStateChanged();
           }
-          tabQueues.clear();
 
-          const merged = migrateSettings({ ...oldSettings, translationMode: mode });
-          await chrome.storage.local.set({ settings: merged });
-          notifyAllWidgetStateChanged();
-        }
-
-        return { ok: true, mode };
+          return { ok: true, mode };
+        });
       }
 
       case 'WIDGET_SET_POSITION': {

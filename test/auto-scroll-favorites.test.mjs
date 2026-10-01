@@ -201,7 +201,7 @@ function makeChromeStub(store, permState) {
 
 function baseSettings(over = {}) {
   return {
-    version: 4,
+    version: 5,
     baseURL: PROVIDER_A,
     model: 'ag/m',
     fallbacks: [],
@@ -375,6 +375,85 @@ test('sw: concurrent SAVE_SETTINGS patches preserve both updates', async () => {
   assert.deepEqual(final.settings.favoriteModels, ['race-favorite']);
   assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['race-favorite']);
   assert.equal(final.settings.translationMode, 'full');
+});
+
+test('sw: WIDGET_SET_MODE serializes with favorite SAVE_SETTINGS', async () => {
+  const A = 'http://127.0.0.1:8089/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({ baseURL: A, model: 'ag/old', favoriteModels: ['old'] });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  const widgetSender = { frameId: 0, tab: { id: 7, url: SITE_URL }, url: SITE_URL };
+  const originalGet = chrome.storage.local.get;
+  const originalSet = chrome.storage.local.set;
+  let settingsSetCount = 0;
+
+  chrome.storage.local.get = async (keys) => {
+    const result = await originalGet(keys);
+    const requested = keys === null || keys === undefined ? [] : (Array.isArray(keys) ? keys : [keys]);
+    if (requested.includes('settings')) await new Promise(resolve => setTimeout(resolve, 10));
+    return result;
+  };
+  chrome.storage.local.set = async (values) => {
+    if (values.settings && ++settingsSetCount === 1) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    return originalSet(values);
+  };
+
+  let final;
+  try {
+    const [favoriteSave, modeSave] = await Promise.all([
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModels: ['widget-race-favorite'] } }, popupSender),
+      sw.dispatchMessage({ action: 'WIDGET_SET_MODE', mode: 'full' }, widgetSender)
+    ]);
+    assert.ok(favoriteSave?.ok && modeSave?.ok, 'both settings actions must succeed');
+    final = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+  } finally {
+    chrome.storage.local.get = originalGet;
+    chrome.storage.local.set = originalSet;
+    store.local.settings = previousSettings;
+  }
+
+  assert.deepEqual(final.settings.favoriteModels, ['widget-race-favorite']);
+  assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['widget-race-favorite']);
+  assert.equal(final.settings.translationMode, 'full');
+});
+
+test('sw: v4 favorites migration is persisted once on read', async () => {
+  const previousSettings = store.local.settings;
+  store.local.settings = {
+    version: 4,
+    baseURL: PROVIDER_A,
+    model: 'ag/m',
+    favoriteModels: ['legacy-favorite'],
+    fallbacks: [],
+    autoTranslateSites: [],
+    translationMode: 'scroll-follow',
+    widgetVisible: true,
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi'
+  };
+  const originalSet = chrome.storage.local.set;
+  let settingsWriteCount = 0;
+  chrome.storage.local.set = async (values) => {
+    if (values.settings) settingsWriteCount++;
+    return originalSet(values);
+  };
+
+  try {
+    const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+    const first = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.equal(first.settings.version, 5);
+    assert.deepEqual(first.settings.favoriteModelsByBaseURL[PROVIDER_A], ['legacy-favorite']);
+    assert.equal(store.local.settings.version, 5);
+
+    await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.equal(settingsWriteCount, 1, 'subsequent reads must not rewrite the migrated record');
+  } finally {
+    chrome.storage.local.set = originalSet;
+    store.local.settings = previousSettings;
+  }
 });
 
 // ============================================================================
@@ -710,6 +789,8 @@ test('popup: favorites are scoped per Base URL with fallback star controls', () 
   assert.ok(popupSrc.includes('favoriteModelsByBaseURL'), 'popup must persist scoped favorites map');
   assert.ok(popupSrc.includes('btn-fallback-fav-'), 'fallback rows must have their own star controls');
   assert.ok(popupSrc.includes('favKeyForFallback'), 'fallback stars must scope to row URL else primary');
+  assert.ok(popupSrc.includes("return own ? normalizeBaseURLKey(own) : lastFavKey;"),
+    'fallback rows without a custom URL must use the displayed primary scope');
   assert.ok(!popupSrc.includes('scoped.length === 0 && favoriteModels.length'),
     'popup load/switch must never seed an empty bucket from another scope\'s working list');
   assert.ok(!/apiKey|api_key/.test(popupSrc.match(/favoriteModelsByBaseURL[\s\S]{0,300}/)?.[0] || ''),
