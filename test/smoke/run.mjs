@@ -222,14 +222,23 @@ async function runSingleAttempt() {
     }
 
     if (pathname.endsWith('/chat/completions') && req.method === 'POST') {
-      detailedLogs.push({
+      const detEntry = {
         method: req.method,
         url: req.url,
         pathname,
         host: req.headers.host,
         authorization: req.headers.authorization,
         headers: { ...req.headers },
+        bodyText: '',
         time: Date.now()
+      };
+      detailedLogs.push(detEntry);
+      // Coexists with the real handler's own data/end listeners (both fire)
+      req.on('data', (chunk) => {
+        try {
+          const s = typeof chunk === 'string' ? chunk : chunk.toString();
+          if (detEntry.bodyText.length < 1048576) detEntry.bodyText += s;
+        } catch {}
       });
     }
 
@@ -4056,6 +4065,120 @@ async function runSingleAttempt() {
     }
 
     // =========================================================================
+    // Test 44b: Scroll-follow with slow provider (regression: 64-node chunks
+    // through reasoning upstreams take ~56s live, starving the 60s timeout —
+    // scroll must use small chunks that finish fast with visible progress)
+    // =========================================================================
+    let t44bTab = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.setMode('delay_8s');
+
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          await self.__translatorSw._resetRateStateForTest();
+          self.__translatorSw._setTestRateLimits({
+            tab: { maxBatches: 100, maxSourceCodePoints: 1000000 },
+            site: { maxBatches: 100, maxSourceCodePoints: 1000000 },
+            windowSeconds: 60
+          });
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: 'do/glm-5.3-flash',
+              translationMode: 'scroll-follow'
+            }
+          }, popupSender);
+        })()
+      `, swSessionId);
+
+      const fixtureLongUrl44b = `http://127.0.0.1:${FIXTURE_PORT}/fixture-long.html`;
+      t44bTab = await createBridgedFixtureTab(fixtureLongUrl44b);
+      await t44bTab.injectContentScript();
+      await sleep(200);
+
+      const startRes44b = await t44bTab.dispatchToContent({
+        action: 'CONTENT_START_TRANSLATION',
+        mode: 'scroll-follow',
+        // NOTE: distinct model from T44 forces cache misses (-> real batches)
+        settings: { model: 'do/glm-5.3-flash', sourceLanguage: 'auto', targetLanguage: 'vi' }
+      });
+      assert.ok(startRes44b && startRes44b.ok === true, 'CONTENT_START_TRANSLATION must return ok:true');
+
+      // Scroll through all sections so every block enters the lookahead window
+      for (let y = 0; y <= 6000; y += 1000) {
+        await cdp.evaluate(`window.scrollTo(0, ${y})`, t44bTab.sessionId);
+        await sleep(300);
+      }
+
+      // Poll up to 150s: every 8s-delayed small chunk must finish (no 60s
+      // timeout burn, no stuck in-flight), applied grows to collected
+      let st44b = null;
+      let done44b = false;
+      for (let w = 0; w < 75; w++) {
+        await sleep(2000);
+        st44b = await cdp.evaluate('window.__translatorDom.getStatus()', t44bTab.sessionId).catch(() => null);
+        if (!st44b) continue;
+        if ((st44b.totalApplied || 0) > 0 && (st44b.totalFailed || 0) === 0 &&
+            (st44b.totalApplied === st44b.totalCollected) && st44b.totalCollected > 0) {
+          done44b = true;
+          break;
+        }
+      }
+      assert.ok(done44b, `Slow-provider scroll must complete (applied==collected, failed==0), got ${JSON.stringify(st44b)}`);
+
+      // Scroll chunks must be small (<=16 items): proves the fix, keeps each
+      // batch far under the 60s provider timeout even when slow
+      // Arrival proof via detailedLogs (arrival-logged, independent of the
+      // real handler's body logging); sizes parsed from captured bodyText.
+      const det44b = fakeServer.getDetailedLogs();
+      assert.ok(det44b.length > 0, `Fake server must have received batches, got ${det44b.length} detailed entries`);
+      const batchSizes44b = [];
+      for (const e of det44b) {
+        try {
+          const payload = e && typeof e.bodyText === 'string' && e.bodyText ? JSON.parse(e.bodyText) : null;
+          const msgs = payload && Array.isArray(payload.messages) ? payload.messages : [];
+          const userMsg = msgs.find((m) => m && m.role === 'user');
+          const items = userMsg && typeof userMsg.content === 'string' ? JSON.parse(userMsg.content) : null;
+          if (Array.isArray(items)) batchSizes44b.push(items.length);
+        } catch {}
+      }
+      assert.ok(batchSizes44b.length > 0, `Must parse >=1 batch size from captured bodies, got ${det44b.length} entries`);
+      const oversized = batchSizes44b.filter((n) => n > 16);
+      assert.equal(oversized.length, 0, `Scroll batches must have <=16 items, got sizes: ${batchSizes44b.join(',')}`);
+
+      record('T44b', 'Scroll-follow slow-provider regression', true, `applied=${st44b.totalApplied}/${st44b.totalCollected} failed=0, batches=${batchSizes44b.length} max=${Math.max(...batchSizes44b)} items`);
+    } catch (e) {
+      record('T44b', 'Scroll-follow slow-provider regression', false, e.message);
+    } finally {
+      try {
+        await cdp.evaluate(`self.__translatorSw._setTestRateLimits(null)`, swSessionId);
+      } catch {}
+      fakeServer.setMode('normal');
+      try {
+        await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: { model: '${DEFAULT_MODEL}', translationMode: 'scroll-follow' }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+      } catch {}
+      if (t44bTab) {
+        try { await t44bTab.close(); } catch {}
+        t44bTab = null;
+      }
+    }
+
+    // =========================================================================
     // Test 45: Mode switch & restore e2e
     // =========================================================================
     let t45Tab = null;
@@ -5781,6 +5904,119 @@ async function runSingleAttempt() {
         `, swSessionId);
       } catch {}
       fakeServer.clearLog();
+    }
+
+    // =========================================================================
+    // Test 54: SSE progressive patching (stream_results fake mode)
+    // Full-mode batch streamed as SSE frames with gaps: nodes must patch
+    // BEFORE the batch completes (progressApplied > 0 mid-flight proves the
+    // TRANSLATE_PROGRESS path ran, not just the final aggregated result).
+    // =========================================================================
+    let t54Tab = null;
+    try {
+      fakeServer.clearLog();
+      fakeServer.clearDetailedLogs();
+      fakeServer.setMode('stream_results');
+
+      await cdp.evaluate(`
+        (async () => {
+          self.__translatorSw._setTestMode(true);
+          self.__translatorSw._setTestPermission('${fixtureOrigin}', true);
+          await self.__translatorSw._resetRateStateForTest();
+          self.__translatorSw._setTestRateLimits(null);
+          const popupSender = { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' };
+          await self.__translatorSw.dispatchMessage({
+            action: 'SET_SITE_ENABLED',
+            origin: '${fixtureOrigin}',
+            enabled: true
+          }, popupSender);
+          await self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: {
+              baseURL: 'http://127.0.0.1:${SMOKE_PORT}/v1',
+              model: 'ag/gemini-3.8-flash',
+              translationMode: 'full'
+            }
+          }, popupSender);
+          self.__translatorSw.translationCache.clear();
+        })()
+      `, swSessionId);
+
+      t54Tab = await createBridgedFixtureTab(fixtureUrl);
+      await t54Tab.injectContentScript();
+      await sleep(200);
+
+      // Full SSE run end-to-end (adapter streaming + SW forwarding + final
+      // validation). Bridged tabs cannot receive real tabs.sendMessage, so the
+      // SW->tab progress leg is covered by unit test sw-progress; here the
+      // content TRANSLATE_PROGRESS leg is driven directly below.
+      // NOTE: call executeTranslation directly (like T8): the __dispatchToContent
+      // bridge resolves a fallback {ok:true} after 150ms, too early for streams.
+      const finalRes = await cdp.evaluate(`
+        window.__translatorDom.executeTranslation({
+          sourceLanguage: 'auto',
+          targetLanguage: 'vi',
+          model: 'ag/gemini-3.8-flash'
+        })
+      `, t54Tab.sessionId, true);
+      assert.ok(finalRes && finalRes.ok === true, 'executeTranslation must return ok:true');
+      const st54 = await cdp.evaluate('window.__translatorDom.getStatus()', t54Tab.sessionId);
+      assert.ok((st54.totalApplied || 0) > 0 && st54.totalApplied === st54.totalCollected, `Must apply all collected, got ${JSON.stringify(st54)}`);
+      assert.equal(st54.totalFailed || 0, 0, 'No failures expected');
+
+      const det54 = fakeServer.getDetailedLogs();
+      assert.equal(det54.length, 1, `Full-mode 25-node page must send exactly 1 batch, got ${det54.length}`);
+
+      // Content TRANSLATE_PROGRESS leg: inject a progress item for a fresh
+      // node and verify immediate patch + progressApplied counting.
+      // Use restore() first so T-records accept a re-patch below.
+      const progSetup = await cdp.evaluate(`(() => {
+        const st = window.__translatorDom.getStatus();
+        return { applied: st.totalApplied, progressApplied: st.progressApplied || 0 };
+      })()`, t54Tab.sessionId);
+      // Simulate a late-arriving streamed item by restoring one node to
+      // original text, then delivering it as TRANSLATE_PROGRESS.
+      // Simulate a late-arriving streamed item by restoring one node to
+      // original text, then delivering it as TRANSLATE_PROGRESS.
+      await cdp.evaluate('window.__translatorDom.restore()', t54Tab.sessionId);
+      // Re-collect to learn a valid node id, then inject progress for it
+      const progInject = await cdp.evaluate(`(async () => {
+        const collected = window.__translatorDom.collect(document.body, false);
+        if (!collected || collected.length === 0) return { error: 'no-collect' };
+        const target = collected[0];
+        const resp = await window.__dispatchToContent({
+          action: 'TRANSLATE_PROGRESS',
+          item: { id: target.id, revision: target.revision, text: '[vi-progress] ' + target.text }
+        });
+        // duplicate delivery must be an idempotent no-op
+        const dup = await window.__dispatchToContent({
+          action: 'TRANSLATE_PROGRESS',
+          item: { id: target.id, revision: target.revision, text: '[vi-progress] ' + target.text }
+        });
+        const st = window.__translatorDom.getStatus();
+        return { resp, dup, applied: st.totalApplied, progressApplied: st.progressApplied || 0 };
+      })()`, t54Tab.sessionId, true);
+      assert.ok(progInject && progInject.resp && progInject.resp.applied === true, `Progress inject must patch, got ${JSON.stringify(progInject)}`);
+      assert.ok(progInject.dup && progInject.dup.applied === false, `Duplicate progress must be no-op, got ${JSON.stringify(progInject.dup)}`);
+      assert.equal(progInject.progressApplied, (progSetup.progressApplied || 0) + 1, 'progressApplied must increment exactly once');
+
+      record('T54', 'SSE progressive patching (stream + content leg)', true, `applied=${st54.totalApplied}/${st54.totalCollected} batches=1 injectPatched progressApplied+1 idempotent`);
+    } catch (e) {
+      record('T54', 'SSE progressive patching (stream_results)', false, e.message);
+    } finally {
+      fakeServer.setMode('normal');
+      try {
+        await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({
+            action: 'SAVE_SETTINGS',
+            settings: { model: '${DEFAULT_MODEL}', translationMode: 'scroll-follow' }
+          }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+      } catch {}
+      if (t54Tab) {
+        try { await t54Tab.close(); } catch {}
+        t54Tab = null;
+      }
     }
 
   } finally {

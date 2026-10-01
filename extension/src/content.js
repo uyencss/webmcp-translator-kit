@@ -11,6 +11,12 @@
     TEXTAREA: 1, INPUT: 1, SELECT: 1, OPTION: 1
   };
   const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, article, td, blockquote';
+  // Scroll-follow coverage: current viewport + one viewport ahead only.
+  // (Previously [-2H, +3H]; whole-page prefetch burned minutes on slow
+  // upstreams with frozen progress. Translated nodes stay translated.)
+  const SCROLL_BEHIND_H = 0;
+  const SCROLL_AHEAD_H = 2;
+  const SCROLL_ROOT_MARGIN = '0px 0px 200% 0px';
   const PATCH_MIN_INTERVAL_MS = 200;
   const PATCH_GROUP_SIZE = 64;
   const MAX_BATCH_ITEMS = 64;
@@ -63,6 +69,7 @@
     bytesTotal: 0,
     error: null,
     lastError: null,
+    progressApplied: 0,
     model: null,
     actualModel: null,
     fallbackIndex: 0,
@@ -309,15 +316,22 @@
     return new TextEncoder().encode(str).length;
   }
 
-  // Chunk items to respect limits: <= 64 items and <= 24 KiB UTF-8
-  function chunkItems(items) {
+  // Chunk items to respect limits: <= maxItems and <= maxBytes UTF-8.
+  // Scroll mode uses much smaller chunks (16 items / 6 KiB): a full-size
+  // 64-node batch through a reasoning upstream takes ~56s (measured live),
+  // right at the 60s timeout edge — one slow chunk then burns minutes in
+  // retry->split while both in-flight slots look frozen. Small chunks finish
+  // in ~15s each with visible progress and cheap retries.
+  const SCROLL_MAX_BATCH_ITEMS = 16;
+  const SCROLL_MAX_BATCH_BYTES = 6144; // 6 KiB
+  function chunkItems(items, maxItems = MAX_BATCH_ITEMS, maxBytes = MAX_BATCH_BYTES) {
     const chunks = [];
     let currentChunk = [];
     let currentBytes = 0;
 
     for (const it of items) {
       const itBytes = countUtf8Bytes(it.text);
-      if (currentChunk.length >= MAX_BATCH_ITEMS || (currentBytes + itBytes > MAX_BATCH_BYTES && currentChunk.length > 0)) {
+      if (currentChunk.length >= maxItems || (currentBytes + itBytes > maxBytes && currentChunk.length > 0)) {
         chunks.push(currentChunk);
         currentChunk = [];
         currentBytes = 0;
@@ -568,6 +582,8 @@
         chunksDone: 0,
         bytesTotal,
         error: null,
+        lastError: null,
+        progressApplied: 0,
         model: targetModel,
         actualModel: targetModel,
         fallbackIndex: 0,
@@ -705,6 +721,7 @@
     readyBlocks: new Set(),
     debounceTimer: null,
     retryTimer: null,
+    scrollRaf: null,
     settings: {}
   };
 
@@ -724,8 +741,8 @@
     if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
 
     const H = window.innerHeight || 800;
-    const topBound = -2 * H;
-    const bottomBound = 3 * H;
+    const topBound = SCROLL_BEHIND_H * H;
+    const bottomBound = SCROLL_AHEAD_H * H;
 
     const candidateRecs = [];
     const seenRecIds = new Set();
@@ -754,8 +771,10 @@
       } catch {
         continue;
       }
-      // Check block within [-2H, 3H] viewport bounds
+      // Check block within [-2H, 3H] viewport bounds; prune far blocks so
+      // fast long-distance scrolls don't grow the set unboundedly
       if (rect.bottom < topBound || rect.top > bottomBound) {
+        scrollSession.readyBlocks.delete(block);
         continue;
       }
 
@@ -811,7 +830,7 @@
     }
     lastTranslateStatus.totalCollected = scrollSession.collectedIds.size;
 
-    const chunks = chunkItems(items);
+    const chunks = chunkItems(items, SCROLL_MAX_BATCH_ITEMS, SCROLL_MAX_BATCH_BYTES);
 
     while (scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES && chunks.length > 0) {
       const chunk = chunks.shift();
@@ -909,9 +928,10 @@
     lastTranslateStatus.watching = true;
     lastTranslateStatus.state = 'translating';
     lastTranslateStatus.lastError = null;
+    lastTranslateStatus.progressApplied = 0;
     lastTranslateStatus.model = settings.model || 'ag/gemini-3.1-pro-low';
 
-    // 1 IntersectionObserver for block containers with root:null, rootMargin: '200% 0px 200% 0px', threshold: 0
+    // 1 IntersectionObserver for block containers (viewport + one ahead)
     scrollSession.mainObserver = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
@@ -923,14 +943,14 @@
       scheduleScrollFlush();
     }, {
       root: null,
-      rootMargin: '200% 0px 200% 0px',
+      rootMargin: SCROLL_ROOT_MARGIN,
       threshold: 0
     });
 
     // Lazily observe candidate block containers and seed initial readyBlocks in [-2H, 3H]
     const H = window.innerHeight || 800;
-    const topBound = -2 * H;
-    const bottomBound = 3 * H;
+    const topBound = SCROLL_BEHIND_H * H;
+    const bottomBound = SCROLL_AHEAD_H * H;
     const blocks = document.querySelectorAll(BLOCK_SELECTOR);
     for (const b of blocks) {
       if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
@@ -963,7 +983,7 @@
             scheduleScrollFlush();
           }, {
             root: el,
-            rootMargin: '200% 0px 200% 0px',
+            rootMargin: SCROLL_ROOT_MARGIN,
             threshold: 0
           });
           const childBlocks = el.querySelectorAll(BLOCK_SELECTOR);
@@ -976,11 +996,21 @@
       } catch {}
     }
 
-    // Fallback scroll listener for rapid scroll updates
+    // Fallback scroll listener for rapid scroll updates (rAF-coalesced so
+    // very fast up/down flings don't run full scans more than once per frame)
     scrollSession.scrollListener = () => {
+      if (scrollSession.scrollRaf) return;
+      scrollSession.scrollRaf = requestAnimationFrame(() => {
+        scrollSession.scrollRaf = null;
+        if (!scrollSession.active) return;
+        scanViewportBlocks();
+      });
+    };
+
+    const scanViewportBlocks = () => {
       const curH = window.innerHeight || 800;
-      const curTopBound = -2 * curH;
-      const curBottomBound = 3 * curH;
+      const curTopBound = SCROLL_BEHIND_H * curH;
+      const curBottomBound = SCROLL_AHEAD_H * curH;
       const allBlocks = document.querySelectorAll(BLOCK_SELECTOR);
       for (const b of allBlocks) {
         if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
@@ -1045,6 +1075,10 @@
     if (scrollSession.scrollListener) {
       window.removeEventListener('scroll', scrollSession.scrollListener);
       scrollSession.scrollListener = null;
+    }
+    if (scrollSession.scrollRaf) {
+      try { cancelAnimationFrame(scrollSession.scrollRaf); } catch {}
+      scrollSession.scrollRaf = null;
     }
     if (scrollSession.debounceTimer) {
       clearTimeout(scrollSession.debounceTimer);
@@ -1278,6 +1312,12 @@
         background: rgba(255, 255, 255, 0.09);
         color: #ffffff;
       }
+      .wmt-progress {
+        font-size: 11px;
+        color: #38bdf8;
+        text-align: center;
+        line-height: 1.3;
+      }
       .wmt-hint {
         font-size: 11px;
         color: #71717a;
@@ -1331,6 +1371,7 @@
           <button class="wmt-action-btn wmt-btn-primary" id="wmt-action-translate">Dịch ngay</button>
           <button class="wmt-action-btn wmt-btn-secondary" id="wmt-action-restore">Khôi phục</button>
         </div>
+        <div id="wmt-progress" class="wmt-progress" style="display:none;"></div>
         <div id="wmt-warn-msg" class="wmt-warning" style="display:none;"></div>
         <div class="wmt-hint">Mở popup để cấu hình key/quyền/model</div>
       </div>
@@ -1356,6 +1397,26 @@
     const restoreBtn = container.querySelector('#wmt-action-restore');
     const modeRadios = container.querySelectorAll('input[name="wmt-mode"]');
     const warnMsg = container.querySelector('#wmt-warn-msg');
+    const progressEl = container.querySelector('#wmt-progress');
+
+    function refreshWidgetProgress() {
+      if (!progressEl) return;
+      const running = isTranslating || scrollSession.watching;
+      if (!isPanelOpen || !running) {
+        progressEl.style.display = 'none';
+        return;
+      }
+      const st = lastTranslateStatus || {};
+      const applied = st.totalApplied || 0;
+      const collected = st.totalCollected || 0;
+      const failed = st.totalFailed || 0;
+      let text = collected > 0 ? `Đang dịch ${applied}/${collected} nodes...` : 'Đang dịch...';
+      if (failed > 0) text += ` (${failed} lỗi)`;
+      if (st.lastError && st.lastError.code) text += ` [${st.lastError.code}]`;
+      progressEl.textContent = text;
+      progressEl.style.display = 'block';
+    }
+    setInterval(refreshWidgetProgress, 800);
 
     let isPanelOpen = false;
     let widgetState = {
@@ -1753,6 +1814,59 @@
     if (message.action === 'CONTENT_RESTORE') {
       const res = restore();
       sendResponse({ ok: true, ...res });
+      return false;
+    }
+
+    // Progressive patch: SW forwards each completed streamed item ASAP.
+    // Same guards as the final path (epoch/rec/revision/original); duplicates
+    // from retries/fallbacks are idempotent no-ops. Never rejects the batch.
+    if (message.action === 'TRANSLATE_PROGRESS') {
+      try {
+        const it = message.item || {};
+        if (typeof message.epoch === 'number' && message.epoch !== epoch) {
+          sendResponse({ ok: true, applied: false, reason: 'EPOCH_MISMATCH' });
+          return false;
+        }
+        if (!it || typeof it.id !== 'string' || typeof it.text !== 'string' || typeof it.revision !== 'number') {
+          sendResponse({ ok: true, applied: false, reason: 'INVALID_ITEM' });
+          return false;
+        }
+        const rec = lookup(it.id);
+        if (!rec || !rec.node || !rec.node.isConnected) {
+          sendResponse({ ok: true, applied: false, reason: 'UNKNOWN_OR_DETACHED' });
+          return false;
+        }
+        refreshIfExternallyModified(rec);
+        if (it.revision !== rec.revision) {
+          sendResponse({ ok: true, applied: false, reason: 'REVISION_MISMATCH' });
+          return false;
+        }
+        if (rec.node.nodeValue === it.text && rec.translated === it.text) {
+          sendResponse({ ok: true, applied: false, reason: 'ALREADY_APPLIED' });
+          return false;
+        }
+        if (rec.node.nodeValue !== rec.original) {
+          sendResponse({ ok: true, applied: false, reason: 'MODIFIED' });
+          return false;
+        }
+        rec.translated = it.text;
+        rec.expectedApply = it.text;
+        try {
+          rec.node.nodeValue = it.text;
+        } catch {
+          rec.translated = null;
+          rec.expectedApply = null;
+          sendResponse({ ok: true, applied: false, reason: 'WRITE_FAILED' });
+          return false;
+        }
+        restoreKept.set(rec.id, rec);
+        lastTranslateStatus.totalApplied++;
+        lastTranslateStatus.progressApplied = (lastTranslateStatus.progressApplied || 0) + 1;
+        setFabBusy(isTranslating || scrollSession.watching);
+        sendResponse({ ok: true, applied: true });
+      } catch {
+        sendResponse({ ok: true, applied: false, reason: 'INTERNAL' });
+      }
       return false;
     }
 

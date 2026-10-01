@@ -286,7 +286,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Autosave: persist every UI change to storage (debounced for typing).
   // Host permission requests NEVER happen here (no gesture) — they live in
   // explicit buttons (site toggle, + Trang này, base shield, Dịch).
+  const SETTINGS_NOT_LOADED_MSG = 'Cấu hình chưa tải xong — đợi giây lát rồi thử lại (không ghi gì để tránh mất cấu hình cũ)';
+
   async function flushAutosave() {
+    if (!settingsLoaded) return;
     if (autosaveInFlight) {
       autosaveQueued = true;
       return;
@@ -759,6 +762,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnToggleFavorite.addEventListener('click', async () => {
       const curVal = selectModel?.value;
       if (!curVal) return;
+      if (!settingsLoaded) {
+        setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+        return;
+      }
 
       const isFav = favoriteModels.includes(curVal);
       const nextFavorites = isFav
@@ -837,6 +844,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             delete fallbackKeyPresence[fb.id];
           } catch {}
+        }
+        if (!settingsLoaded) {
+          setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+          return;
         }
         fallbacks.splice(idx, 1);
         renderFallbackRows();
@@ -932,6 +943,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (btnAddFallback) {
     btnAddFallback.addEventListener('click', () => {
       if (fallbacks.length >= 2) return;
+      if (!settingsLoaded) {
+        setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+        return;
+      }
       const usedIds = new Set(fallbacks.map(f => f.id));
       const nextId = !usedIds.has('fb1') ? 'fb1' : 'fb2';
       const defaultFbModel = RECOMMENDED_MODELS[1] || DEFAULT_MODEL;
@@ -1035,12 +1050,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function loadSettings() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (resp) => {
-        if (resp && resp.error) {
-          if (resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+          const err = (resp && resp.error) || chrome.runtime.lastError || {};
+          if (err.code === 'KEY_ACCESS_UNAVAILABLE') {
             showKeyAccessBanner();
           }
-          updateStatus('error', `[${resp.error.code}] ${resp.error.message}`);
-          resolve();
+          updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không tải được cấu hình'}`);
+          resolve(false);
           return;
         }
         if (resp && resp.settings) {
@@ -1075,8 +1091,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           try { renderFallbackRows(); } catch (e) { try { console.error('[popup] renderFallbackRows failed:', e && e.message); } catch {} }
           try { renderAllModelDropdowns(); } catch (e) { try { console.error('[popup] renderAllModelDropdowns failed:', e && e.message); } catch {} }
           try { renderAutoSites(); } catch (e) { try { console.error('[popup] renderAutoSites failed:', e && e.message); } catch {} }
+          resolve(true);
+          return;
         }
-        resolve();
+        updateStatus('error', '[ERROR] Không tải được cấu hình đã lưu');
+        resolve(false);
       });
     });
   }
@@ -1601,6 +1620,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       deleteBtn.addEventListener('click', async () => {
         hideAutoSiteError();
+        if (!settingsLoaded) {
+          showAutoSiteError(SETTINGS_NOT_LOADED_MSG);
+          return;
+        }
         const updatedList = autoTranslateSites.filter((s) => (s.origin || s) !== site.origin);
         deleteBtn.disabled = true;
 
@@ -1702,6 +1725,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Commit a validated origin to the auto list: save + enable consent in the
   // same gesture (the auto-start gate needs both, otherwise silent no-op).
   async function commitAutoSite(norm) {
+    if (!settingsLoaded) {
+      showAutoSiteError(SETTINGS_NOT_LOADED_MSG);
+      return false;
+    }
     if (autoTranslateSites.some((s) => (s.origin || s) === norm)) {
       showAutoSiteError(`Trang ${norm} đã có trong danh sách.`);
       return false;
@@ -1828,6 +1855,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (btnTranslate) {
     btnTranslate.addEventListener('click', async () => {
       if (!activeTab || !activeTab.id) return;
+      if (!settingsLoaded) {
+        updateStatus('error', '[ERROR] ' + SETTINGS_NOT_LOADED_MSG);
+        evaluateActionReadiness();
+        return;
+      }
 
       btnTranslate.disabled = true;
       setTranslateBusy(true);
@@ -1973,9 +2005,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Initial Sequence
-  await loadSettings();
-  settingsLoaded = true;
+  // Initial Sequence (writes stay blocked until settings load succeeds)
+  settingsLoaded = await loadSettings();
   setSaveState('saved');
   await refreshBasePermState();
   const tabOk = await resolveActiveTab();

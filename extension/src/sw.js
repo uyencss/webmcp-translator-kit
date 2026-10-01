@@ -795,7 +795,10 @@ function scheduleQueueEntry(entry, delayMs) {
               epoch: entry.epoch,
               origin: entry.origin
             })
-          : await translateBatch(entry.payload || {});
+          : await translateBatch({
+            ...(entry.payload || {}),
+            onProgress: (item) => pushTranslateProgress(entry.tabId, entry.epoch, item)
+          });
         entry.resolve(result);
         return;
       }
@@ -1440,6 +1443,23 @@ async function translateBatch(input = {}) {
 }
 
 // Semaphore-guarded batch translation with fallback chain & cache population strictly under actualModel
+// Best-effort progressive patch: while a batch streams, each completed
+// result item is pushed to the tab so content can patch immediately instead
+// of waiting for the full response. Guarded by epoch + the same rec checks
+// content applies on the final path (idempotent duplicates are skipped).
+function pushTranslateProgress(tabId, epoch, item) {
+  if (typeof tabId !== 'number' || !item || typeof item.id !== 'string') return;
+  try {
+    if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
+      chrome.tabs.sendMessage(tabId, {
+        action: 'TRANSLATE_PROGRESS',
+        epoch,
+        item: { id: item.id, revision: item.revision, text: item.text }
+      }).catch(() => {});
+    }
+  } catch {}
+}
+
 async function executeBatchTranslation({
   payload = {},
   misses = [],
@@ -1449,6 +1469,7 @@ async function executeBatchTranslation({
   epoch = undefined,
   origin = null
 }) {
+  const forwardProgress = (item) => pushTranslateProgress(tabId, epoch, item);
   const requestId = payload.requestId || ('req_' + Math.random().toString(36).slice(2));
   let controller = null;
   if (typeof tabId === 'number') {
@@ -1600,7 +1621,8 @@ async function executeBatchTranslation({
           apiKey: currentApiKey,
           model: currentModel,
           items: currentMisses.map((m) => m.item),
-          signal
+          signal,
+          onProgress: forwardProgress
         });
       } catch (err) {
         attemptRes = (err && err.error) ? err : createTypedError('NETWORK', err?.message || 'Network error', true);

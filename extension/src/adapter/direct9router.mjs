@@ -1,6 +1,15 @@
 // WebMCP Translator Kit — Direct 9router Adapter
 // Contract Version: webmcp-translator-contract/1
 // Pure module: No chrome.* APIs used.
+//
+// Transport note (owner-approved deviation from the frozen `stream:false`):
+// chat completions are requested with `stream:true`. When the provider
+// answers `text/event-stream`, translated items are emitted progressively
+// via `input.onProgress({id, revision, text})` as soon as each result item
+// is complete, and the final aggregated result keeps the exact legacy shape
+// (bijection-validated). Non-SSE responses use the legacy parse unchanged.
+
+import { createIncrementalResultsParser } from '../sse-json.mjs';
 
 function normalizeBaseURL(url) {
   if (!url) return '';
@@ -268,7 +277,12 @@ export function createDirect9Router(config = {}) {
   }
 
   async function translateBatch(input = {}) {
-    const { items, sourceLanguage = 'auto', targetLanguage = 'vi', model, signal } = input;
+    const { items, sourceLanguage = 'auto', targetLanguage = 'vi', model, signal, onProgress } = input;
+    const emitProgress = (item) => {
+      try {
+        if (typeof onProgress === 'function' && item && typeof item.id === 'string') onProgress(item);
+      } catch {}
+    };
     const baseURL = normalizeBaseURL(input.baseURL !== undefined ? input.baseURL : getBaseURL());
     const apiKey = input.apiKey !== undefined ? String(input.apiKey) : getApiKey();
     const targetModel = model || getModel();
@@ -339,7 +353,7 @@ export function createDirect9Router(config = {}) {
 
     const requestBody = JSON.stringify({
       model: targetModel,
-      stream: false,
+      stream: true,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: JSON.stringify(requestItems) }
@@ -387,7 +401,7 @@ export function createDirect9Router(config = {}) {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${apiKey}`,
-            Accept: 'application/json'
+            Accept: 'text/event-stream, application/json'
           },
           body: requestBody,
           signal: internalController.signal
@@ -537,9 +551,102 @@ export function createDirect9Router(config = {}) {
           }
         }
 
+        // Detect SSE transport (provider answers text/event-stream)
+        let respContentType = '';
+        try {
+          respContentType = typeof resp.headers?.get === 'function'
+            ? (resp.headers.get('Content-Type') || resp.headers.get('content-type') || '')
+            : (resp.headers?.['content-type'] || resp.headers?.['Content-Type'] || '');
+        } catch {}
+        const isSseStream = /text\/event-stream/i.test(respContentType || '') &&
+          resp.body && typeof resp.body.getReader === 'function';
+
+        async function readSseResults() {
+          const parser = createIncrementalResultsParser();
+          const reader = resp.body.getReader();
+          const onStreamAbort = () => {
+            try { reader.cancel(internalController.signal.reason); } catch {}
+          };
+          if (internalController.signal.aborted) {
+            onStreamAbort();
+          } else {
+            internalController.signal.addEventListener('abort', onStreamAbort, { once: true });
+          }
+          const decoder = new TextDecoder();
+          let sseBuf = '';
+          let totalBytesReceived = 0;
+          let sseModel = null;
+          const capExceeded = (actual) => {
+            const err = createTypedError('CAP_EXCEEDED', `Response body exceeded limit of ${batchConfig.maxResponseBytes} bytes`, false, {
+              capType: 'responseBytes',
+              limit: batchConfig.maxResponseBytes,
+              actual
+            });
+            err.elapsedMs = now() - batchStart;
+            err.model = targetModel;
+            return { errorResult: err };
+          };
+          const flushSseLines = () => {
+            const parts = sseBuf.split('\n');
+            sseBuf = parts.pop();
+            for (const line of parts) {
+              const t = line.trim();
+              if (!t.startsWith('data:')) continue;
+              const payload = t.slice(5).trim();
+              if (!payload || payload === '[DONE]') continue;
+              let chunk;
+              try { chunk = JSON.parse(payload); } catch { continue; }
+              if (!sseModel && typeof chunk?.model === 'string') sseModel = chunk.model;
+              const delta = chunk?.choices?.[0]?.delta?.content;
+              if (typeof delta === 'string' && delta) {
+                for (const item of parser.push(delta)) emitProgress(item);
+              }
+            }
+          };
+          try {
+            while (true) {
+              if (internalController.signal.aborted) {
+                throw new DOMException('The operation was aborted', 'AbortError');
+              }
+              const { done, value } = await reader.read();
+              if (internalController.signal.aborted) {
+                throw new DOMException('The operation was aborted', 'AbortError');
+              }
+              if (done) break;
+              totalBytesReceived += value.length;
+              if (totalBytesReceived > batchConfig.maxResponseBytes) {
+                try { internalController.abort(); } catch {}
+                return capExceeded(totalBytesReceived);
+              }
+              sseBuf += decoder.decode(value, { stream: true });
+              flushSseLines();
+            }
+          } finally {
+            try { internalController.signal.removeEventListener('abort', onStreamAbort); } catch {}
+          }
+          try { sseBuf += decoder.decode(); } catch {}
+          flushSseLines();
+          const fin = parser.finish();
+          if (fin.items.length === 0) {
+            const err = createTypedError('INVALID_SCHEMA', 'Translated content missing results array', false, {
+              schemaErrors: [`SSE stream yielded ${fin.items.length} items (malformed: ${fin.malformed}, truncated: ${fin.truncated})`]
+            });
+            err.elapsedMs = now() - batchStart;
+            err.model = targetModel;
+            return { errorResult: err };
+          }
+          return { items: fin.items, model: sseModel };
+        }
+
         // Read response body with byte cap check
         let rawText = '';
-        if (resp.body && typeof resp.body.getReader === 'function') {
+        let sseOut = null;
+        if (isSseStream) {
+          sseOut = await readSseResults();
+          if (sseOut.errorResult) return sseOut.errorResult;
+        }
+
+        if (!isSseStream && resp.body && typeof resp.body.getReader === 'function') {
           const reader = resp.body.getReader();
           const onStreamAbort = () => {
             try { reader.cancel(internalController.signal.reason); } catch {}
@@ -590,7 +697,7 @@ export function createDirect9Router(config = {}) {
             offset += chunk.length;
           }
           rawText = new TextDecoder().decode(merged);
-        } else if (typeof resp.text === 'function') {
+        } else if (!isSseStream && typeof resp.text === 'function') {
           rawText = await Promise.race([
             resp.text(),
             new Promise((_, reject) => {
@@ -612,38 +719,44 @@ export function createDirect9Router(config = {}) {
         }
 
         let responseJson = null;
-        try {
-          responseJson = JSON.parse(rawText);
-        } catch {
-          const err = createTypedError('INVALID_SCHEMA', 'Provider response is not valid JSON', false, {
-            schemaErrors: ['Malformed outer response JSON']
-          });
-          err.elapsedMs = now() - batchStart;
-          err.model = targetModel;
-          return err;
-        }
+        let parsedResults = null;
+        if (sseOut) {
+          // SSE path: items already extracted progressively; same validation below
+          parsedResults = { results: sseOut.items };
+        } else {
+          try {
+            responseJson = JSON.parse(rawText);
+          } catch {
+            const err = createTypedError('INVALID_SCHEMA', 'Provider response is not valid JSON', false, {
+              schemaErrors: ['Malformed outer response JSON']
+            });
+            err.elapsedMs = now() - batchStart;
+            err.model = targetModel;
+            return err;
+          }
 
-        const content = responseJson.choices && responseJson.choices[0] && responseJson.choices[0].message
-          ? responseJson.choices[0].message.content
-          : null;
+          const content = responseJson.choices && responseJson.choices[0] && responseJson.choices[0].message
+            ? responseJson.choices[0].message.content
+            : null;
 
-        if (!content) {
-          const err = createTypedError('INVALID_SCHEMA', 'Missing choices[0].message.content in provider response', false, {
-            schemaErrors: ['Missing message content']
-          });
-          err.elapsedMs = now() - batchStart;
-          err.model = targetModel;
-          return err;
-        }
+          if (!content) {
+            const err = createTypedError('INVALID_SCHEMA', 'Missing choices[0].message.content in provider response', false, {
+              schemaErrors: ['Missing message content']
+            });
+            err.elapsedMs = now() - batchStart;
+            err.model = targetModel;
+            return err;
+          }
 
-        const parsedResults = parseLlmJson(content);
-        if (!parsedResults || !Array.isArray(parsedResults.results)) {
-          const err = createTypedError('INVALID_SCHEMA', 'Translated content missing results array', false, {
-            schemaErrors: ['Missing results array in LLM JSON output']
-          });
-          err.elapsedMs = now() - batchStart;
-          err.model = targetModel;
-          return err;
+          parsedResults = parseLlmJson(content);
+          if (!parsedResults || !Array.isArray(parsedResults.results)) {
+            const err = createTypedError('INVALID_SCHEMA', 'Translated content missing results array', false, {
+              schemaErrors: ['Missing results array in LLM JSON output']
+            });
+            err.elapsedMs = now() - batchStart;
+            err.model = targetModel;
+            return err;
+          }
         }
 
         const results = parsedResults.results;
@@ -706,7 +819,7 @@ export function createDirect9Router(config = {}) {
         }
 
         // Privacy log hygiene: only log counts and model id, never text
-        const actualModel = responseJson.model || 'unknown';
+        const actualModel = (sseOut && sseOut.model) || (responseJson && responseJson.model) || 'unknown';
         const elapsedMs = now() - batchStart;
         let actualBaseURLHost = '';
         try {

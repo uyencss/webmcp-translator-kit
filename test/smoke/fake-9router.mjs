@@ -258,6 +258,38 @@ export function createFakeServer(port = parseInt(process.env.SMOKE_PORT || '8089
           return;
         }
 
+        if (mode === 'stream_results') {
+          // SSE transport: same results JSON as respondNormal but streamed as
+          // OpenAI-style data frames with gaps, so progressive patching is observable
+          let sPayload = {};
+          try { sPayload = JSON.parse(body); } catch {}
+          const sMessages = sPayload.messages || [];
+          const sUserMsg = sMessages.find((m) => m.role === 'user');
+          let sItems = [];
+          try { sItems = JSON.parse(sUserMsg.content); } catch {}
+          const sResults = sItems.map((it) => ({ id: it.id, revision: it.revision, text: `[vi] ${it.text}` }));
+          const pieces = ['{"results": ['];
+          for (let si = 0; si < sResults.length; si++) {
+            pieces.push(JSON.stringify(sResults[si]) + (si < sResults.length - 1 ? ',' : ''));
+          }
+          pieces.push(']}');
+          res.writeHead(200, { ...corsHeaders, 'Content-Type': 'text/event-stream' });
+          let pieceIdx = 0;
+          const writePiece = () => {
+            if (pieceIdx < pieces.length) {
+              try {
+                res.write(`data: ${JSON.stringify({ id: 'chatcmpl-fake-stream', object: 'chat.completion.chunk', model: sPayload.model || 'x', choices: [{ index: 0, delta: { content: pieces[pieceIdx] }, finish_reason: null }] })}\n\n`);
+              } catch {}
+              pieceIdx++;
+              setTimeout(writePiece, 300);
+            } else {
+              try { res.write('data: [DONE]\n\n'); res.end(); } catch {}
+            }
+          };
+          writePiece();
+          return;
+        }
+
         if (mode === 'hold_5s' || mode === 'delay_5s') {
           setTimeout(respondNormal, 5000);
           return;
