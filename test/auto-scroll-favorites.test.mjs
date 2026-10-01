@@ -1636,3 +1636,42 @@ test('popup: translated detail clamps applied at collected like watch/footer', (
   assert.ok(trBlock.includes('Math.min(data.totalApplied'), 'translated must cap applied at collected');
   assert.ok(trBlock.includes('data.totalCollected'), 'translated cap must reference collected count');
 });
+
+test('popup: late primary favorite save preserves live URL and inherited fallback scope', async () => {
+  const helpers = popupSrc.slice(popupSrc.indexOf('  function currentFavKey()'), popupSrc.indexOf('  // Autosave state'));
+  const start = popupSrc.indexOf('  if (btnToggleFavorite) {', popupSrc.indexOf('// Favorite Star Toggle Action'));
+  const primary = popupSrc.slice(start, popupSrc.indexOf('\n  if (selectModel)', start));
+  const changeStart = popupSrc.indexOf("    inputBaseUrl.addEventListener('change', () => {", popupSrc.indexOf('// Connect tab: autosave'));
+  const change = popupSrc.slice(changeStart, popupSrc.indexOf('\n  if (inputApiKey)', changeStart)).replace(/\n  }\s*$/, '');
+  const fbStart = popupSrc.indexOf("      btnFallbackFav.addEventListener('click', async () => {");
+  const fallback = popupSrc.slice(fbStart, popupSrc.indexOf('\n\n      modelWrap.appendChild', fbStart));
+  let resolveSave, primaryClick, changeURL, fallbackClick;
+  const writes = [];
+  const input = { value: 'https://provider-a.example/v1', addEventListener: (_name, handler) => { changeURL = handler; } };
+  const context = vm.createContext({
+    normalizeBaseURLKey, inputBaseUrl: input, savedSettings: {}, selectModel: { value: 'primary-model' },
+    settingsLoaded: true, favoriteModelsByBaseURL: {}, lastFavKey: input.value,
+    btnToggleFavorite: { addEventListener: (_name, handler) => { primaryClick = handler; } },
+    btnFallbackFav: { addEventListener: (_name, handler) => { fallbackClick = handler; } },
+    fb: { baseURL: '', model: 'fallback-model' }, modelSelect: { value: 'fallback-model' }, idx: 0,
+    document: { getElementById: () => ({ value: '' }) },
+    saveFavoriteToggle: (scope, model, favorite) => {
+      writes.push({ scope, model, favorite });
+      return new Promise(resolve => { resolveSave = resolve; });
+    },
+    renderAllModelDropdowns() {}, setConfigMsg() {}, evaluateActionReadiness() {}, refreshBasePermState() {},
+    configMessageConnect: {}
+  });
+  vm.runInContext(helpers + primary + change + fallback, context);
+  const pending = primaryClick();
+  input.value = 'https://provider-b.example/v1';
+  changeURL();
+  assert.equal(context.lastFavKey, input.value);
+  resolveSave();
+  await pending;
+  context.saveFavoriteToggle = async (scope, model, favorite) => { writes.push({ scope, model, favorite }); };
+  await fallbackClick();
+  assert.equal(writes[0].scope, 'https://provider-a.example/v1', 'original save must target A');
+  assert.equal(context.lastFavKey, input.value, 'late A save must not restore displayed scope A');
+  assert.equal(writes[1].scope, input.value, 'inherited fallback favorite must target current provider B');
+});

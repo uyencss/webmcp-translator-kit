@@ -802,7 +802,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       selectEl.appendChild(emptyOpt);
     }
 
-    const added = new Set(exclude);
+    const added = new Set(exclude.filter(id => id !== selectedVal));
 
     // Group 1: Favorites (Base URL scoped)
     const validFavs = scopeFavs.filter(id => !added.has(id));
@@ -920,8 +920,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         await saveFavoriteToggle(scopeKey, curVal, desiredFavorite);
         // Align displayed scope to the live input without persisting baseURL:
         // the star must not autosave or otherwise change the configured URL.
-        if (scopeKey !== lastFavKey) {
-          lastFavKey = scopeKey;
+        const liveScopeKey = currentFavKey();
+        if (liveScopeKey !== lastFavKey) {
+          lastFavKey = liveScopeKey;
           savedSettings.favoriteModels = getFavoritesForKey(lastFavKey);
         }
         renderAllModelDropdowns();
