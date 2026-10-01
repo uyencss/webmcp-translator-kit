@@ -577,6 +577,10 @@
       };
     }
 
+    if (resp && resp.error && isNonRetryable(resp.error)) {
+      return { applied: 0, failed: items.length, error: resp.error, fatal: true };
+    }
+
     if (resp && Array.isArray(resp.results)) {
       if (resp.actualModel) {
         lastTranslateStatus.actualModel = resp.actualModel;
@@ -593,7 +597,7 @@
       const rightItems = items.slice(mid);
 
       const leftRes = await translateChunkWithRecovery(leftItems, settings, depth + 1, targetEpoch, runConfig);
-      if (leftRes.cancelled) {
+      if (leftRes.cancelled || leftRes.fatal) {
         return leftRes;
       }
 
@@ -605,7 +609,8 @@
       return {
         applied: (leftRes.applied || 0) + (rightRes.applied || 0),
         failed: (leftRes.failed || 0) + (rightRes.failed || 0),
-        error: rightRes.error || leftRes.error || resp?.error
+        error: rightRes.error || leftRes.error || resp?.error,
+        ...(rightRes.fatal ? { fatal: true } : {})
       };
     }
 

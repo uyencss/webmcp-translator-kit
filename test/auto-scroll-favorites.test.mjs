@@ -783,6 +783,7 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     let yielded = false;
     let callbackInvalidated = false;
     let translationRequests = 0;
+    let recoveryReplies = null;
     let nextIntervalId = 0;
     const activeIntervals = new Set();
     const clearedIntervals = new Set();
@@ -793,6 +794,10 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
         sendMessage: (msg, cb) => {
           if (msg && msg.action === 'TRANSLATE_BATCH') {
             translationRequests++;
+            if (recoveryReplies) {
+              cb(recoveryReplies.shift() || { error: { code: 'HTTP_401', message: 'Unauthorized', retryable: false } });
+              return;
+            }
             if (callbackInvalidated) {
               globalThis.chrome.runtime.lastError = { message: 'Extension context invalidated' };
               if (typeof cb === 'function') cb(undefined);
@@ -847,6 +852,29 @@ test('content: sendMessage without runtime.id can start translation (smoke bridg
     assert.notEqual(res && res.cancelled, true, 'no-id bridge must not cancel: ' + JSON.stringify(res));
     assert.equal(res && res.ok, true, 'no-id bridge must start translation: ' + JSON.stringify(res));
     assert.ok((res.applied || 0) >= 1, 'expected applied>=1: ' + JSON.stringify(res));
+    const networkReply = { error: { code: 'NETWORK', message: 'Connection lost', retryable: true } };
+    const terminalReply = { error: { code: 'HTTP_401', message: 'Unauthorized', retryable: false } };
+    let requestsBefore = translationRequests;
+    recoveryReplies = [networkReply, terminalReply];
+    const retryFatal = await dom.translateChunkWithRecovery(
+      [{ id: 'retry-terminal', text: 'retry terminal', revision: 0 }], {}, 0, dom.getEpoch()
+    );
+    assert.equal(translationRequests - requestsBefore, 2, 'terminal retry response must stop after two sends');
+    assert.equal(retryFatal.fatal, true, 'terminal retry response must preserve fatal');
+    requestsBefore = translationRequests;
+    recoveryReplies = [networkReply, networkReply, terminalReply];
+    const splitItems = Array.from({ length: 16 }, (_, i) => ({ id: `split-${i}`, text: `split ${i}`, revision: 0 }));
+    const splitFatal = await dom.translateChunkWithRecovery(
+      splitItems, {}, 0, dom.getEpoch()
+    );
+    assert.equal(translationRequests - requestsBefore, 3, 'fatal left child must prevent sending the right child');
+    assert.equal(splitFatal.fatal, true, 'split recovery must propagate the child fatal flag');
+    requestsBefore = translationRequests;
+    recoveryReplies = [networkReply, networkReply, { results: splitItems.slice(0, 8) }, terminalReply];
+    const rightFatal = await dom.translateChunkWithRecovery(splitItems, {}, 0, dom.getEpoch());
+    assert.equal(translationRequests - requestsBefore, 4, 'right child terminal error must stop without another retry');
+    assert.equal(rightFatal.fatal, true, 'split aggregation must preserve a right child fatal flag');
+    recoveryReplies = null;
     dom.startScrollFollowSession({ sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m' });
     assert.equal(dom.getStatus().watching, true, 'scroll-follow must be active before callback invalidation');
     callbackInvalidated = true;
