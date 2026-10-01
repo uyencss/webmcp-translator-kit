@@ -40,15 +40,15 @@ No writer changes to package docs/store assets, package metadata, tests outside 
 - Coordinator: Codex in this task.
 - Primary writer attempt: WebMCP AI CLI → AGY → `gemini-3.8-flash-high`. The canary returned `ROUTE_OK`, but the implementation session remained in “waiting for background smoke task” for about ten minutes without a source diff; coordinator stopped that process. Its candidate c1 and its out-of-write-set measurement-file change were preserved, not promoted.
 - Fallback writer: WebMCP AI CLI → OpenCode → `opencode-go/muse-spark-1.3-contributor`. It returned the scoped implementation and regression tests, then fixed coordinator findings from A→B favorite leakage, attempt consumption before auto-start gates, fallback star debounce persistence, the smoke bridge's missing `runtime.id`, and legacy T43 partial saves. Muse did not commit or self-accept.
-- AGY Claude Opus 4.6 Thinking now returns the exact model canary through WebMCP AI CLI when `--effort` is omitted; the model does not accept that flag. A prior response that disclosed a model mismatch is not a valid receipt.
+- AGY Claude Opus 4.6 Thinking passed an exact-model canary through WebMCP AI CLI when `--effort` was omitted; the model does not accept that flag. A plan-mode pre-accept attempt on a read-only copy then timed out after 300 seconds (`PROVIDER_TIMEOUT`) and is not a review verdict. The copy's before/after SHA-256 manifests match.
 - Sonnet 5.5 was used through WebMCP AI CLI for read-only race diagnosis, as authorized. The wrapper rejected both structured outputs (`REVIEW_RESULT_INCOMPLETE`), so neither is counted as a review verdict. Its source-level diagnosis matched the instrumented Chrome trace; the coordinator implemented and tested the fix.
-- Pre-acceptance review on the final frozen candidate: pending. Use the user-authorized Muse 1.3 or AGY Claude Opus 4.6 route and record the actual model/response; pre-acceptance is not final acceptance.
+- User-authorized pre-acceptance fallback: WebMCP AI CLI `review` → OpenCode → `opencode-go/muse-spark-1.3-contributor`, `review-readonly`, returned `approve` with no findings. The review copy's before/after SHA-256 manifests match. Muse authored the initial c2 implementation, so this user-designated hygiene pass is advisory for its own changes and is not independent final acceptance.
 - Final independent reviewer required: direct Claude Code CLI → `claude-opus-5-5`, fresh read-only pass on the exact committed final candidate/tree. Its decision and artifact hash will be recorded in the outer candidate ledger; freeze this document before that review.
 
 ## Open gates
 
-- [ ] Final pre-acceptance review and Claude Opus 5.5 read-only review pass on the same candidate source/docs tree. Any fix creates a new candidate tree and invalidates those receipts.
-- [ ] Coordinator commits only the listed source/test/docs write-set on the candidate; records final commit/tree and reviewer artifact hashes.
+- [x] Final pre-acceptance hygiene pass returned `approve` on the frozen implementation source; AGY Claude Opus route timeout and Muse same-lineage caveat are recorded above and in `candidate-ledger.md`.
+- [ ] Commit this updated acceptance record on the candidate, then run fresh direct Claude Opus 5.5 read-only review on the resulting exact source+doc commit/tree. Any fix creates a new candidate tree and invalidates that receipt.
 - [ ] Recheck owner checkout HEAD/tree/status. If it remains exactly at the baseline, fast-forward the reviewed commit; if it drifted, stop with `RECONCILIATION_BLOCKED_OWNER_DRIFT` and preserve both sides.
 - [ ] After promotion, rerun `npm test`, contract, closure and isolated Chrome smoke against the authoritative owner tree.
 - [ ] Push and production/Chrome Web Store release remain outside this task.
