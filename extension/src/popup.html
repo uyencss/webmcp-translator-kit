@@ -37,17 +37,6 @@
       <span>[KEY_ACCESS_UNAVAILABLE] Lỗi bộ nhớ extension.</span>
     </div>
 
-    <!-- Status Strip: 1 single compact line with icon + text + tooltip -->
-    <div class="status-strip" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
-      <div class="status-indicator">
-        <span class="status-icon" id="status-icon" aria-hidden="true">
-          <span class="status-dot"></span>
-        </span>
-        <span class="status-text" id="status-text">Đang tải...</span>
-      </div>
-      <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
-    </div>
-
     <!-- Tablist (role=tablist) -->
     <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
       <button type="button" class="tab-btn active" role="tab" id="tab-translate" aria-selected="true" aria-controls="tabpanel-translate" tabindex="0">
@@ -248,6 +237,17 @@
 
       <div id="config-message-connect" class="config-message" aria-live="polite"></div>
     </section>
+
+    <!-- Status Strip (bottom): progress + status in one compact line -->
+    <div class="status-strip" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
+      <div class="status-indicator">
+        <span class="status-icon" id="status-icon" aria-hidden="true">
+          <span class="status-dot"></span>
+        </span>
+        <span class="status-text" id="status-text">Đang tải...</span>
+      </div>
+      <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
+    </div>
 
     <!-- Footer -->
     <footer class="footer">

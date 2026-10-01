@@ -1108,7 +1108,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         : `${data.totalApplied || data.applied || 0}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : 0;
       const failStr = failed > 0 ? ` (${failed} lỗi)` : '';
-      return `Đang theo dõi cuộn trang (${countStr} nodes đã dịch${failStr})${metaStr}.`;
+      const errSuffix = data.lastError && data.lastError.code ? ` — lỗi gần nhất: [${data.lastError.code}] đang thử lại` : '';
+      return `Đang theo dõi cuộn trang (${countStr} nodes đã dịch${failStr})${metaStr}.${errSuffix}`;
     }
 
     if (state === 'translated') {
@@ -1192,10 +1193,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const st = resp.status;
-        // Scroll-watch that only fails (applied==0, failed>0) must surface the
-        // provider error instead of pretending to watch forever.
-        if (st.lastError && (st.totalApplied || 0) === 0 && (st.totalFailed || 0) > 0) {
-          stopPolling();
+        // Scroll batches that only fail must surface the provider error
+        // instead of pretending to watch forever. Keep polling (no
+        // stopPolling) so a later recovery updates the strip.
+        if (st.lastError && (st.totalFailed || 0) > 0 && (st.totalApplied || 0) === 0) {
           updateStatus('error', formatDetail('error', {
             error: st.lastError,
             elapsedMs: st.elapsedMs,
@@ -1205,7 +1206,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }));
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
-          updateStatus('watching', formatDetail('watching', st));
+          updateStatus('watching', formatDetail('watching', { ...st, lastError: st.lastError }));
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'done') {
           stopPolling();
@@ -1234,7 +1235,8 @@ document.addEventListener('DOMContentLoaded', async () => {
               const progressDetail = (typeof st.totalCollected === 'number' && st.totalCollected > 0)
                 ? `Đang dịch ${st.totalApplied || 0}/${st.totalCollected} nodes...`
                 : 'Đang dịch...';
-              updateStatus('translating', progressDetail);
+              const retrySuffix = st.lastError && st.lastError.code ? ` (lỗi gần nhất: [${st.lastError.code}] đang thử lại)` : '';
+              updateStatus('translating', progressDetail + retrySuffix);
             }
           });
           if (btnTranslate) btnTranslate.disabled = true;
