@@ -338,6 +338,45 @@ test('favorites: legacy partial save updates active bucket (T43); new URL stays 
   assert.deepEqual(onB.settings.favoriteModelsByBaseURL[keyA], ['fav-test-model', 'fav-model-2']);
 });
 
+test('sw: concurrent SAVE_SETTINGS patches preserve both updates', async () => {
+  const A = 'http://127.0.0.1:8089/v1';
+  const keyA = normalizeBaseURLKey(A);
+  store.local.settings = migrateSettings({ baseURL: A, model: 'ag/old', favoriteModels: ['old'] });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  const originalGet = chrome.storage.local.get;
+  const originalSet = chrome.storage.local.set;
+  let settingsSetCount = 0;
+
+  chrome.storage.local.get = async (keys) => {
+    const result = await originalGet(keys);
+    const requested = keys === null || keys === undefined ? [] : (Array.isArray(keys) ? keys : [keys]);
+    if (requested.includes('settings')) await new Promise(resolve => setTimeout(resolve, 10));
+    return result;
+  };
+  chrome.storage.local.set = async (values) => {
+    if (values.settings && ++settingsSetCount === 1) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    return originalSet(values);
+  };
+
+  try {
+    const [favoriteSave, modeSave] = await Promise.all([
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModels: ['race-favorite'] } }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { translationMode: 'full' } }, popupSender)
+    ]);
+    assert.ok(favoriteSave?.ok && modeSave?.ok, 'both concurrent settings writes must succeed');
+  } finally {
+    chrome.storage.local.get = originalGet;
+    chrome.storage.local.set = originalSet;
+  }
+
+  const final = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+  assert.deepEqual(final.settings.favoriteModels, ['race-favorite']);
+  assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['race-favorite']);
+  assert.equal(final.settings.translationMode, 'full');
+});
+
 // ============================================================================
 // (1) content.js: stale-context guard (source-text regression pins)
 // ============================================================================
@@ -624,6 +663,17 @@ test('content: disabled first state does not consume auto-start; later enabled p
     const st = dom.getStatus();
     assert.equal(st.watching, true, 'enabled push must start the scroll-follow session');
     assert.equal(st.mode, 'scroll-follow');
+    // Consent turning off stops the session and must not leave a 'translating' status behind …
+    for (const h of runtimeHandlers) {
+      try { h({ ...disabledResp, action: 'WIDGET_STATE_CHANGED' }, {}, () => {}); } catch {}
+    }
+    const off = dom.getStatus();
+    assert.equal(off.watching, false, 'consent off must stop watching');
+    assert.notEqual(off.state, 'translating', 'consent off must not keep reporting translating');
+    // … and an explicit re-enable starts a fresh session.
+    dom.startScrollFollowSession({});
+    const again = dom.getStatus();
+    assert.equal(again.watching, true, 'explicit re-enable must start a new session');
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
       if (k in saved) globalThis[k] = saved[k];
@@ -666,12 +716,25 @@ test('popup: favorites are scoped per Base URL with fallback star controls', () 
     'favorites scope must never be keyed by API key');
 });
 
-test('popup: fallback star persists immediately without relying on debounce', () => {
+test('popup: fallback star saves only its favorites map and reports failures', () => {
   const handlerIdx = popupSrc.indexOf('btnFallbackFav.addEventListener');
   assert.ok(handlerIdx > 0, 'missing fallback star control');
-  const handlerBlock = popupSrc.slice(handlerIdx, handlerIdx + 1500);
-  assert.ok(handlerBlock.includes('setFavoritesForKey'), 'fallback star must update the scoped map');
-  assert.ok(handlerBlock.includes('flushAutosave()'), 'fallback star must flush immediately so close/reopen persists');
+  const handlerEnd = popupSrc.indexOf('\n      });\n\n      modelWrap.appendChild', handlerIdx);
+  const handlerBlock = popupSrc.slice(handlerIdx, handlerEnd > handlerIdx ? handlerEnd : undefined);
+  assert.ok(handlerBlock.includes('saveFavoriteToggle(scopeKey, curModel)'), 'fallback star must use the shared serialized favorite path');
+  assert.ok(handlerBlock.includes('Lỗi cập nhật yêu thích:'), 'fallback star must report save failures');
+
+  const toggleIdx = popupSrc.indexOf('function saveFavoriteToggle');
+  const toggleEnd = popupSrc.indexOf('\n  async function flushAutosave', toggleIdx);
+  const toggleBlock = popupSrc.slice(toggleIdx, toggleEnd > toggleIdx ? toggleEnd : undefined);
+  const publishMap = toggleBlock.indexOf('favoriteModelsByBaseURL = nextMap');
+  const sendMap = toggleBlock.indexOf('chrome.runtime.sendMessage');
+  assert.ok(publishMap >= 0 && sendMap > publishMap, 'favorite map must update before any async save can snapshot it');
+  assert.ok(toggleBlock.includes('favoriteModelsByBaseURL = previousMap'), 'failed favorite writes must roll back local state');
+  assert.ok(toggleBlock.includes('favoriteWriteInFlight = false'), 'favorite writes must release the autosave gate');
+  assert.ok(popupSrc.includes('if (favoriteWriteInFlight) {\n      autosaveQueued = true;'),
+    'full autosaves must queue while a favorite partial write is active');
+  assert.ok(swSrc.includes('serializeSettingsWrite'), 'service worker must serialize merge-patch settings writes');
 });
 
 test('sw: WIDGET_GET_STATE enforces key gate alongside consent/permission', () => {

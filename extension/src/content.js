@@ -1170,6 +1170,11 @@
 
     if (updateStatus) {
       lastTranslateStatus.watching = false;
+      // A stopped session must not keep reporting 'translating' (popup would
+      // poll "watching" forever); a later start resets to a fresh session.
+      if (lastTranslateStatus.state === 'translating') {
+        lastTranslateStatus.state = lastTranslateStatus.totalApplied > 0 ? 'done' : 'idle';
+      }
     }
   }
 

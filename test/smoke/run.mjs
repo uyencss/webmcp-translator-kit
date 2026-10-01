@@ -4715,6 +4715,17 @@ async function runSingleAttempt() {
       await cdp.send('Target.closeTarget', { targetId: pTarget1.targetId });
       pTarget1 = null;
 
+      // Seed an unrelated provider bucket (isolation check for the favorites round-trip below)
+      const FAV_B_KEY = 'https://provider-b.example/v1';
+      {
+        const curMap = (await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId))?.settings?.favoriteModelsByBaseURL || {};
+        await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteModelsByBaseURL: ${JSON.stringify({ ...curMap, [FAV_B_KEY]: ['b-only'] })} } }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+      }
+
       // Open popup target 2
       pTarget2 = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXPECTED_EXT_ID}/popup.html` });
       const pAttach2 = await cdp.send('Target.attachToTarget', { targetId: pTarget2.targetId, flatten: true });
@@ -4757,6 +4768,194 @@ async function runSingleAttempt() {
       // Check UI selection is preserved
       const modelValAfterFav = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
       assert.equal(modelValAfterFav, curSelectedModel, 'UI model selection must NOT be reset when toggling favorite');
+
+      // (d2) Fallback star on the primary URL scope + primary star must accumulate in ONE bucket
+      {
+        const readSettings = async () => (await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId))?.settings || {};
+        const waitSettings = async (pred) => {
+          let settings = {};
+          for (let w = 0; w < 30; w++) {
+            settings = await readSettings();
+            if (pred(settings)) return settings;
+            await sleep(150);
+          }
+          return settings;
+        };
+        const m1 = curSelectedModel;
+        const beforeD2 = await readSettings();
+        const keyA = Object.keys(beforeD2.favoriteModelsByBaseURL || {}).find((k) => k !== FAV_B_KEY);
+        assert.ok(keyA, 'primary provider bucket must exist after starring');
+        const initialFavorites = [...(beforeD2.favoriteModelsByBaseURL[keyA] || [])];
+        assert.ok(initialFavorites.includes(m1), 'primary star must be present before fallback favorite test');
+
+        while (await cdp.evaluate('Boolean(document.getElementById("btn-remove-fallback-0"))', pSession2)) {
+          await cdp.evaluate('document.getElementById("btn-remove-fallback-0")?.click()', pSession2);
+          await sleep(50);
+        }
+        await cdp.evaluate('document.getElementById("btn-add-fallback")?.click()', pSession2);
+        await sleep(200);
+        const m2 = await cdp.evaluate(`(() => {
+          const sel = document.getElementById('select-fallback-0');
+          const existing = new Set(${JSON.stringify(initialFavorites)});
+          const o = Array.from(sel.options).map((x) => x.value).find((v) => v && v !== ${JSON.stringify(m1)} && !existing.has(v));
+          sel.value = o; sel.dispatchEvent(new Event('change'));
+          return o;
+        })()`, pSession2);
+        assert.ok(m2, 'fallback select must offer a model not already favorited');
+        const fallbackSaveSpy = await cdp.evaluate(`(() => {
+          window.__fallbackSaveTrace = [];
+          window.__delayFormSaveMs = 700;
+          window.__delayFavoriteMapMs = 1200;
+          const original = chrome.runtime.sendMessage;
+          try {
+            Object.defineProperty(chrome.runtime, 'sendMessage', {
+              configurable: true,
+              value: function(...args) {
+                const message = args[0];
+                if (message?.action !== 'SAVE_SETTINGS') return original.apply(this, args);
+                const callback = args[args.length - 1];
+                if (typeof callback !== 'function') return original.apply(this, args);
+                const settings = message.settings || {};
+                const isFormSave = Array.isArray(settings.fallbacks);
+                const isFavoriteMapSave = Boolean(settings.favoriteModelsByBaseURL) &&
+                  Object.keys(settings).every(key => key === 'favoriteModelsByBaseURL' || key === 'favoriteModels');
+                const kind = isFormSave ? 'form' : (isFavoriteMapSave ? 'favorite-map' : 'other');
+                const delay = isFormSave ? window.__delayFormSaveMs
+                  : (isFavoriteMapSave ? window.__delayFavoriteMapMs : 0);
+                window.__fallbackSaveTrace.push({ phase: 'sent', kind, settings });
+                args[args.length - 1] = response => {
+                  const lastError = chrome.runtime.lastError?.message || null;
+                  const complete = () => {
+                    window.__fallbackSaveTrace.push({ phase: 'callback', kind, response, lastError });
+                    callback(response);
+                  };
+                  if (delay) setTimeout(complete, delay);
+                  else complete();
+                };
+                return original.apply(this, args);
+              }
+            });
+            return 'wrapped';
+          } catch (error) {
+            return 'wrap failed: ' + (error?.message || error);
+          }
+        })()`, pSession2);
+        assert.equal(fallbackSaveSpy, 'wrapped', 'must instrument deterministic autosave/favorite overlap');
+        const waitForTrace = async (pred) => {
+          let trace = [];
+          for (let w = 0; w < 40; w++) {
+            trace = await cdp.evaluate('window.__fallbackSaveTrace || []', pSession2);
+            if (pred(trace)) return trace;
+            await sleep(50);
+          }
+          return trace;
+        };
+        const modelAutosaveTrace = await waitForTrace(trace => trace.some(event =>
+          event.phase === 'sent' && event.kind === 'form' && event.settings.fallbacks?.[0]?.model === m2));
+        assert.ok(modelAutosaveTrace.some(event =>
+          event.phase === 'sent' && event.kind === 'form' && event.settings.fallbacks?.[0]?.model === m2),
+        'fallback model autosave must be in flight before starring');
+        await cdp.evaluate('document.getElementById("btn-fallback-fav-0")?.click()', pSession2);
+        const favoriteSaveTrace = await waitForTrace(trace => trace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'));
+        assert.ok(favoriteSaveTrace.some(event => event.phase === 'sent' && event.kind === 'favorite-map'),
+          `fallback star must issue its scoped map write: ${JSON.stringify({ fallbackSaveSpy, trace: favoriteSaveTrace, button: await cdp.evaluate("JSON.stringify({ disabled: document.getElementById('btn-fallback-fav-0')?.disabled, title: document.getElementById('btn-fallback-fav-0')?.title })", pSession2), message: await cdp.evaluate("document.getElementById('config-message-connect')?.textContent || ''", pSession2) })}`);
+
+        const srcSelect = await cdp.evaluate(`(() => {
+          const select = document.getElementById('select-src-lang');
+          const previous = select?.value || 'auto';
+          const stress = previous === 'en' ? 'zh' : 'en';
+          select.value = stress;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          return { previous, stress };
+        })()`, pSession2);
+        const afterFb = await waitSettings(settings =>
+          (settings.favoriteModelsByBaseURL?.[keyA] || []).includes(m2) && settings.sourceLanguage === srcSelect.stress);
+        const fallbackStarUi = await cdp.evaluate(`(() => ({
+          primaryUrl: document.getElementById('input-base-url')?.value,
+          selectedModel: document.getElementById('select-fallback-0')?.value,
+          starDisabled: document.getElementById('btn-fallback-fav-0')?.disabled,
+          starTitle: document.getElementById('btn-fallback-fav-0')?.title,
+          saveState: document.getElementById('save-state')?.textContent,
+          message: document.getElementById('config-message-connect')?.textContent
+        }))()`, pSession2);
+        const fallbackSaveTrace = await cdp.evaluate('window.__fallbackSaveTrace || []', pSession2);
+        const expectedAfterFb = [...initialFavorites, m2];
+        assert.deepEqual(afterFb.favoriteModelsByBaseURL?.[keyA], expectedAfterFb,
+          `fallback star during form autosave must preserve old favorites and add m2: ${JSON.stringify({ keyA, m1, m2, expected: expectedAfterFb, bucket: afterFb.favoriteModelsByBaseURL?.[keyA], sourceLanguage: afterFb.sourceLanguage, ui: fallbackStarUi, saveSpy: fallbackSaveSpy, saveTrace: fallbackSaveTrace })}`);
+
+        const m3 = await cdp.evaluate(`(() => {
+          const sel = document.getElementById('select-model');
+          const existing = new Set(${JSON.stringify(expectedAfterFb)});
+          const o = Array.from(sel.options).map((x) => x.value).find((v) => v && !existing.has(v));
+          sel.value = o; sel.dispatchEvent(new Event('change'));
+          return o;
+        })()`, pSession2);
+        assert.ok(m3, 'primary select must offer a third model');
+        await cdp.evaluate('document.getElementById("btn-toggle-favorite")?.click()', pSession2);
+        const expectedAfterPrimary = [...expectedAfterFb, m3];
+        const afterPrimary = await waitSettings(settings => (settings.favoriteModelsByBaseURL?.[keyA] || []).includes(m3));
+        assert.deepEqual(afterPrimary.favoriteModelsByBaseURL?.[keyA], expectedAfterPrimary,
+          'primary star after fallback star must retain the whole active bucket');
+        assert.deepEqual(afterPrimary.favoriteModelsByBaseURL?.[FAV_B_KEY], ['b-only'], 'other provider bucket must stay isolated');
+        assert.ok(!('default' in (afterPrimary.favoriteModelsByBaseURL || {})), 'favorites must never persist under a fake default key');
+
+        await cdp.evaluate(`(() => {
+          window.__delayFormSaveMs = 0;
+          window.__delayFavoriteMapMs = 0;
+          const select = document.getElementById('select-src-lang');
+          select.value = ${JSON.stringify(srcSelect.previous)};
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`, pSession2);
+        const restoredSettings = await waitSettings(settings => settings.sourceLanguage === srcSelect.previous);
+        assert.equal(restoredSettings.sourceLanguage, srcSelect.previous, 'unrelated language change must remain editable and persist');
+        await cdp.evaluate(`(() => { const sel = document.getElementById('select-model'); sel.value = ${JSON.stringify(m1)}; sel.dispatchEvent(new Event('change')); })()`, pSession2);
+      }
+
+      // (d3) A valid fallback favorite persists via a partial map write even
+      // while the primary URL field contains invalid uncommitted text.
+      {
+        const keyC = 'https://provider-c.example/v1';
+        const beforeInvalid = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+        const storedPrimaryURL = beforeInvalid?.settings?.baseURL;
+        const fallbackModel = await cdp.evaluate('document.getElementById("select-fallback-0")?.value', pSession2);
+        assert.ok(fallbackModel, 'fallback model must be selected for invalid-primary favorite test');
+
+        await cdp.evaluate(`(() => {
+          const primary = document.getElementById('input-base-url');
+          primary.value = 'not a valid URL';
+          primary.dispatchEvent(new Event('input', { bubbles: true }));
+          primary.dispatchEvent(new Event('change', { bubbles: true }));
+          const fallback = document.getElementById('input-fallback-url-0');
+          fallback.value = ${JSON.stringify(keyC)};
+          fallback.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`, pSession2);
+        await sleep(750); // let the invalid-primary autosave report its validation error
+        await cdp.evaluate('document.getElementById("btn-fallback-fav-0")?.click()', pSession2);
+
+        let favState = null;
+        for (let w = 0; w < 30; w++) {
+          favState = await cdp.evaluate(`
+            self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+          `, swSessionId);
+          if ((favState?.settings?.favoriteModelsByBaseURL?.[keyC] || []).includes(fallbackModel)) break;
+          await sleep(100);
+        }
+        assert.equal(favState?.settings?.baseURL, storedPrimaryURL, 'partial favorites write must not alter stored primary URL');
+        assert.ok(favState?.settings?.favoriteModelsByBaseURL?.[keyC]?.includes(fallbackModel),
+          'fallback-specific favorite must persist when primary input is invalid');
+
+        await cdp.evaluate(`(() => {
+          const primary = document.getElementById('input-base-url');
+          primary.value = ${JSON.stringify(storedPrimaryURL)};
+          primary.dispatchEvent(new Event('input', { bubbles: true }));
+          primary.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`, pSession2);
+        await sleep(750);
+      }
 
       // (e) Fallback v2 row + key: remove any pre-existing rows -> add row -> enter key & model -> save -> SET_FALLBACK_KEY called & fallbackKeyPresence[fb1]=true
       while (await cdp.evaluate('Boolean(document.getElementById("btn-remove-fallback-0"))', pSession2)) {

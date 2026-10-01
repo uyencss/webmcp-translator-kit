@@ -1802,6 +1802,16 @@ if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.on
   });
 }
 
+// Serialize read-modify-write settings patches so concurrent popup actions
+// cannot overwrite fields they did not change.
+let settingsWriteQueue = Promise.resolve();
+
+function serializeSettingsWrite(operation) {
+  const result = settingsWriteQueue.then(operation, operation);
+  settingsWriteQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 // Runtime Message Handler
 async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
   try {
@@ -1841,6 +1851,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'SAVE_SETTINGS': {
+        return await serializeSettingsWrite(async () => {
         if (!isPrivilegedSender(sender)) {
           return createTypedError('PERMISSION_REQUIRED', 'SAVE_SETTINGS is only permitted from extension UI', false, {
             permissionType: 'host'
@@ -1963,6 +1974,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
 
         return { ok: true, configRevision };
+        });
       }
 
       case 'GET_QUEUE_STATUS': {

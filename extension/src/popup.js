@@ -102,25 +102,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let savedSettings = {};
   let discoveredModels = [];
-  let favoriteModels = [];
   // Favorites are scoped per provider Base URL (normalized scheme/host,
-  // preserved path+port; never keyed by API key). `favoriteModels` is the
-  // working copy for the currently displayed Base URL scope.
+  // preserved path+port; never keyed by API key). The map is the single
+  // source of truth; the primary list is always read from its bucket.
   let favoriteModelsByBaseURL = {};
-  let lastFavKey = 'default';
+  let lastFavKey = null; // displayed primary scope; null = Base URL invalid
   let fallbacks = []; // Array of { id, model, baseURL?: string }
   let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
   let activeTabNav = 'tab-translate';
 
   function currentFavKey() {
-    const raw = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
-    return normalizeBaseURLKey(raw) || normalizeBaseURLKey(savedSettings.baseURL || '') || 'default';
+    return normalizeBaseURLKey(inputBaseUrl ? inputBaseUrl.value : (savedSettings.baseURL || ''));
   }
 
   function getFavoritesForKey(key) {
-    const list = favoriteModelsByBaseURL[key];
+    const list = key ? favoriteModelsByBaseURL[key] : null;
     return Array.isArray(list) ? [...list] : [];
+  }
+
+  function primaryFavorites() {
+    return getFavoritesForKey(lastFavKey);
   }
 
   function setFavoritesForKey(key, list) {
@@ -128,11 +130,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Base URL scope for a fallback row: its own Base URL, else primary.
+  // Returns null when the effective URL is invalid (star disabled).
   function favKeyForFallback(fb) {
-    const raw = (fb && typeof fb.baseURL === 'string' && fb.baseURL.trim())
-      ? fb.baseURL.trim()
-      : (inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || ''));
-    return normalizeBaseURLKey(raw) || currentFavKey();
+    const own = (fb && typeof fb.baseURL === 'string') ? fb.baseURL.trim() : '';
+    return own ? normalizeBaseURLKey(own) : currentFavKey();
   }
 
   // Autosave state (no save buttons — every change persists to storage)
@@ -140,6 +141,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   let autosaveTimer = null;
   let autosaveInFlight = false;
   let autosaveQueued = false;
+  let favoriteWriteInFlight = false;
+  let favoriteWriteQueue = Promise.resolve();
+  const autosaveIdleWaiters = [];
 
   // Key Access Banner (Safety fail-closed)
   function showKeyAccessBanner() {
@@ -330,7 +334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
       fallbacks: fbRes.fallbacks,
       autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites)),
-      favoriteModels: [...favoriteModels],
+      favoriteModels: primaryFavorites(),
       favoriteModelsByBaseURL: JSON.parse(JSON.stringify(favoriteModelsByBaseURL))
     };
     if (rawUrl) patch.baseURL = rawUrl;
@@ -342,8 +346,87 @@ document.addEventListener('DOMContentLoaded', async () => {
   // explicit buttons (site toggle, + Trang này, base shield, Dịch).
   const SETTINGS_NOT_LOADED_MSG = 'Cấu hình chưa tải xong — đợi giây lát rồi thử lại (không ghi gì để tránh mất cấu hình cũ)';
 
+  function waitForAutosaveIdle() {
+    if (!autosaveInFlight) return Promise.resolve();
+    return new Promise(resolve => autosaveIdleWaiters.push(resolve));
+  }
+
+  function notifyAutosaveIdleWaiters() {
+    if (autosaveInFlight) return;
+    autosaveIdleWaiters.splice(0).forEach(resolve => resolve());
+  }
+
+  function saveFavoriteToggle(scopeKey, model) {
+    const operation = favoriteWriteQueue.then(async () => {
+      if (!settingsLoaded) throw new Error(SETTINGS_NOT_LOADED_MSG);
+
+      let saveFormAfter = Boolean(autosaveTimer);
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+      }
+      await waitForAutosaveIdle();
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+        saveFormAfter = true;
+      }
+
+      favoriteWriteInFlight = true;
+      const previousMap = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
+      const isPrimaryScope = scopeKey === lastFavKey;
+      const bucket = Array.isArray(previousMap[scopeKey]) ? previousMap[scopeKey] : [];
+      const nextFavorites = bucket.includes(model)
+        ? bucket.filter(id => id !== model)
+        : [...bucket, model].slice(0, 50);
+      const nextMap = { ...previousMap, [scopeKey]: nextFavorites };
+
+      // Publish the new map before any async save/queued autosave can snapshot it.
+      favoriteModelsByBaseURL = nextMap;
+      savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(nextMap));
+      savedSettings.favoriteModels = primaryFavorites();
+
+      try {
+        const settings = { favoriteModelsByBaseURL: nextMap };
+        if (isPrimaryScope) settings.favoriteModels = nextFavorites;
+        const response = await new Promise(resolve => {
+          try {
+            chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings }, value => {
+              const lastError = chrome.runtime.lastError;
+              resolve(lastError ? { error: { message: lastError.message } } : value);
+            });
+          } catch (err) {
+            resolve({ error: { message: String((err && err.message) || err) } });
+          }
+        });
+        if (!response || response.error) {
+          throw new Error(response?.error?.message || 'Không thể lưu danh sách yêu thích');
+        }
+        return nextFavorites;
+      } catch (err) {
+        favoriteModelsByBaseURL = previousMap;
+        savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(previousMap));
+        savedSettings.favoriteModels = primaryFavorites();
+        throw err;
+      } finally {
+        favoriteWriteInFlight = false;
+        if (saveFormAfter) autosaveQueued = true;
+        if (autosaveQueued) {
+          autosaveQueued = false;
+          flushAutosave();
+        }
+      }
+    });
+    favoriteWriteQueue = operation.catch(() => {});
+    return operation;
+  }
+
   async function flushAutosave() {
     if (!settingsLoaded) return;
+    if (favoriteWriteInFlight) {
+      autosaveQueued = true;
+      return;
+    }
     if (autosaveInFlight) {
       autosaveQueued = true;
       return;
@@ -413,10 +496,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       setConfigMsg(configMessageConnect, msg, true);
     } finally {
       autosaveInFlight = false;
-      if (autosaveQueued) {
+      if (autosaveQueued && !favoriteWriteInFlight) {
         autosaveQueued = false;
         flushAutosave();
       }
+      notifyAutosaveIdleWaiters();
     }
   }
 
@@ -722,7 +806,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function populateSelect(selectEl, selectedVal, { allowEmpty = false, emptyLabel = '-- Không chọn --', exclude = [], favs = null } = {}) {
     if (!selectEl) return;
     selectEl.innerHTML = '';
-    const scopeFavs = Array.isArray(favs) ? favs : favoriteModels;
+    const scopeFavs = Array.isArray(favs) ? favs : primaryFavorites();
 
     if (allowEmpty) {
       const emptyOpt = document.createElement('option');
@@ -806,10 +890,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   function updateStarButton() {
     if (!btnToggleFavorite || !selectModel) return;
     const curVal = selectModel.value;
-    const isFav = favoriteModels.includes(curVal);
+    const isFav = primaryFavorites().includes(curVal);
     btnToggleFavorite.innerHTML = isFav ? SVG_ICONS.starFilled : SVG_ICONS.star;
     btnToggleFavorite.classList.toggle('favorited', isFav);
-    btnToggleFavorite.title = isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích';
+    btnToggleFavorite.disabled = !lastFavKey;
+    btnToggleFavorite.title = !lastFavKey
+      ? 'Nhập Base URL hợp lệ (http/https) để dùng yêu thích'
+      : (isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích');
   }
 
   // Fallback row star reflects the row's own Base URL scope (own URL else primary)
@@ -821,7 +908,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isFav = curVal ? bucket.includes(curVal) : false;
     btn.innerHTML = isFav ? SVG_ICONS.starFilled : SVG_ICONS.star;
     btn.classList.toggle('favorited', isFav);
-    btn.title = isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích';
+    btn.disabled = !scopeKey;
+    btn.title = !scopeKey
+      ? 'Nhập Base URL hợp lệ (http/https) để dùng yêu thích'
+      : (isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích');
   }
 
   // Favorite Star Toggle Action (Sends partial SAVE_SETTINGS)
@@ -834,39 +924,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      const isFav = favoriteModels.includes(curVal);
-      const nextFavorites = isFav
-        ? favoriteModels.filter(id => id !== curVal)
-        : [...favoriteModels, curVal];
-
+      const scopeKey = lastFavKey;
+      if (!scopeKey) return;
       btnToggleFavorite.disabled = true;
-      let favMapToSave = null;
       try {
-        const scopeKey = currentFavKey();
-        favMapToSave = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
-        favMapToSave[scopeKey] = [...nextFavorites].slice(0, 50);
-      } catch {}
-      const resp = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({
-          action: 'SAVE_SETTINGS',
-          settings: favMapToSave
-            ? { favoriteModels: nextFavorites, favoriteModelsByBaseURL: favMapToSave }
-            : { favoriteModels: nextFavorites }
-        }, resolve);
-      });
-      btnToggleFavorite.disabled = false;
-
-      if (chrome.runtime.lastError || !resp || resp.error) {
-        const err = resp?.error || chrome.runtime.lastError;
-        setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + (err.message || 'Lỗi không xác định'), true);
-        return;
+        await saveFavoriteToggle(scopeKey, curVal);
+        renderAllModelDropdowns();
+        setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
+      } catch (err) {
+        setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Lỗi không xác định'), true);
+        updateStarButton();
+      } finally {
+        btnToggleFavorite.disabled = !lastFavKey;
       }
-
-      favoriteModels = nextFavorites;
-      if (favMapToSave) favoriteModelsByBaseURL = favMapToSave;
-      savedSettings.favoriteModels = nextFavorites;
-      savedSettings.favoriteModelsByBaseURL = JSON.parse(JSON.stringify(favoriteModelsByBaseURL));
-      renderAllModelDropdowns();
     });
   }
 
@@ -1018,7 +1088,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnFallbackFav.title = 'Thêm/bỏ yêu thích model dự phòng này';
       btnFallbackFav.setAttribute('aria-label', `Thêm hoặc bỏ model dự phòng ${idx + 1} khỏi danh sách yêu thích`);
       btnFallbackFav.innerHTML = SVG_ICONS.star;
-      btnFallbackFav.addEventListener('click', () => {
+      btnFallbackFav.addEventListener('click', async () => {
         if (!settingsLoaded) {
           setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
           return;
@@ -1026,16 +1096,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         const curModel = modelSelect.value || fb.model;
         if (!curModel) return;
         const scopeKey = favKeyForFallback({ baseURL: (document.getElementById(`input-fallback-url-${idx}`)?.value || fb.baseURL || '') });
-        const bucket = getFavoritesForKey(scopeKey);
-        const next = bucket.includes(curModel)
-          ? bucket.filter(id => id !== curModel)
-          : [...bucket, curModel].slice(0, 50);
-        setFavoritesForKey(scopeKey, next);
-        updateFallbackStar(btnFallbackFav, fb, modelSelect);
-        renderAllModelDropdowns();
-        // Persist immediately (same as the primary star): popup close/reopen
-        // must not depend on the debounced autosave still being pending.
-        flushAutosave();
+        if (!scopeKey) return;
+        btnFallbackFav.disabled = true;
+        try {
+          await saveFavoriteToggle(scopeKey, curModel);
+          renderAllModelDropdowns();
+          setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
+        } catch (err) {
+          updateFallbackStar(btnFallbackFav, fb, modelSelect);
+          updateStarButton();
+          setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Không thể lưu'), true);
+        } finally {
+          btnFallbackFav.disabled = !favKeyForFallback({ baseURL: (document.getElementById(`input-fallback-url-${idx}`)?.value || fb.baseURL || '') });
+        }
       });
 
       modelWrap.appendChild(modelSelect);
@@ -1189,25 +1262,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             checkboxWidgetVisible.checked = resp.settings.widgetVisible;
           }
 
-          favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
           favoriteModelsByBaseURL = (resp.settings.favoriteModelsByBaseURL && typeof resp.settings.favoriteModelsByBaseURL === 'object' && !Array.isArray(resp.settings.favoriteModelsByBaseURL))
             ? JSON.parse(JSON.stringify(resp.settings.favoriteModelsByBaseURL))
             : {};
-          // Scope working favorites to the current Base URL. The scoped map is
-          // authoritative: an empty bucket stays empty (never seeded from
-          // another provider's working list). Only when no scopes exist yet
-          // (first run) is the migrated global list kept as-is.
-          lastFavKey = normalizeBaseURLKey(resp.settings.baseURL || '') || 'default';
-          {
-            const scoped = getFavoritesForKey(lastFavKey);
-            if (scoped.length > 0) {
-              favoriteModels = scoped;
-            } else if (Object.keys(favoriteModelsByBaseURL).length === 0) {
-              favoriteModels = Array.isArray(resp.settings.favoriteModels) ? [...resp.settings.favoriteModels] : [];
-            } else {
-              favoriteModels = [];
-            }
-          }
+          lastFavKey = normalizeBaseURLKey(resp.settings.baseURL || '');
           fallbacks = Array.isArray(resp.settings.fallbacks) ? JSON.parse(JSON.stringify(resp.settings.fallbacks)) : [];
           autoTranslateSites = Array.isArray(resp.settings.autoTranslateSites) ? [...resp.settings.autoTranslateSites] : [];
 
@@ -1352,6 +1410,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // instead of pretending to watch forever. Keep polling (no
         // stopPolling) so a later recovery updates the strip.
         if (st.lastError && (st.totalFailed || 0) > 0 && (st.totalApplied || 0) === 0) {
+          if (st.watching === false) stopPolling(); else startPolling();
           updateStatus('error', formatDetail('error', {
             error: st.lastError,
             elapsedMs: st.elapsedMs,
@@ -1360,7 +1419,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             fallbackIndex: st.fallbackIndex
           }));
           evaluateActionReadiness(resp.restorableCount || 0);
-        } else if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
+        } else if (st.watching === true || (st.watching !== false && st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
           // Still watching (even with state done for the current viewport):
           // keep polling so the footer refreshes live and reopen recovers.
           startPolling();
@@ -1443,16 +1502,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       markDirty();
     });
     inputBaseUrl.addEventListener('change', () => {
-      // Switching Base URL swaps the visible favorites scope: stash the
-      // working copy into the old scope, restore the new scope's list.
+      // Switching Base URL only swaps which map bucket is displayed.
       try {
         const nextKey = currentFavKey();
         if (nextKey !== lastFavKey) {
-          setFavoritesForKey(lastFavKey, [...favoriteModels]);
-          const scoped = getFavoritesForKey(nextKey);
-          favoriteModels = [...scoped];
           lastFavKey = nextKey;
-          savedSettings.favoriteModels = [...favoriteModels];
+          savedSettings.favoriteModels = primaryFavorites();
           renderAllModelDropdowns();
           evaluateActionReadiness();
         }
@@ -1873,7 +1928,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (val && !seen.has(val)) { seen.add(val); opts.push({ value: val, label: val }); }
         };
         pushOpt(savedSettings.model || DEFAULT_MODEL);
-        (favoriteModels || []).forEach(pushOpt);
+        primaryFavorites().forEach(pushOpt);
         (typeof RECOMMENDED_MODELS !== 'undefined' ? RECOMMENDED_MODELS : []).forEach(pushOpt);
         (discoveredModels || []).map((m) => (typeof m === 'string' ? m : m && m.id)).forEach(pushOpt);
         for (const o of opts) {
