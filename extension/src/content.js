@@ -23,6 +23,14 @@
     debounceMaxMs: 300
   };
 
+  // Floating-button busy indicator hook (wired up by initFloatingWidget)
+  let fabBusySetter = null;
+  function setFabBusy(busy) {
+    try {
+      if (typeof fabBusySetter === 'function') fabBusySetter(Boolean(busy));
+    } catch {}
+  }
+
   const documentId = 'doc_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
   let epoch = 0;
   let idCounter = 1;
@@ -527,9 +535,10 @@
     stopScrollFollowSession(true);
 
     isTranslating = true;
+    setFabBusy(true);
     currentMode = 'full';
     const runToken = ++activeRunToken;
-    const finishRun = () => { if (activeRunToken === runToken) isTranslating = false; };
+    const finishRun = () => { if (activeRunToken === runToken) { isTranslating = false; setFabBusy(false); } };
     epoch++;
     const currentEpoch = epoch;
     const startTime = Date.now();
@@ -892,6 +901,7 @@
     currentMode = 'scroll-follow';
     scrollSession.active = true;
     scrollSession.watching = true;
+    setFabBusy(true);
     scrollSession.settings = settings || {};
     scrollSession.epoch = epoch;
 
@@ -1044,6 +1054,7 @@
       clearTimeout(scrollSession.retryTimer);
       scrollSession.retryTimer = null;
     }
+    setFabBusy(false);
     scrollSession.readyBlocks.clear();
     scrollSession.active = false;
     scrollSession.watching = false;
@@ -1121,6 +1132,21 @@
       }
       .wmt-badge.active {
         background: #10b981;
+      }
+      .wmt-badge.busy {
+        background: #f59e0b;
+        animation: wmtPulse 1s ease-in-out infinite;
+      }
+      @keyframes wmtPulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+      }
+      .wmt-btn.busy svg {
+        animation: wmtSpin 1s linear infinite;
+      }
+      @keyframes wmtSpin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
       }
       .wmt-panel {
         position: absolute;
@@ -1312,6 +1338,13 @@
 
     shadow.appendChild(style);
     shadow.appendChild(container);
+
+    fabBusySetter = (busy) => {
+      const f = container.querySelector('#wmt-fab');
+      const b = container.querySelector('#wmt-badge');
+      if (f) f.classList.toggle('busy', busy);
+      if (b) b.classList.toggle('busy', busy);
+    };
 
     const fab = container.querySelector('#wmt-fab');
     const panel = container.querySelector('#wmt-panel');

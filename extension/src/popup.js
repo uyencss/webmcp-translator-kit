@@ -478,11 +478,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
+  // Dịch button busy state (spinner while a run is in flight; cleared
+  // whenever the button becomes enabled again or an early return hits)
+  function setTranslateBusy(busy) {
+    if (!btnTranslate) return;
+    btnTranslate.classList.toggle('is-loading', Boolean(busy));
+  }
+
   // Action Readiness Evaluation
   function evaluateActionReadiness(restorableCount = 0) {
     if (!activeTab || !activeTab.id || !activeTab.url || (!activeTab.url.startsWith('http://') && !activeTab.url.startsWith('https://'))) {
       if (btnTranslate) btnTranslate.disabled = true;
       if (btnRestore) btnRestore.disabled = true;
+      setTranslateBusy(false);
       return;
     }
 
@@ -491,6 +499,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnTranslate.disabled = true;
         btnTranslate.title = 'Vui lòng nhập API key để bắt đầu dịch';
       }
+      setTranslateBusy(false);
       updateStatus('unconfigured', 'Vui lòng nhập API key tại tab Kết nối.');
       if (btnRestore) btnRestore.disabled = restorableCount === 0;
       return;
@@ -502,6 +511,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnTranslate.disabled = true;
         btnTranslate.title = 'Chưa chọn model hợp lệ';
       }
+      setTranslateBusy(false);
       updateStatus('error', 'Chưa chọn model hợp lệ. Vui lòng chọn model hoặc làm mới danh sách.');
       if (btnRestore) btnRestore.disabled = restorableCount === 0;
       return;
@@ -510,6 +520,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (btnTranslate) {
       btnTranslate.disabled = false;
       btnTranslate.title = 'Dịch trang này';
+      setTranslateBusy(false);
     }
     if (btnRestore) btnRestore.disabled = restorableCount === 0;
     if (statusText.textContent === 'Chưa có key' || statusText.textContent === 'Đang tải...') {
@@ -1788,6 +1799,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!activeTab || !activeTab.id) return;
 
       btnTranslate.disabled = true;
+      setTranslateBusy(true);
       updateStatus('translating', 'Đang chuẩn bị dịch...');
       startPolling();
 

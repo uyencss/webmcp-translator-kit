@@ -4571,7 +4571,7 @@ async function runSingleAttempt() {
       if (!(appliedCount > 0)) {
         const diag47 = await cdp.evaluate(`(() => ({
           strip: document.querySelector('#status-strip')?.textContent || null,
-          saveState: document.getElementById('save-state')?.dataset?.state || null,
+          btnBusy: document.getElementById('btn-translate')?.classList.contains('is-loading') ?? null,
           btnDisabled: document.getElementById('btn-translate')?.disabled ?? null
         }))()`, pSession1).catch((e) => ({ diagError: String(e) }));
         const swFromPopup = await cdp.evaluate(`new Promise((resolve) => {
@@ -5226,26 +5226,24 @@ async function runSingleAttempt() {
       // Poll for the debounced autosave failure surfacing
       let errMsg = '';
       let errCls = '';
-      let errSaveState = '';
       {
         const t0 = Date.now();
         while (Date.now() - t0 < 6000) {
           await sleep(250);
           errMsg = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
           errCls = await cdp.evaluate(`document.getElementById('config-message-connect')?.className || ''`, pSession50);
-          errSaveState = await cdp.evaluate(`document.getElementById('save-state')?.dataset?.state || ''`, pSession50);
-          if ((errMsg && errCls.includes('error')) || errSaveState === 'error') break;
+          if (errMsg && errCls.includes('error')) break;
         }
       }
       const bannerVisible = await cdp.evaluate(`getComputedStyle(document.getElementById('key-access-banner')).display !== 'none'`, pSession50).catch(() => false);
       assert.ok(
-        (errMsg && errCls.includes('error')) || bannerVisible || errSaveState === 'error',
-        `Popup autosave must surface SAVE_SETTINGS failure (message error, save-state error, or banner), got msg=${JSON.stringify(errMsg)} cls=${errCls} saveState=${errSaveState} banner=${bannerVisible}`
+        (errMsg && errCls.includes('error')) || bannerVisible,
+        `Popup autosave must surface SAVE_SETTINGS failure (message error or banner), got msg=${JSON.stringify(errMsg)} cls=${errCls} banner=${bannerVisible}`
       );
       assert.ok(!/thành công|saved|success/i.test(errMsg), `Popup must NOT report success on failure, got: ${JSON.stringify(errMsg)}`);
 
       // Restore SW access; reload popup for a clean load, then trigger
-      // autosave again -> success path (save-state saved + SW persisted).
+      // autosave again -> success path (SW persisted, no error shown).
       await cdp.evaluate(`
         (async () => {
           self.__translatorSw._setTestStorageAccessFailure(false);
@@ -5268,21 +5266,21 @@ async function runSingleAttempt() {
       }
       await cdp.evaluate(`document.getElementById('input-base-url').value = 'http://127.0.0.1:${SMOKE_PORT}/v1'`, pSession50).catch(() => {});
       await cdp.evaluate(`document.getElementById('input-base-url').dispatchEvent(new Event('input'))`, pSession50).catch(() => {});
-      let saveStateOk = '';
       let swAfter = null;
+      let okMsgAfter = '';
       const expectedBaseURL = `http://127.0.0.1:${SMOKE_PORT}/v1`;
       {
         const t0 = Date.now();
         while (Date.now() - t0 < 8000) {
           await sleep(250);
-          saveStateOk = await cdp.evaluate(`document.getElementById('save-state')?.dataset?.state || ''`, pSession50);
           swAfter = await cdp.evaluate(`
             self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' }).then((r) => ({ rev: r?.configRevision ?? null, baseURL: r?.settings?.baseURL ?? null }))
           `, swSessionId, true).catch((e) => ({ diagError: String(e) }));
-          if (saveStateOk === 'saved' && swAfter && swAfter.baseURL === expectedBaseURL) break;
+          okMsgAfter = await cdp.evaluate(`document.getElementById('config-message-connect')?.textContent || ''`, pSession50);
+          if (swAfter && swAfter.baseURL === expectedBaseURL && !okMsgAfter) break;
         }
       }
-      assert.ok(saveStateOk === 'saved' && swAfter && swAfter.baseURL === expectedBaseURL, `Popup autosave must report saved and persist baseURL after restore, got saveState=${JSON.stringify(saveStateOk)} swAfter=${JSON.stringify(swAfter)} restoreCheck=${JSON.stringify(restoreCheck)}`);
+      assert.ok(swAfter && swAfter.baseURL === expectedBaseURL && !okMsgAfter, `Popup autosave must persist baseURL after restore with no error, got swAfter=${JSON.stringify(swAfter)} msg=${JSON.stringify(okMsgAfter)} restoreCheck=${JSON.stringify(restoreCheck)}`);
 
       record('T50', 'Popup error path (fail-closed UI + recovery)', true, `autosave error surfaced, no false success; autosaved after restore`);
     } catch (e) {

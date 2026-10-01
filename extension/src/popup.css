@@ -1255,41 +1255,7 @@ select optgroup {
 /* ==========================================================================
    UX-G: autosave indicator, icon-first connect fields, auto-site status
    ========================================================================== */
-.save-state {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  cursor: help;
-  flex: none;
-}
 
-.save-state .save-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #6b7280;
-  transition: background 0.2s ease;
-}
-
-.save-state[data-state="saving"] .save-dot {
-  background: #60a5fa;
-  animation: save-pulse 0.9s ease-in-out infinite;
-}
-
-.save-state[data-state="saved"] .save-dot {
-  background: #34d399;
-}
-
-.save-state[data-state="error"] .save-dot {
-  background: #f87171;
-}
-
-@keyframes save-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
 }
 
 .field-icon {
@@ -1357,4 +1323,14 @@ select optgroup {
 
 .btn-site-enable.enabled {
   color: #34d399;
+}
+
+/* Dịch button loading spinner */
+.btn.is-loading .btn-svg {
+  animation: btn-spin 0.9s linear infinite;
+}
+
+@keyframes btn-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
