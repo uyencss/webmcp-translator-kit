@@ -1122,9 +1122,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const metaStr = elapsed ? ` (${elapsed} · ${modelStr})` : ` (${modelStr})`;
 
     if (state === 'watching') {
+      const effApplied = typeof data.totalCollected === 'number'
+        ? Math.min(data.totalApplied || 0, data.totalCollected)
+        : (data.totalApplied || data.applied || 0);
       const countStr = typeof data.totalCollected === 'number'
-        ? `${data.totalApplied || 0}/${data.totalCollected}`
-        : `${data.totalApplied || data.applied || 0}`;
+        ? `${effApplied}/${data.totalCollected}`
+        : `${effApplied}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : 0;
       const failStr = failed > 0 ? ` (${failed} lỗi)` : '';
       const errSuffix = data.lastError && data.lastError.code ? ` — lỗi gần nhất: [${data.lastError.code}] đang thử lại` : '';
@@ -1251,8 +1254,11 @@ document.addEventListener('DOMContentLoaded', async () => {
               const remSec = Math.max(1, Math.ceil((qResp.retryAfterMs || 0) / 1000));
               updateStatus('translating', `Đang chờ quota… sẽ chạy lại sau ~${remSec}s`);
             } else {
+              const tApplied = (typeof st.totalCollected === 'number' && (st.totalApplied || 0) > st.totalCollected)
+                ? st.totalCollected
+                : (st.totalApplied || 0);
               const progressDetail = (typeof st.totalCollected === 'number' && st.totalCollected > 0)
-                ? `Đang dịch ${st.totalApplied || 0}/${st.totalCollected} nodes...`
+                ? `Đang dịch ${tApplied}/${st.totalCollected} nodes...`
                 : 'Đang dịch...';
               const retrySuffix = st.lastError && st.lastError.code ? ` (lỗi gần nhất: [${st.lastError.code}] đang thử lại)` : '';
               updateStatus('translating', progressDetail + retrySuffix);

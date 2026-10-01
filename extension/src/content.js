@@ -37,6 +37,12 @@
     } catch {}
   }
 
+  // Busy = actual in-flight translation work (not merely "watching"). This is
+  // what stops the spinner from running forever after everything is done.
+  function updateFabBusy() {
+    setFabBusy(isTranslating || scrollSession.inFlight > 0);
+  }
+
   const documentId = 'doc_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
   let epoch = 0;
   let idCounter = 1;
@@ -271,6 +277,7 @@
     stopScrollFollowSession(false);
     isTranslating = false;
     activeRunToken++;
+    updateFabBusy();
 
     // 4. Clear pending tracking set
     pendingSet.clear();
@@ -549,10 +556,10 @@
     stopScrollFollowSession(true);
 
     isTranslating = true;
-    setFabBusy(true);
+    updateFabBusy();
     currentMode = 'full';
     const runToken = ++activeRunToken;
-    const finishRun = () => { if (activeRunToken === runToken) { isTranslating = false; setFabBusy(false); } };
+    const finishRun = () => { if (activeRunToken === runToken) { isTranslating = false; updateFabBusy(); } };
     epoch++;
     const currentEpoch = epoch;
     const startTime = Date.now();
@@ -845,6 +852,7 @@
       }
 
       scrollSession.inFlight++;
+      updateFabBusy();
       dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch);
     }
   }
@@ -904,6 +912,7 @@
         pendingSet.delete(k);
       }
       scrollSession.inFlight = Math.max(0, scrollSession.inFlight - 1);
+      updateFabBusy();
       if (!batchFatal && scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
         scheduleScrollFlush();
       }
@@ -920,8 +929,8 @@
     currentMode = 'scroll-follow';
     scrollSession.active = true;
     scrollSession.watching = true;
-    setFabBusy(true);
     scrollSession.settings = settings || {};
+    updateFabBusy();
     scrollSession.epoch = epoch;
 
     lastTranslateStatus.mode = 'scroll-follow';
@@ -1056,7 +1065,9 @@
       subtree: true
     });
 
-    scheduleScrollFlush();
+    // Flush immediately (no debounce wait): observers are attached, so this
+    // only ever sends each node once thanks to the pendingSet guard.
+    flushReadyBlocks();
   }
 
   function stopScrollFollowSession(updateStatus = true) {
@@ -1088,11 +1099,11 @@
       clearTimeout(scrollSession.retryTimer);
       scrollSession.retryTimer = null;
     }
-    setFabBusy(false);
     scrollSession.readyBlocks.clear();
     scrollSession.active = false;
     scrollSession.watching = false;
     scrollSession.inFlight = 0;
+    updateFabBusy();
 
     if (updateStatus) {
       lastTranslateStatus.watching = false;
@@ -1860,9 +1871,11 @@
           return false;
         }
         restoreKept.set(rec.id, rec);
+        if (scrollSession.collectedIds) scrollSession.collectedIds.add(rec.id);
+        else lastTranslateStatus.totalCollected++;
         lastTranslateStatus.totalApplied++;
         lastTranslateStatus.progressApplied = (lastTranslateStatus.progressApplied || 0) + 1;
-        setFabBusy(isTranslating || scrollSession.watching);
+        updateFabBusy();
         sendResponse({ ok: true, applied: true });
       } catch {
         sendResponse({ ok: true, applied: false, reason: 'INTERNAL' });

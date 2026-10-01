@@ -1131,7 +1131,7 @@ async function reconcilePermissions() {
               id: item.scriptId,
               matches: item.matches,
               js: ['content.js'],
-              runAt: 'document_idle',
+              runAt: 'document_start',
               allFrames: false,
               persistAcrossSessions: true
             }))
@@ -2193,7 +2193,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
                 id: scriptId,
                 matches: [originToMatchPattern(normOrigin)],
                 js: ['content.js'],
-                runAt: 'document_idle',
+                runAt: 'document_start',
                 allFrames: false,
                 persistAcrossSessions: true
               }]);
