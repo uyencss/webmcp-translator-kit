@@ -1259,6 +1259,28 @@ test('content: auto-start revalidates permission, key and consent during settle'
     pushState(offState);
     await new Promise((resolve) => setTimeout(resolve, 650));
     assert.equal(dom.getStatus().watching, false, 'consent off must cancel the pending timer');
+    // Stale query replies must not clobber newer state: hold two queries from
+    // successive empty broadcasts, resolve newer off first then older on; the
+    // stale on must not schedule/start. Recovery below proves retryable.
+    {
+      const held = [];
+      const origSend = globalThis.chrome.runtime.sendMessage;
+      globalThis.chrome.runtime.sendMessage = (msg, cb) => {
+        if (msg?.action === 'WIDGET_GET_STATE') { held.push({ cb, snap: { ...current } }); return; }
+        return origSend(msg, cb);
+      };
+      try {
+        pushEmptyState({ ...onState });
+        pushEmptyState({ ...offState });
+        assert.equal(held.length, 2, 'two overlapping queries must be held');
+        held[1].cb({ ...held[1].snap });
+        held[0].cb({ ...held[0].snap });
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        assert.equal(dom.getStatus().watching, false, 'stale on reply must not start translation');
+      } finally {
+        globalThis.chrome.runtime.sendMessage = origSend;
+      }
+    }
     pushState(onState);
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.equal(dom.getStatus().watching, true, 'complete positive state must recover auto-start');

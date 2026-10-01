@@ -89,6 +89,12 @@
   let userRestored = false;
   let autoStartTimer = null;
   let autoStartQueryRetries = 0;
+  // Monotonically increasing widget-state request sequence: every queryState()
+  // issuance and every pushed WIDGET_STATE_CHANGED advances it. A query reply
+  // whose sequence is older than the latest issuance/push is stale (out of
+  // order) and must be ignored so a late effective:'on' cannot clobber a
+  // newer effective:'off'.
+  let widgetQuerySeq = 0;
 
   const nodeToRec = new WeakMap();
   const idToRec = new Map();
@@ -1639,12 +1645,16 @@
 
     function queryState() {
       if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+      const mySeq = ++widgetQuerySeq;
       try {
         chrome.runtime.sendMessage({ action: 'WIDGET_GET_STATE' }, (resp) => {
           try {
             if (chrome.runtime && chrome.runtime.lastError) {
               const leMsg = chrome.runtime.lastError.message || '';
               if (/extension context invalidated|context invalidated/i.test(leMsg)) { __wmtHaltStale(); return; }
+              // Stale transport failure: a newer query or pushed state already
+              // supersedes this reply; the latest request owns bounded retries.
+              if (mySeq < widgetQuerySeq) return;
               // Transient SW-side failure (e.g. startup race): retry boundedly
               // so a fresh load still auto-starts without manual interaction.
               if (!autoStartAttempted && autoStartQueryRetries < AUTO_QUERY_MAX_RETRIES && !__wmtHalted && __wmtValidContext()) {
@@ -1654,6 +1664,9 @@
               return;
             }
           } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+          // Ignore out-of-order replies older than the latest query or a newer
+          // pushed state; only the latest authoritative response may apply.
+          if (mySeq < widgetQuerySeq) return;
           if (resp && !resp.error) {
             applyState(resp);
             checkAutoStart(resp);
@@ -1907,6 +1920,8 @@
     // permission arrives after load; queryState bounds retries internally)
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
+        // Newer pushed state supersedes any in-flight queryState() reply.
+        widgetQuerySeq++;
         try {
           if (autoStartTimer) {
             clearTimeout(autoStartTimer);
