@@ -1011,6 +1011,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (btnRefreshModels) {
     btnRefreshModels.addEventListener('click', async () => {
+      // Host permission needs a user gesture — ensure it here before fetch.
+      const perm = await ensureBaseUrlPermission();
+      if (!perm.ok) {
+        setConfigMsg(configMessageConnect, perm.reason === 'invalid' ? 'Base URL không hợp lệ' : 'Cần cấp quyền host permission để kết nối Base URL', true);
+        updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
+        return;
+      }
       await loadModels({ forceRefresh: true });
     });
   }
@@ -1291,6 +1298,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {
       return null;
     }
+  }
+
+  // SW fetch to Base URL needs its host permission; request it inside a user
+  // gesture (autosave/refresh-without-gesture cannot). Shared by Dịch,
+  // refresh-models and the shield button.
+  async function ensureBaseUrlPermission() {
+    const origin = await getBaseOrigin();
+    if (!origin) return { ok: false, reason: 'invalid' };
+    if (!chrome.permissions || typeof chrome.permissions.contains !== 'function') {
+      return { ok: true };
+    }
+    let granted = false;
+    try {
+      granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
+      if (!granted && typeof chrome.permissions.request === 'function') {
+        granted = await chrome.permissions.request({ origins: [origin + '/*'] });
+      }
+    } catch {
+      granted = false;
+    }
+    await refreshBasePermState();
+    return granted ? { ok: true } : { ok: false, reason: 'denied' };
   }
 
   async function refreshBasePermState() {
@@ -1810,30 +1839,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // SW fetch to Base URL needs its host permission; request it here in
         // the click gesture if not granted yet (autosave cannot request it).
-        const runBaseURL = savedSettings.baseURL || 'http://localhost:8080/v1';
-        let runOrigin = null;
-        try {
-          runOrigin = new URL(runBaseURL).origin;
-        } catch {}
-        if (runOrigin && chrome.permissions && typeof chrome.permissions.contains === 'function') {
-          let hasBasePerm = false;
-          try {
-            hasBasePerm = await chrome.permissions.contains({ origins: [runOrigin + '/*'] });
-            if (!hasBasePerm && typeof chrome.permissions.request === 'function') {
-              hasBasePerm = await chrome.permissions.request({ origins: [runOrigin + '/*'] });
-            }
-          } catch {
-            hasBasePerm = false;
-          }
-          if (!hasBasePerm) {
-            stopPolling();
-            updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
-            setConfigMsg(configMessageConnect, 'Cần cấp quyền host permission để kết nối Base URL', true);
-            evaluateActionReadiness();
-            await refreshBasePermState();
-            return;
-          }
-          await refreshBasePermState();
+        const basePerm = await ensureBaseUrlPermission();
+        if (!basePerm.ok) {
+          stopPolling();
+          updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
+          setConfigMsg(configMessageConnect, basePerm.reason === 'invalid' ? 'Base URL không hợp lệ' : 'Cần cấp quyền host permission để kết nối Base URL', true);
+          evaluateActionReadiness();
+          return;
         }
 
         // Site consent: Tab 1 has no toggle — enable automatically in this

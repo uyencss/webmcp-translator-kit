@@ -1277,6 +1277,30 @@ const routerConfig = {
 const router = createDirect9Router(routerConfig);
 
 // Model Discovery (L2 storage.local cache with TTL & background revalidation)
+// Fail-fast diagnostic: SW fetch to the provider needs its host permission.
+// Without it the request dies as opaque "Failed to fetch" — surface the real
+// cause instead. Skipped in test mode (harness bypasses the permission system).
+async function checkBaseUrlPermission(baseURL) {
+  if (_testMode) return null;
+  const baseOrigin = baseURL ? normalizeOrigin(baseURL) : null;
+  if (!baseOrigin) return null;
+  let granted = false;
+  try {
+    granted = await permissionContains(baseOrigin);
+  } catch {
+    granted = false;
+  }
+  if (!granted) {
+    return createTypedError(
+      'PERMISSION_REQUIRED',
+      'Chưa cấp quyền kết nối Base URL — bấm nút khiên cạnh ô Base URL để cấp quyền rồi thử lại',
+      false,
+      { origin: baseOrigin, permissionType: 'host' }
+    );
+  }
+  return null;
+}
+
 async function listModels(options = {}) {
   const forceRefresh = Boolean(options && options.forceRefresh);
   await ensureStorageAccess();
@@ -1310,6 +1334,8 @@ async function listModels(options = {}) {
 
   // 1. Force refresh: bypass L1 and L2
   if (forceRefresh) {
+    const basePermError = await checkBaseUrlPermission(baseURL);
+    if (basePermError) return basePermError;
     const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
     if (fetchRes && Array.isArray(fetchRes.models)) {
       const fetchedAt = Date.now();
@@ -1377,6 +1403,8 @@ async function listModels(options = {}) {
   }
 
   // 4. Missing, fingerprint changed, or > 7 days: blocking fetch
+  const basePermError = await checkBaseUrlPermission(baseURL);
+  if (basePermError) return basePermError;
   const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
   if (fetchRes && Array.isArray(fetchRes.models)) {
     const fetchedAt = Date.now();
@@ -1399,6 +1427,8 @@ async function translateBatch(input = {}) {
   const settings = await getStoredSettings();
   const apiKey = await getStoredApiKey();
   const baseURL = input.baseURL || settings.baseURL;
+  const basePermError = await checkBaseUrlPermission(baseURL);
+  if (basePermError) return basePermError;
   const key = input.apiKey !== undefined ? input.apiKey : apiKey;
   const model = input.model || settings.model || DEFAULT_MODEL;
   return await router.translateBatch({
