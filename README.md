@@ -2,6 +2,10 @@
 
 MVP Direct-mode translator kit and browser extension (no Gateway). Provides frozen direct-mode contracts, schemas, defaults, and the unpacked Chrome extension calling 9router OpenAI-compatible endpoints directly.
 
+The extension requests streaming translations. When the configured endpoint returns SSE, it applies completed translated passages as they arrive; endpoints returning a regular JSON response continue to work. Streaming availability depends on the selected endpoint and model.
+
+Chrome Web Store preparation: [readiness audit and fix plan](docs/chrome-web-store-readiness-2026-10-01.md) · [listing copy, Privacy fields, reviewer instructions, and screenshot requirements](docs/chrome-web-store-submission-content-2026-10-01.md).
+
 ## Layout
 
 ```
