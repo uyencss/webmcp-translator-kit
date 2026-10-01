@@ -69,8 +69,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Tab 2 Elements ("Tự động")
   const btnAddCurrentSite = document.getElementById('btn-add-current-site');
-  const inputAutoSite = document.getElementById('input-auto-site');
-  const btnAddCustomSite = document.getElementById('btn-add-custom-site');
   const autoSiteError = document.getElementById('auto-site-error');
   const autoSitesList = document.getElementById('auto-sites-list');
 
@@ -152,7 +150,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         break;
       case 'ready':
         iconSvg = SVG_ICONS.check;
-        shortText = 'Sẵn sàng';
+        shortText = '';
         fullDetail = detail || 'Sẵn sàng dịch trang hiện tại.';
         break;
       case 'translating':
@@ -1090,7 +1088,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const countStr = typeof data.totalCollected === 'number'
         ? `${data.totalApplied || 0}/${data.totalCollected}`
         : `${data.totalApplied || data.applied || 0}`;
-      return `Đang theo dõi cuộn trang (${countStr} nodes đã dịch)${metaStr}.`;
+      const failed = typeof data.totalFailed === 'number' ? data.totalFailed : 0;
+      const failStr = failed > 0 ? ` (${failed} lỗi)` : '';
+      return `Đang theo dõi cuộn trang (${countStr} nodes đã dịch${failStr})${metaStr}.`;
     }
 
     if (state === 'translated') {
@@ -1174,7 +1174,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const st = resp.status;
-        if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
+        // Scroll-watch that only fails (applied==0, failed>0) must surface the
+        // provider error instead of pretending to watch forever.
+        if (st.lastError && (st.totalApplied || 0) === 0 && (st.totalFailed || 0) > 0) {
+          stopPolling();
+          updateStatus('error', formatDetail('error', {
+            error: st.lastError,
+            elapsedMs: st.elapsedMs,
+            model: st.model,
+            actualModel: st.actualModel,
+            fallbackIndex: st.fallbackIndex
+          }));
+          evaluateActionReadiness(resp.restorableCount || 0);
+        } else if (st.watching === true || (st.mode === 'scroll-follow' && (st.state === 'translating' || st.state === 'done'))) {
           updateStatus('watching', formatDetail('watching', st));
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'done') {
@@ -1645,168 +1657,130 @@ document.addEventListener('DOMContentLoaded', async () => {
   // delete/add flows persist immediately in their own handlers below.
 
 
-  async function handleAddCustomSite() {
-    hideAutoSiteError();
-    const val = inputAutoSite ? inputAutoSite.value.trim() : '';
-    if (!val) {
-      showAutoSiteError('Vui lòng nhập origin (ví dụ: https://example.com)');
-      return;
-    }
-
-    const norm = normalizeOrigin(val);
-    if (!norm) {
-      showAutoSiteError('Origin không hợp lệ (yêu cầu định dạng https://example.com)');
-      return;
-    }
-
+  // Commit a validated origin to the auto list: save + enable consent in the
+  // same gesture (the auto-start gate needs both, otherwise silent no-op).
+  async function commitAutoSite(norm) {
     if (autoTranslateSites.some((s) => (s.origin || s) === norm)) {
       showAutoSiteError(`Trang ${norm} đã có trong danh sách.`);
-      return;
+      return false;
     }
-
     if (autoTranslateSites.length >= 200) {
       showAutoSiteError('Danh sách đã đạt tối đa 200 trang.');
-      return;
+      return false;
     }
-
-    if (btnAddCustomSite) btnAddCustomSite.disabled = true;
     const newEntry = { origin: norm, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
     const updatedList = [...autoTranslateSites, newEntry];
-
-    const saveResp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        action: 'SAVE_SETTINGS',
-        settings: { autoTranslateSites: updatedList }
-      }, resolve);
-    });
-    if (btnAddCustomSite) btnAddCustomSite.disabled = false;
-
+    const saveResp = await sendMsg({ action: 'SAVE_SETTINGS', settings: { autoTranslateSites: updatedList } });
     if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-      const err = saveResp?.error || chrome.runtime.lastError;
-      showAutoSiteError('Lỗi thêm trang: ' + (err?.message || 'Không thể lưu'));
-      return;
+      const err = (saveResp && saveResp.error) || chrome.runtime.lastError || {};
+      showAutoSiteError('Lỗi thêm trang: ' + ((err && err.message) || 'Không thể lưu'));
+      return false;
     }
-
     autoTranslateSites = updatedList;
     savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
-    if (inputAutoSite) inputAutoSite.value = '';
     renderAutoSites();
-
-    // Auto-start gate needs site consent + host permission too — enable in
-    // this same gesture, otherwise the new entry would silently never run.
     const enableRes = await enableSiteForOrigin(norm);
     if (!enableRes.ok) {
       showAutoSiteError(enableRes.reason === 'permission'
         ? `Đã thêm ${norm}, nhưng chưa cấp quyền truy cập — bấm nút nguồn trên dòng đó để bật.`
         : `Đã thêm ${norm}, nhưng bật dịch thất bại — bấm nút nguồn trên dòng đó để thử lại.`);
     }
+    if (norm === currentConsent.siteOrigin) {
+      await loadConsent();
+    }
     refreshSiteDots();
+    return true;
   }
 
-  if (btnAddCustomSite) {
-    btnAddCustomSite.addEventListener('click', handleAddCustomSite);
-  }
-  if (inputAutoSite) {
-    inputAutoSite.addEventListener('keydown', (e) => {
+  // Draft row: opened by the + icon. Input is prefilled with the current
+  // page origin, or left empty when the current page is already listed
+  // (or is not a valid HTTP(S) page).
+  function openDraftAutoSite() {
+    if (!autoSitesList) return;
+    hideAutoSiteError();
+    if (autoSitesList.querySelector('.auto-site-draft')) {
+      const existing = autoSitesList.querySelector('.auto-site-draft input');
+      if (existing) existing.focus();
+      return;
+    }
+    let prefill = '';
+    const tabUrl = activeTab && activeTab.url ? activeTab.url : '';
+    const curOrigin = tabUrl ? normalizeOrigin(tabUrl) : null;
+    if (curOrigin && !autoTranslateSites.some((s) => (s.origin || s) === curOrigin)) {
+      prefill = curOrigin;
+    }
+
+    const draft = document.createElement('div');
+    draft.className = 'auto-site-card auto-site-draft';
+    draft.setAttribute('role', 'listitem');
+
+    const row = document.createElement('div');
+    row.className = 'input-with-button';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'input-auto-site-draft';
+    input.placeholder = 'https://example.com';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'Nhập origin trang web để tự động dịch');
+    input.value = prefill;
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'btn-icon btn-sm';
+    confirmBtn.title = 'Thêm trang này';
+    confirmBtn.setAttribute('aria-label', 'Thêm trang này');
+    confirmBtn.innerHTML = SVG_ICONS.check;
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn-icon btn-sm';
+    cancelBtn.title = 'Huỷ';
+    cancelBtn.setAttribute('aria-label', 'Huỷ thêm trang');
+    cancelBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>';
+
+    const doConfirm = async () => {
+      const val = input.value.trim();
+      if (!val) {
+        showAutoSiteError('Vui lòng nhập origin (ví dụ: https://example.com)');
+        return;
+      }
+      const norm = normalizeOrigin(val);
+      if (!norm) {
+        showAutoSiteError('Origin không hợp lệ (yêu cầu định dạng https://example.com)');
+        return;
+      }
+      confirmBtn.disabled = true;
+      const ok = await commitAutoSite(norm);
+      confirmBtn.disabled = false;
+      if (ok && draft.isConnected) draft.remove();
+    };
+    confirmBtn.addEventListener('click', doConfirm);
+    input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        handleAddCustomSite();
+        doConfirm();
+      } else if (e.key === 'Escape') {
+        draft.remove();
       }
     });
+    cancelBtn.addEventListener('click', () => draft.remove());
+
+    row.appendChild(input);
+    row.appendChild(confirmBtn);
+    row.appendChild(cancelBtn);
+    draft.appendChild(row);
+    autoSitesList.prepend(draft);
+    input.focus();
+    if (prefill) input.select();
   }
 
   if (btnAddCurrentSite) {
-    btnAddCurrentSite.addEventListener('click', async () => {
-      hideAutoSiteError();
-      const tabUrl = activeTab?.url;
-      if (!tabUrl) {
-        showAutoSiteError('Không thể xác định trang hiện tại.');
-        return;
-      }
-
-      const curOrigin = normalizeOrigin(tabUrl);
-      if (!curOrigin) {
-        showAutoSiteError('Trang hiện tại không phải là HTTP/HTTPS hợp lệ.');
-        return;
-      }
-
-      if (autoTranslateSites.some((s) => (s.origin || s) === curOrigin)) {
-        showAutoSiteError(`Trang ${curOrigin} đã có trong danh sách.`);
-        return;
-      }
-
-      if (autoTranslateSites.length >= 200) {
-        showAutoSiteError('Danh sách đã đạt tối đa 200 trang.');
-        return;
-      }
-
-      btnAddCurrentSite.disabled = true;
-
-      // 1. Opt-in flow if site not yet enabled: request permission in gesture + SET_SITE_ENABLED
-      if (!currentConsent.siteEnabled) {
-        const matchPattern = curOrigin + '/*';
-        let granted = false;
-        try {
-          if (chrome.permissions && typeof chrome.permissions.request === 'function') {
-            granted = await chrome.permissions.request({ origins: [matchPattern] });
-          } else {
-            granted = true;
-          }
-        } catch {
-          granted = false;
-        }
-
-        if (!granted) {
-          btnAddCurrentSite.disabled = false;
-          showAutoSiteError('[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch.');
-          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật tự động dịch.');
-          return;
-        }
-
-        const enableResp = await new Promise((resolve) => {
-          chrome.runtime.sendMessage({
-            action: 'SET_SITE_ENABLED',
-            origin: curOrigin,
-            enabled: true,
-            tabId: activeTab?.id
-          }, resolve);
-        });
-
-        if (chrome.runtime.lastError || !enableResp || enableResp.error) {
-          btnAddCurrentSite.disabled = false;
-          const err = enableResp?.error || chrome.runtime.lastError;
-          showAutoSiteError('Lỗi bật quyền site: ' + (err?.message || 'Không thể lưu quyền site'));
-          updateStatus('error', `[${err?.code || 'ERROR'}] ${err?.message || 'Không thể lưu quyền site'}`);
-          return;
-        }
-
-        currentConsent.siteEnabled = true;
-        if (toggleSiteConsent) toggleSiteConsent.checked = true;
-        await loadConsent();
-      }
-
-      // 2. Add to autoTranslateSites and save
-      const newEntry = { origin: curOrigin, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
-      const updatedList = [...autoTranslateSites, newEntry];
-      const saveResp = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({
-          action: 'SAVE_SETTINGS',
-          settings: { autoTranslateSites: updatedList }
-        }, resolve);
-      });
-      btnAddCurrentSite.disabled = false;
-
-      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-        const err = saveResp?.error || chrome.runtime.lastError;
-        showAutoSiteError('Lỗi lưu danh sách: ' + (err?.message || 'Không thể lưu'));
-        return;
-      }
-
-      autoTranslateSites = updatedList;
-      savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
-      renderAutoSites();
+    btnAddCurrentSite.addEventListener('click', () => {
+      openDraftAutoSite();
     });
   }
+
 
   // Translate Page Action
   if (btnTranslate) {
@@ -1848,6 +1822,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
           }
           await refreshBasePermState();
+        }
+
+        // Site consent: Tab 1 has no toggle — enable automatically in this
+        // click gesture so one Dịch press does everything.
+        const pageOrigin = activeTab?.url ? normalizeOrigin(activeTab.url) : null;
+        if (pageOrigin && !currentConsent.siteEnabled) {
+          updateStatus('translating', 'Đang bật dịch cho trang này...');
+          const enRes = await enableSiteForOrigin(pageOrigin);
+          if (!enRes.ok) {
+            stopPolling();
+            updateStatus('error', enRes.reason === 'permission'
+              ? '[PERMISSION_REQUIRED] Cần cấp quyền truy cập cho trang này'
+              : '[ERROR] Không thể bật dịch cho trang này');
+            evaluateActionReadiness();
+            return;
+          }
+          currentConsent.siteEnabled = true;
+          await loadConsent();
         }
 
         const ensureResp = await new Promise((resolve) => {

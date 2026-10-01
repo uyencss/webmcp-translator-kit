@@ -54,6 +54,7 @@
     chunksDone: 0,
     bytesTotal: 0,
     error: null,
+    lastError: null,
     model: null,
     actualModel: null,
     fallbackIndex: 0,
@@ -656,6 +657,7 @@
 
       lastTranslateStatus.state = 'done';
       lastTranslateStatus.error = null;
+      lastTranslateStatus.lastError = null;
       finishRun();
       return {
         ok: true,
@@ -841,9 +843,13 @@
 
       if (res.applied) {
         lastTranslateStatus.totalApplied += res.applied;
+        lastTranslateStatus.lastError = null;
       }
       if (res.failed) {
         lastTranslateStatus.totalFailed += res.failed;
+      }
+      if (res.error) {
+        lastTranslateStatus.lastError = res.error;
       }
 
       // Handle RATE_LIMITED with single timer + jitter (no spin)
@@ -892,6 +898,7 @@
     lastTranslateStatus.mode = 'scroll-follow';
     lastTranslateStatus.watching = true;
     lastTranslateStatus.state = 'translating';
+    lastTranslateStatus.lastError = null;
     lastTranslateStatus.model = settings.model || 'ag/gemini-3.1-pro-low';
 
     // 1 IntersectionObserver for block containers with root:null, rootMargin: '200% 0px 200% 0px', threshold: 0
@@ -1069,7 +1076,7 @@
         all: initial;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         font-size: 13px;
-        color: #1f2937;
+        color: #f4f4f5;
       }
       *, *::before, *::after {
         box-sizing: border-box;
@@ -1078,7 +1085,7 @@
         width: 44px;
         height: 44px;
         border-radius: 50%;
-        background: #2563eb;
+        background: #3b82f6;
         color: #ffffff;
         border: none;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
@@ -1093,7 +1100,7 @@
         outline: none;
       }
       .wmt-btn:hover {
-        background: #1d4ed8;
+        background: #2563eb;
       }
       .wmt-btn:focus-visible {
         outline: 2px solid #93c5fd;
@@ -1120,10 +1127,10 @@
         bottom: 54px;
         right: 0;
         width: 280px;
-        background: #ffffff;
+        background: #121318;
         border-radius: 12px;
-        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
-        border: 1px solid #e5e7eb;
+        box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
         padding: 14px;
         display: flex;
         flex-direction: column;
@@ -1138,18 +1145,18 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        border-bottom: 1px solid #f3f4f6;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         padding-bottom: 8px;
       }
       .wmt-title {
         font-weight: 600;
         font-size: 14px;
-        color: #111827;
+        color: #f4f4f5;
       }
       .wmt-close {
         background: transparent;
         border: none;
-        color: #9ca3af;
+        color: #71717a;
         cursor: pointer;
         font-size: 16px;
         line-height: 1;
@@ -1157,8 +1164,8 @@
         border-radius: 4px;
       }
       .wmt-close:hover {
-        color: #374151;
-        background: #f3f4f6;
+        color: #ffffff;
+        background: rgba(255, 255, 255, 0.09);
       }
       .wmt-row {
         display: flex;
@@ -1170,12 +1177,12 @@
         font-weight: 600;
         padding: 2px 8px;
         border-radius: 9999px;
-        background: #f3f4f6;
-        color: #4b5563;
+        background: rgba(255, 255, 255, 0.06);
+        color: #a1a1aa;
       }
       .wmt-status-tag.on {
-        background: #d1fae5;
-        color: #065f46;
+        background: rgba(16, 185, 129, 0.15);
+        color: #34d399;
       }
       .wmt-switch-btn {
         width: 100%;
@@ -1184,13 +1191,14 @@
         font-size: 12px;
         font-weight: 500;
         cursor: pointer;
-        border: 1px solid #d1d5db;
-        background: #ffffff;
-        color: #374151;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.04);
+        color: #a1a1aa;
         transition: background 0.15s;
       }
       .wmt-switch-btn:hover {
-        background: #f9fafb;
+        background: rgba(255, 255, 255, 0.09);
+        color: #ffffff;
       }
       .wmt-switch-btn.active {
         background: #ef4444;
@@ -1201,10 +1209,10 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
-        background: #f9fafb;
+        background: rgba(255, 255, 255, 0.03);
         padding: 8px 10px;
         border-radius: 6px;
-        border: 1px solid #f3f4f6;
+        border: 1px solid rgba(255, 255, 255, 0.06);
       }
       .wmt-mode-label {
         font-size: 12px;
@@ -1229,30 +1237,31 @@
         transition: background 0.15s;
       }
       .wmt-btn-primary {
-        background: #2563eb;
+        background: #3b82f6;
         color: #ffffff;
       }
       .wmt-btn-primary:hover {
-        background: #1d4ed8;
+        background: #2563eb;
       }
       .wmt-btn-secondary {
-        background: #f3f4f6;
-        color: #374151;
-        border: 1px solid #e5e7eb;
+        background: rgba(255, 255, 255, 0.04);
+        color: #a1a1aa;
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
       .wmt-btn-secondary:hover {
-        background: #e5e7eb;
+        background: rgba(255, 255, 255, 0.09);
+        color: #ffffff;
       }
       .wmt-hint {
         font-size: 11px;
-        color: #6b7280;
+        color: #71717a;
         text-align: center;
         line-height: 1.3;
       }
       .wmt-warning {
         font-size: 11px;
-        color: #dc2626;
-        background: #fef2f2;
+        color: #f87171;
+        background: rgba(239, 68, 68, 0.12);
         padding: 6px;
         border-radius: 4px;
         line-height: 1.3;

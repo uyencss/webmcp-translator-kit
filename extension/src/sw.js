@@ -1914,6 +1914,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
         }
+        notifyAllWidgetStateChanged();
         return { ok: true, configRevision };
       }
 
@@ -1963,6 +1964,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         fbKeys[fbId] = key;
         await chrome.storage.local.set({ fallback_api_keys: fbKeys });
 
+        notifyAllWidgetStateChanged();
         return { ok: true, configRevision };
       }
 
@@ -2004,6 +2006,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           await chrome.storage.local.set({ fallback_api_keys: fbKeys });
         }
 
+        notifyAllWidgetStateChanged();
         return { ok: true, configRevision };
       }
 
@@ -2034,6 +2037,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         tabQueues.clear();
         // Invalidate model list cache on key removal, and remove all fallback keys
         await chrome.storage.local.remove(['modelListCache', 'api_key', 'fallback_api_keys']);
+        notifyAllWidgetStateChanged();
         return { ok: true, configRevision };
       }
 

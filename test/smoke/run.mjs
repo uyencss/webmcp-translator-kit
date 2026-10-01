@@ -4682,14 +4682,31 @@ async function runSingleAttempt() {
       await cdp.evaluate('document.getElementById("tab-auto")?.click()', pSession2);
       await sleep(200);
 
-      // Add a test site via input
+      // Add a test site via the + draft row (icon-only add, prefilled input)
       const testSiteOrigin = 'https://per-site-test.example.com';
+      await cdp.evaluate('document.getElementById("btn-add-current-site")?.click()', pSession2);
+      await sleep(200);
+      const hasDraft = await cdp.evaluate('Boolean(document.getElementById("input-auto-site-draft"))', pSession2);
+      assert.ok(hasDraft, 'draft row input must appear after clicking the + add button');
       await cdp.evaluate(`
-        const inp = document.getElementById("input-auto-site");
-        if (inp) inp.value = "${testSiteOrigin}";
-        document.getElementById("btn-add-custom-site")?.click();
+        { const inp = document.getElementById("input-auto-site-draft");
+          if (inp) { inp.value = "${testSiteOrigin}"; } }
       `, pSession2);
-      await sleep(300);
+      await cdp.evaluate(`
+        { const inp2 = document.getElementById("input-auto-site-draft");
+          if (inp2) inp2.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); }
+      `, pSession2);
+      // Poll for the committed entry (save happens before the enable attempt)
+      let draftCommitted = false;
+      for (let w = 0; w < 40; w++) {
+        const cur = await cdp.evaluate(`
+          self.__translatorSw.dispatchMessage({ action: 'GET_SETTINGS' }, { url: 'chrome-extension://${EXPECTED_EXT_ID}/popup.html' })
+        `, swSessionId);
+        const sites = cur?.settings?.autoTranslateSites || [];
+        if (sites.some((s) => (s.origin || s) === testSiteOrigin)) { draftCommitted = true; break; }
+        await sleep(150);
+      }
+      assert.ok(draftCommitted, `draft row must commit ${testSiteOrigin} to autoTranslateSites`);
 
       // Find the row for this site and change its mode to 'full'
       await cdp.evaluate(`
