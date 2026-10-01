@@ -13,7 +13,7 @@ Date: 2026-10-01 (Asia/Ho_Chi_Minh). Owner: `packages/webmcp-translator-kit`. Th
 
 ## Changed paths
 
-`extension/src/content.js`, `extension/src/popup.js`, `extension/src/settings.mjs`, `extension/src/sw.js`, `test/auto-scroll-favorites.test.mjs`, `test/settings.test.mjs`, `test/smoke/run.mjs`, `test/sw-progress.test.mjs`.
+`extension/src/content.js`, `extension/src/popup.js`, `extension/src/settings.mjs`, `extension/src/sw.js`, `test/adapter.test.mjs`, `test/auto-scroll-favorites.test.mjs`, `test/settings.test.mjs`, `test/smoke/run.mjs`, `test/sw-progress.test.mjs`.
 
 No changes to package metadata, credentials, or provider settings. The implementation has not yet been promoted to the owner checkout. Current owner-side Store documentation/assets edits are unrelated and preserved; their exact paths and hashes are recorded in the outer candidate ledger.
 
@@ -33,7 +33,8 @@ No changes to package metadata, credentials, or provider settings. The implement
 - Candidate `npm run check:contract`: `CONTRACT_OK`.
 - Candidate `npm run check:closure`: `CLOSURE_OK`.
 - Candidate `git diff --check`: passed.
-- Chrome for Testing `150.0.7871.24` integration smoke ran in isolated snapshot `translator-kit/M3-integration/smoke-c2-v27/source`; T1–T54 passed (exit 0), manifest SHA-256 `0bd188f57961a032cc93c098a2799a6ff0ea033894ee14b1cd23971b60bd8e45`. Generated `docs/measurements/measurement-raw.json` and build output were confined to that snapshot. T47 checked popup progress while open and after reopening, autosave/favorite overlap, form autosave exclusion, and failed-save rollback; it exercises a single popup session, not two stale popup pages or the 50-favorite UI limit. Node tests cover atomic stale adds and the limit response. T48/T52 verified auto-start after load/navigation/reload; T44/T44b covered scroll-follow; T54 covered progressive SSE. The harness emits a `MaxListenersExceededWarning`; all tests still passed.
+- Adapter tests keep the dedicated 60 ms timeout case; the shared local `listModels` fixture timeout is 500 ms to avoid false timeouts when test workers are scheduled under load.
+- Chrome for Testing `150.0.7871.24` integration smoke ran in isolated snapshot `translator-kit/M3-integration/smoke-c2-v28/source`; T1–T54 passed (exit 0), manifest SHA-256 `0bd188f57961a032cc93c098a2799a6ff0ea033894ee14b1cd23971b60bd8e45`. Generated `docs/measurements/measurement-raw.json` and build output were confined to that snapshot. T47 checked popup progress while open and after reopening, autosave/favorite overlap, form autosave exclusion, and failed-save rollback; it exercises a single popup session, not two stale popup pages or the 50-favorite UI limit. Node tests cover atomic stale adds and the limit response. T48/T52 verified auto-start after load/navigation/reload; T44/T44b covered scroll-follow; T54 covered progressive SSE. The harness emits a `MaxListenersExceededWarning`; all tests still passed.
 - Smoke used local synthetic fixture/fake 9router only; no production endpoint, credentials, real webpage or paid provider were used.
 
 ## AI dispatch and review lineage
@@ -49,6 +50,7 @@ No changes to package metadata, credentials, or provider settings. The implement
 - Muse 1.3 pre-acceptance on commit `1fbed61` returned `approve` with three low notes: the unused helper, fail-open missing fields, and lack of two-popup/limit browser smoke. The first two are fixed in the source snapshot documented here. Final review is pending on the exact commit/tree in the outer ledger.
 - Muse 1.3 pre-acceptance on `ce0c5a6` returned `approve` with three low notes: empty-broadcast re-query cost, no two-popup browser smoke, and query/default-port normalization. Query/fragment stripping and default-port equivalence are now explicitly documented and covered by normalization assertions; the other two are recorded as scoped performance/test-coverage notes.
 - Direct Claude Opus 5.5 approved `d4250e1` with two low findings: recheck auto-start state at the settle timer and make malformed favorite-toggle schema details field-specific. Both are addressed in this candidate, with regression tests. The current exact commit/tree and fresh review receipts are recorded in the outer ledger.
+- Direct Claude Opus 5.5 approved `39d56b0` with one low empty-broadcast/query race. The pending timer is now cancelled and made retryable before the existing authoritative state query; a delayed-response regression test covers it. The two-popup/cap UI smoke gap remains disclosed; worker-level tests cover those paths.
 - This record is frozen into the candidate before independent reviews. Final review outcomes and the exact reviewed commit/tree are recorded in the outer `candidate-ledger.md`; do not edit this record after those reviews.
 
 ## Open gates

@@ -1908,6 +1908,13 @@
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
         try {
+          if (autoStartTimer) {
+            clearTimeout(autoStartTimer);
+            autoStartTimer = null;
+            autoStartAttempted = false;
+          }
+        } catch {}
+        try {
           applyState(msg);
         } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } }
         try {

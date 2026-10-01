@@ -6,7 +6,7 @@ import { createFakeProvider } from './helpers/fake-provider.mjs';
 
 const fastOptions = {
   timeoutMs: 120,
-  listModelsTimeoutMs: 120,
+  listModelsTimeoutMs: 500,
   retryInitialDelayMs: 15,
   retryMaxDelayMs: 30,
   retryTimeoutDelayMs: 20,
@@ -625,4 +625,3 @@ test('N5: router.listModels accepts per-call baseURL and apiKey parameters', asy
     await fake.stop();
   }
 });
-

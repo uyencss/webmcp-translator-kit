@@ -1176,13 +1176,16 @@ test('content: auto-start revalidates permission, key and consent during settle'
     };
     const offState = { ...onState, effective: 'off', siteEnabled: false, autoStart: false, reason: 'site_off' };
     let current = { ...onState };
+    let delayQuery = false;
     globalThis.chrome = {
       runtime: {
         id: 'test-ext-id', lastError: null,
         sendMessage: (msg, cb) => {
           if (msg?.action === 'WIDGET_GET_STATE') {
             getStateCalls++;
-            if (typeof cb === 'function') cb({ ...current });
+            const snap = { ...current };
+            if (delayQuery) setTimeout(() => { try { cb({ ...snap }); } catch {} }, 650);
+            else if (typeof cb === 'function') cb({ ...snap });
           } else if (typeof cb === 'function') cb({ ok: true });
         },
         onMessage: { addListener: (handler) => runtimeHandlers.push(handler) }
@@ -1220,30 +1223,37 @@ test('content: auto-start revalidates permission, key and consent during settle'
         try { handler({ action: 'WIDGET_STATE_CHANGED', ...state }, {}, () => {}); } catch {}
       }
     };
+    const pushEmptyState = (state) => {
+      current = { ...state };
+      for (const handler of [...runtimeHandlers]) {
+        try { handler({ action: 'WIDGET_STATE_CHANGED' }, {}, () => {}); } catch {}
+      }
+    };
 
-    // Start positive, then revoke permission during the settle window. Empty
-    // broadcasts must trigger a fresh state read while the timer is pending.
+    // Empty broadcast while the 500 ms timer is pending must cancel the stale
+    // timer; the delayed authoritative reply (permission revoked) must not start.
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(dom.getStatus().watching, false);
-    current.permission = false;
+    current = { ...onState, permission: false };
+    delayQuery = true;
     const readsBefore = getStateCalls;
-    for (const handler of [...runtimeHandlers]) {
-      try { handler({ action: 'WIDGET_STATE_CHANGED' }, {}, () => {}); } catch {}
-    }
+    pushEmptyState(current);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(getStateCalls > readsBefore, 'pending timer broadcast must query current gate state');
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    assert.equal(dom.getStatus().watching, false, 'revoked permission during settle must not start');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(dom.getStatus().watching, false, 'stale timer must not start before delayed reply');
+    delayQuery = false;
 
-    // A missing key also must not start.
-    current = { ...onState, hasKey: false };
-    for (const handler of [...runtimeHandlers]) {
-      try { handler({ action: 'WIDGET_STATE_CHANGED', ...current }, {}, () => {}); } catch {}
-    }
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    assert.equal(dom.getStatus().watching, false, 'missing key must not start');
+    // A fresh pending timer must also reject a delayed missing-key state.
+    pushState(onState);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    delayQuery = true;
+    pushEmptyState({ ...onState, hasKey: false });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(dom.getStatus().watching, false, 'delayed missing-key state must not start');
+    delayQuery = false;
 
-    // Turn effective consent off during a newly pending timer, then back on.
+    // Consent off cancels a pending timer and leaves the later on state retryable.
     pushState(onState);
     await new Promise((resolve) => setTimeout(resolve, 100));
     pushState(offState);
@@ -1251,7 +1261,7 @@ test('content: auto-start revalidates permission, key and consent during settle'
     assert.equal(dom.getStatus().watching, false, 'consent off must cancel the pending timer');
     pushState(onState);
     await new Promise((resolve) => setTimeout(resolve, 800));
-    assert.equal(dom.getStatus().watching, true, 'complete positive state must remain retryable');
+    assert.equal(dom.getStatus().watching, true, 'complete positive state must recover auto-start');
     assert.equal(dom.getStatus().mode, 'scroll-follow');
   } finally {
     for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
