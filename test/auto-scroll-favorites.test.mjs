@@ -464,8 +464,8 @@ test('sw: concurrent favorite toggles apply to latest provider bucket', async ()
 
   try {
     const [toggleA, toggleB] = await Promise.all([
-      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-new' } } }, popupSender),
-      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-second' } } }, popupSender)
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-new', favorite: true } } }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'a-second', favorite: true } } }, popupSender)
     ]);
     assert.ok(toggleA?.ok && toggleB?.ok, 'both favorite toggles must succeed');
     assert.deepEqual(toggleA.favoriteToggle.favorites, ['a-old', 'a-new']);
@@ -476,6 +476,143 @@ test('sw: concurrent favorite toggles apply to latest provider bucket', async ()
   } finally {
     store.local.settings = previousSettings;
   }
+});
+
+test('favorites limit: add at the 50-model limit rejects without changing storage', async () => {
+  const A = 'https://provider-limit.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const full = Array.from({ length: 50 }, (_, i) => `m-${i}`);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/m',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: { [keyA]: [...full] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  try {
+    const res = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'm-new', favorite: true } } },
+      popupSender
+    );
+    assert.ok(res && res.error, 'add at the limit must reject: ' + JSON.stringify(res));
+    assert.equal(res.error.code, 'CAP_EXCEEDED');
+    assert.equal(res.error.retryable, false);
+    assert.match(res.error.message, /tối đa 50/);
+    assert.equal(res.error.details?.capType, 'items');
+    assert.equal(res.error.details?.limit, 50);
+    assert.equal(res.error.details?.actual, 51);
+    const after = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.deepEqual(after.settings.favoriteModelsByBaseURL[keyA], full);
+    assert.deepEqual(after.settings.favoriteModels, full);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
+test('favorites limit: remove at the 50-model limit succeeds', async () => {
+  const A = 'https://provider-limit.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const full = Array.from({ length: 50 }, (_, i) => `m-${i}`);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/m',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: { [keyA]: [...full] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  try {
+    const res = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'm-0', favorite: false } } },
+      popupSender
+    );
+    assert.ok(res && res.ok, 'remove at the limit must succeed: ' + JSON.stringify(res));
+    assert.deepEqual(res.favoriteToggle.favorites, full.filter((m) => m !== 'm-0'));
+    const after = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.equal(after.settings.favoriteModelsByBaseURL[keyA].length, 49);
+    assert.ok(!after.settings.favoriteModelsByBaseURL[keyA].includes('m-0'));
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
+test('favorites stale intent: two concurrent stale favorite:true preserve the model once', async () => {
+  const A = 'https://provider-stale.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/m',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: { [keyA]: [] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  try {
+    const [first, second] = await Promise.all([
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'stale-model', favorite: true } } }, popupSender),
+      sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'stale-model', favorite: true } } }, popupSender)
+    ]);
+    assert.ok(first?.ok && second?.ok, 'both stale adds must succeed idempotently');
+    const final = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
+    assert.deepEqual(final.settings.favoriteModelsByBaseURL[keyA], ['stale-model']);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
+test('favorites stale intent: explicit false removes and validates desired state', async () => {
+  const A = 'https://provider-stale.example/v1';
+  const keyA = normalizeBaseURLKey(A);
+  const previousSettings = store.local.settings;
+  store.local.settings = migrateSettings({
+    baseURL: A,
+    model: 'ag/m',
+    favoriteModels: [],
+    favoriteModelsByBaseURL: { [keyA]: ['keep', 'drop'] }
+  });
+  const popupSender = { url: 'chrome-extension://test-ext-id/popup.html' };
+  try {
+    const remove = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'drop', favorite: false } } },
+      popupSender
+    );
+    assert.ok(remove?.ok, 'explicit false must remove: ' + JSON.stringify(remove));
+    assert.deepEqual(remove.favoriteToggle.favorites, ['keep']);
+    const noop = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'missing', favorite: false } } },
+      popupSender
+    );
+    assert.ok(noop?.ok, 'false for an absent model must succeed as a no-op');
+    assert.deepEqual(noop.favoriteToggle.favorites, ['keep']);
+    const invalid = await sw.dispatchMessage(
+      { action: 'SAVE_SETTINGS', settings: { favoriteToggle: { scopeKey: keyA, model: 'keep' } } },
+      popupSender
+    );
+    assert.ok(invalid && invalid.error, 'missing desired state must be rejected');
+    assert.equal(invalid.error.code, 'INVALID_SCHEMA');
+    assert.equal(invalid.error.retryable, false);
+  } finally {
+    store.local.settings = previousSettings;
+  }
+});
+
+test('popup: stars send the displayed desired state (favorite true|false)', () => {
+  const primaryIdx = popupSrc.indexOf('btnToggleFavorite.addEventListener');
+  assert.ok(primaryIdx > 0, 'missing primary star control');
+  const primaryEnd = popupSrc.indexOf('\n  if (selectModel)', primaryIdx);
+  const primaryBlock = popupSrc.slice(primaryIdx, primaryEnd > primaryIdx ? primaryEnd : undefined);
+  assert.ok(primaryBlock.includes('!primaryFavorites().includes(curVal)'),
+    'primary star must compute desired state from the displayed bucket');
+  assert.ok(primaryBlock.includes('saveFavoriteToggle(scopeKey, curVal, desiredFavorite)'),
+    'primary star must send the displayed desired state');
+  assert.ok(primaryBlock.includes('Lỗi cập nhật yêu thích:'), 'primary star must surface the limit error message');
+  const fbIdx = popupSrc.indexOf('btnFallbackFav.addEventListener');
+  assert.ok(fbIdx > 0, 'missing fallback star control');
+  assert.ok(swSrc.includes("return createTypedError('CAP_EXCEEDED', 'Danh sách yêu thích đã đạt tối đa 50 model cho provider này'"),
+    'limit rejection must use a typed non-retryable error with a Vietnamese message');
+  assert.ok(swSrc.includes('if (wantFavorite)') && swSrc.includes('bucket.includes(model)'),
+    'worker must apply add/remove idempotently against the latest stored bucket');
 });
 
 test('sw: v4 favorites migration is serialized with a concurrent settings save', async () => {
@@ -887,18 +1024,20 @@ test('popup: fallback star sends an atomic toggle and reports failures', () => {
   assert.ok(handlerIdx > 0, 'missing fallback star control');
   const handlerEnd = popupSrc.indexOf('\n      });\n\n      modelWrap.appendChild', handlerIdx);
   const handlerBlock = popupSrc.slice(handlerIdx, handlerEnd > handlerIdx ? handlerEnd : undefined);
-  assert.ok(handlerBlock.includes('saveFavoriteToggle(scopeKey, curModel)'), 'fallback star must use the shared serialized favorite path');
+  assert.ok(handlerBlock.includes('saveFavoriteToggle(scopeKey, curModel, desiredFavorite)'), 'fallback star must use the shared serialized favorite path with displayed desired state');
+  assert.ok(handlerBlock.includes('!displayedBucket.includes(curModel)') || handlerBlock.includes('!getFavoritesForKey(scopeKey).includes'),
+    'fallback star must compute desired state from the displayed bucket');
   assert.ok(handlerBlock.includes('Lỗi cập nhật yêu thích:'), 'fallback star must report save failures');
 
   const toggleIdx = popupSrc.indexOf('function saveFavoriteToggle');
   const toggleEnd = popupSrc.indexOf('\n  async function flushAutosave', toggleIdx);
   const toggleBlock = popupSrc.slice(toggleIdx, toggleEnd > toggleIdx ? toggleEnd : undefined);
-  assert.ok(toggleBlock.includes('favoriteToggle: { scopeKey, model }'), 'favorite writes must send a scope+model toggle, not a stale bucket snapshot');
+  assert.ok(toggleBlock.includes('favoriteToggle: { scopeKey, model, favorite }'), 'favorite writes must send scope+model+desired favorite, not a stale bucket snapshot');
   const sendToggle = toggleBlock.indexOf('chrome.runtime.sendMessage');
   const acceptToggle = toggleBlock.indexOf('const favoriteToggle = response.favoriteToggle');
   assert.ok(sendToggle >= 0 && acceptToggle > sendToggle, 'popup must apply the service worker\'s serialized canonical favorite result');
-  assert.ok(swSrc.includes('favoriteToggle.scopeKey') && swSrc.includes('favoriteToggle.model'),
-    'service worker must compute the toggle against the latest saved provider bucket');
+  assert.ok(swSrc.includes('favoriteToggle.favorite') && swSrc.includes('favoriteToggle.scopeKey') && swSrc.includes('favoriteToggle.model'),
+    'service worker must apply the desired state against the latest saved provider bucket');
   assert.ok(toggleBlock.includes('favoriteWriteInFlight = false'), 'favorite writes must release the autosave gate');
   assert.ok(popupSrc.includes('if (favoriteWriteInFlight) {\n      autosaveQueued = true;'),
     'full autosaves must queue while a favorite partial write is active');

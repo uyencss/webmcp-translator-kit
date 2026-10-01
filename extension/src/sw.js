@@ -1918,16 +1918,34 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (favoriteToggle !== undefined) {
           const scopeKey = normalizeBaseURLKey(favoriteToggle && favoriteToggle.scopeKey);
           const model = (favoriteToggle && typeof favoriteToggle.model === 'string') ? favoriteToggle.model.trim() : '';
-          if (!scopeKey || !model) {
-            return createTypedError('INVALID_SCHEMA', 'favoriteToggle requires a valid Base URL scope and model', false);
+          const wantFavorite = favoriteToggle ? favoriteToggle.favorite : undefined;
+          if (!scopeKey || !model || typeof wantFavorite !== 'boolean') {
+            return createTypedError('INVALID_SCHEMA', 'favoriteToggle requires a valid Base URL scope, model, and favorite (true|false)', false, {
+              schemaErrors: ['favoriteToggle.favorite must be a boolean']
+            });
           }
           const map = (mergedRaw.favoriteModelsByBaseURL && typeof mergedRaw.favoriteModelsByBaseURL === 'object' && !Array.isArray(mergedRaw.favoriteModelsByBaseURL))
             ? mergedRaw.favoriteModelsByBaseURL
             : {};
           const bucket = Array.isArray(map[scopeKey]) ? map[scopeKey] : [];
-          const favorites = bucket.includes(model)
-            ? bucket.filter((item) => item !== model)
-            : [...bucket, model].slice(0, 50);
+          let favorites;
+          if (wantFavorite) {
+            if (bucket.includes(model)) {
+              favorites = [...bucket];
+            } else {
+              if (bucket.length >= 50) {
+                return createTypedError('CAP_EXCEEDED', 'Danh sách yêu thích đã đạt tối đa 50 model cho provider này', false, {
+                  capType: 'items',
+                  limit: 50,
+                  actual: bucket.length + 1,
+                  model
+                });
+              }
+              favorites = [...bucket, model];
+            }
+          } else {
+            favorites = bucket.filter((item) => item !== model);
+          }
           mergedRaw.favoriteModelsByBaseURL = { ...map, [scopeKey]: favorites };
           if (normalizeBaseURLKey(mergedRaw.baseURL) === scopeKey) mergedRaw.favoriteModels = favorites;
           favoriteToggleResult = { scopeKey, favorites };

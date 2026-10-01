@@ -354,9 +354,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     autosaveIdleWaiters.splice(0).forEach(resolve => resolve());
   }
 
-  function saveFavoriteToggle(scopeKey, model) {
+  function saveFavoriteToggle(scopeKey, model, favorite) {
     const operation = favoriteWriteQueue.then(async () => {
       if (!settingsLoaded) throw new Error(SETTINGS_NOT_LOADED_MSG);
+      if (typeof favorite !== 'boolean') throw new Error('Trạng thái yêu thích không hợp lệ');
 
       let saveFormAfter = Boolean(autosaveTimer);
       if (autosaveTimer) {
@@ -372,7 +373,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       favoriteWriteInFlight = true;
       try {
-        const settings = { favoriteToggle: { scopeKey, model } };
+        const settings = { favoriteToggle: { scopeKey, model, favorite } };
         const response = await new Promise(resolve => {
           try {
             chrome.runtime.sendMessage({ action: 'SAVE_SETTINGS', settings }, value => {
@@ -917,7 +918,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!scopeKey) return;
       btnToggleFavorite.disabled = true;
       try {
-        await saveFavoriteToggle(scopeKey, curVal);
+        const desiredFavorite = !primaryFavorites().includes(curVal);
+        await saveFavoriteToggle(scopeKey, curVal, desiredFavorite);
         renderAllModelDropdowns();
         setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
       } catch (err) {
@@ -1088,7 +1090,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!scopeKey) return;
         btnFallbackFav.disabled = true;
         try {
-          await saveFavoriteToggle(scopeKey, curModel);
+          const displayedBucket = getFavoritesForKey(scopeKey);
+          const desiredFavorite = !displayedBucket.includes(curModel);
+          await saveFavoriteToggle(scopeKey, curModel, desiredFavorite);
           renderAllModelDropdowns();
           setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
         } catch (err) {
