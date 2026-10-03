@@ -46,6 +46,7 @@
   function __wmtHaltStale() {
     if (__wmtHalted) return;
     __wmtHalted = true;
+    autoStarting = false;
     try { if (autoStartTimer) { clearTimeout(autoStartTimer); autoStartTimer = null; } } catch {}
     try {
       if (widgetProgressIntervalId !== null) {
@@ -72,16 +73,42 @@
 
   // Floating-button busy indicator hook (wired up by initFloatingWidget)
   let fabBusySetter = null;
+  const WIDGET_FALLBACK_LABELS = {
+    widget_title: 'WebMCP Translator',
+    widget_close_label: 'Đóng panel',
+    widget_status_label: 'Trạng thái:',
+    widget_status_on: 'Đang bật',
+    widget_status_off: 'Đang tắt',
+    widget_toggle_tab_on: 'Tắt dịch tab này',
+    widget_toggle_tab_off: 'Bật dịch tab này',
+    widget_mode_scroll: 'Dịch đuổi theo scroll',
+    widget_mode_full: 'Dịch toàn trang',
+    widget_btn_translate: 'Dịch ngay',
+    widget_btn_restore: 'Khôi phục',
+    widget_model_label: 'Mô hình',
+    widget_hint: 'Mở popup để cấu hình key/quyền/model',
+    widget_warn_no_perm: 'Thiếu quyền host! Mở popup để cấp quyền.',
+    widget_warn_no_key: 'Chưa cấu hình API key! Mở popup để nhập key.',
+    fav_empty_hint_dropdown: 'Chưa có model yêu thích (đang hiện tất cả)',
+    config_fab_size_label: 'Cỡ icon nổi'
+  };
+  let widgetTHook = (key, params) => {
+    if (typeof window !== 'undefined' && window.__wmtI18n && typeof window.__wmtI18n.t === 'function') {
+      return window.__wmtI18n.t('vi', key, params);
+    }
+    return WIDGET_FALLBACK_LABELS[key] || key;
+  };
   function setFabBusy(busy) {
     try {
       if (typeof fabBusySetter === 'function') fabBusySetter(Boolean(busy));
     } catch {}
   }
 
-  // Busy = actual in-flight translation work (not merely "watching"). This is
-  // what stops the spinner from running forever after everything is done.
+  // Busy = actual in-flight translation work (not merely "watching"), or
+  // initial auto-start scheduling window before first batch is dispatched.
+  // This is what stops the spinner from running forever after everything is done.
   function updateFabBusy() {
-    setFabBusy(isTranslating || scrollSession.inFlight > 0);
+    setFabBusy(autoStarting || isTranslating || scrollSession.inFlight > 0);
   }
 
   const documentId = 'doc_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
@@ -93,6 +120,7 @@
   const AUTO_QUERY_RETRY_MS = 1200;
   const AUTO_QUERY_MAX_RETRIES = 2;
   let autoStartAttempted = false;
+  let autoStarting = false;
   let userRestored = false;
   let autoStartTimer = null;
   let autoStartQueryRetries = 0;
@@ -237,12 +265,13 @@
   // Throttled application of translation results in groups
   async function applyBatchThrottled(results, targetEpoch = epoch) {
     let applied = 0;
+    let alreadyApplied = 0;
     const skipped = [];
 
     const items = results || [];
     if (targetEpoch !== epoch) {
       items.forEach((r) => skipped.push({ id: r?.id, reason: 'EPOCH_MISMATCH' }));
-      return { applied: 0, skipped };
+      return { applied: 0, alreadyApplied: 0, skipped };
     }
 
     for (let i = 0; i < items.length; i += PATCH_GROUP_SIZE) {
@@ -277,6 +306,7 @@
         if (node.nodeValue !== rec.original) {
           if (node.nodeValue === r.text && rec.translated === r.text) {
             skipped.push({ id: r.id, reason: 'ALREADY_APPLIED' });
+            alreadyApplied++;
             continue;
           }
           skipped.push({ id: r.id, reason: 'MODIFIED' });
@@ -289,6 +319,12 @@
           node.nodeValue = r.text; // nodeValue ONLY
           applied++;
           restoreKept.set(rec.id, rec);
+          if (scrollSession.failedIds && scrollSession.failedIds.has(rec.id)) {
+            scrollSession.failedIds.delete(rec.id);
+            if (lastTranslateStatus.totalFailed > 0) {
+              lastTranslateStatus.totalFailed--;
+            }
+          }
         } catch (err) {
           rec.translated = null;
           rec.expectedApply = null;
@@ -301,7 +337,7 @@
       }
     }
 
-    return { applied, skipped };
+    return { applied, alreadyApplied, skipped };
   }
 
   // Restore DOM nodes: epoch++ + CANCEL_PENDING + stop active sessions + clear pending
@@ -311,6 +347,7 @@
       clearTimeout(autoStartTimer);
       autoStartTimer = null;
     }
+    autoStarting = false;
 
     // 1. Advance epoch to immediately drop in-flight / late-arriving responses
     epoch++;
@@ -411,11 +448,51 @@
   }
 
   // Send chunk wrapper (stale-context safe: resolves ABORTED, never throws)
-  function sendChunk(items, settings = {}, chunkEpoch = epoch) {
+  function sendChunk(items, settings = {}, chunkEpoch = epoch, runConfig = null) {
     if (__wmtHalted || !__wmtValidContext()) {
       __wmtHaltStale();
       return Promise.resolve({ error: { code: 'ABORTED', message: 'Extension context invalidated', retryable: false } });
     }
+    const hasConsumedItem = Boolean(scrollSession?.active && Array.isArray(items) && items.some((it) => scrollSession?.fallbackConsumedIds?.has(it?.id)));
+    const fallbackConsumed = Boolean(
+      settings.fallbackConsumed ||
+      hasConsumedItem ||
+      runConfig?.fallbackConsumed ||
+      (scrollSession?.active && (scrollSession?.fallbackConsumed || scrollSession?.runConfig?.fallbackConsumed))
+    );
+    const primaryModel =
+      runConfig?.primaryModel ||
+      settings?.primaryModel ||
+      (!settings.fallbackConsumed ? settings.model : null) ||
+      (scrollSession?.active ? scrollSession?.settings?.model : null) ||
+      'ag/gemini-3.1-pro-low';
+
+    let effectiveModel =
+      (fallbackConsumed && (
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null)))
+      )) ||
+      settings.model ||
+      'ag/gemini-3.1-pro-low';
+
+    // Invariant: never dispatch contradictory { model: primary, fallbackConsumed: true }
+    let dispatchFallbackConsumed = fallbackConsumed;
+    if (dispatchFallbackConsumed && effectiveModel === primaryModel) {
+      const pinned =
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (runConfig?.fallbackModel && runConfig.fallbackModel !== primaryModel ? runConfig.fallbackModel : null) ||
+        (scrollSession?.active && (scrollSession.fallbackModel || (scrollSession.runConfig?.model !== primaryModel ? scrollSession.runConfig.model : null))) ||
+        (scrollSession?.active && scrollSession?.fallbackModel && scrollSession.fallbackModel !== primaryModel ? scrollSession.fallbackModel : null) ||
+        (settings.fallbackModel && settings.fallbackModel !== primaryModel ? settings.fallbackModel : null) ||
+        (Array.isArray(settings.fallbacks) && settings.fallbacks[0]?.model && settings.fallbacks[0].model !== primaryModel ? settings.fallbacks[0].model : null) ||
+        (scrollSession?.active && Array.isArray(scrollSession?.settings?.fallbacks) && scrollSession.settings.fallbacks[0]?.model && scrollSession.settings.fallbacks[0].model !== primaryModel ? scrollSession.settings.fallbacks[0].model : null);
+      if (pinned) {
+        effectiveModel = pinned;
+      } else {
+        dispatchFallbackConsumed = false;
+      }
+    }
+
     return new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage(
@@ -426,7 +503,8 @@
               items,
               sourceLanguage: settings.sourceLanguage || 'auto',
               targetLanguage: settings.targetLanguage || 'vi',
-              model: settings.model || 'ag/gemini-3.1-pro-low'
+              model: effectiveModel,
+              ...(dispatchFallbackConsumed ? { fallbackConsumed: true } : {})
             }
           },
           (response) => {
@@ -440,7 +518,7 @@
                   resolve({
                     error: {
                       code: 'DROPPED_ON_RESTART',
-                      message: 'Yêu cầu bị mất khi service worker khởi động lại',
+                      message: 'Request lost when service worker restarted',
                       retryable: false,
                       details: { originalError: lastErrMsg }
                     }
@@ -521,8 +599,164 @@
       return null;
     }
 
+    const primaryModel =
+      runConfig?.primaryModel ||
+      settings?.primaryModel ||
+      (!settings.fallbackConsumed ? settings.model : null) ||
+      (scrollSession?.active ? scrollSession?.settings?.model : null) ||
+      'ag/gemini-3.1-pro-low';
+    if (runConfig && !runConfig.primaryModel) {
+      runConfig.primaryModel = primaryModel;
+    }
+
+    let currentSettings = { ...settings };
+    function refreshLivePin() {
+      if (targetEpoch !== undefined && epoch !== targetEpoch) return;
+      const isConsumed = Boolean(
+        currentSettings.fallbackConsumed ||
+        settings.fallbackConsumed ||
+        runConfig?.fallbackConsumed ||
+        (scrollSession?.active && (scrollSession?.fallbackConsumed || scrollSession?.runConfig?.fallbackConsumed)) ||
+        (scrollSession?.active && Array.isArray(items) && items.some((it) => scrollSession?.fallbackConsumedIds?.has(it?.id)))
+      );
+      if (isConsumed) {
+        currentSettings.fallbackConsumed = true;
+        const liveModel =
+          (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+          (currentSettings.model && currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+          runConfig?.model ||
+          currentSettings.model ||
+          null;
+        if (liveModel) {
+          currentSettings.model = liveModel;
+        }
+        if (runConfig) {
+          runConfig.fallbackConsumed = true;
+          if (liveModel) {
+            runConfig.model = liveModel;
+          }
+        }
+        if (scrollSession && scrollSession.active) {
+          scrollSession.fallbackConsumed = true;
+          if (liveModel) {
+            scrollSession.fallbackModel = liveModel;
+          }
+        }
+      }
+    }
+    refreshLivePin();
+
+    function extractFallbackInfo(r) {
+      if (!r) return { consumed: false, model: null };
+      const consumed = Boolean(
+        r.fallbackConsumed ||
+        r.error?.fallbackConsumed ||
+        r.error?.details?.fallbackConsumed ||
+        (r.fallbackIndex && r.fallbackIndex > 0)
+      );
+      const model = consumed
+        ? (r.error?.details?.model ||
+           r.error?.details?.lastAttemptedModel ||
+           r.error?.details?.toModel ||
+           r.actualModel ||
+           null)
+        : null;
+      return { consumed, model };
+    }
+
+    function syncFallbackState(r) {
+      if (targetEpoch !== undefined && epoch !== targetEpoch) return;
+      const fb = extractFallbackInfo(r);
+
+      const pinnedModel =
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (runConfig?.fallbackModel && runConfig.fallbackModel !== primaryModel ? runConfig.fallbackModel : null) ||
+        (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+        (currentSettings.fallbackConsumed && currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+        null;
+
+      const isPinActive = Boolean(
+        pinnedModel ||
+        runConfig?.fallbackConsumed ||
+        (scrollSession?.active && (scrollSession?.fallbackConsumed || scrollSession?.runConfig?.fallbackConsumed)) ||
+        currentSettings.fallbackConsumed
+      );
+
+      if (isPinActive) {
+        currentSettings.fallbackConsumed = true;
+        if (runConfig) runConfig.fallbackConsumed = true;
+        if (scrollSession && scrollSession.active) {
+          scrollSession.fallbackConsumed = true;
+          if (Array.isArray(items)) {
+            if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+            for (const it of items) {
+              if (it?.id) scrollSession.fallbackConsumedIds.add(it.id);
+            }
+          }
+        }
+
+        // Late primary response must not overwrite active fallback pin:
+        // if fb.consumed === false (late primary), respect currently pinned model
+        const effectiveModel = (fb.consumed && fb.model)
+          ? fb.model
+          : (pinnedModel || (currentSettings.model !== primaryModel ? currentSettings.model : null));
+
+        if (effectiveModel) {
+          currentSettings.model = effectiveModel;
+          if (runConfig) {
+            runConfig.model = effectiveModel;
+          }
+          if (scrollSession && scrollSession.active) {
+            scrollSession.fallbackModel = effectiveModel;
+          }
+        }
+        return;
+      }
+
+      if (fb.consumed) {
+        currentSettings.fallbackConsumed = true;
+        const effectiveModel =
+          fb.model ||
+          runConfig?.model ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || scrollSession?.runConfig?.model)) ||
+          currentSettings.model;
+        if (effectiveModel) {
+          currentSettings.model = effectiveModel;
+        }
+        if (runConfig) {
+          runConfig.fallbackConsumed = true;
+          if (effectiveModel) {
+            runConfig.model = effectiveModel;
+          }
+        }
+        if (scrollSession && scrollSession.active) {
+          scrollSession.fallbackConsumed = true;
+          if (effectiveModel) {
+            scrollSession.fallbackModel = effectiveModel;
+          }
+          if (Array.isArray(items)) {
+            if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+            for (const it of items) {
+              if (it?.id) scrollSession.fallbackConsumedIds.add(it.id);
+            }
+          }
+        }
+      }
+    }
+
     // 1. Initial sendChunk
-    let resp = await sendChunk(items, settings, targetEpoch);
+    refreshLivePin();
+    if (currentSettings.fallbackConsumed) {
+      const pinned =
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (scrollSession?.active && (scrollSession.fallbackModel || (scrollSession.runConfig?.model !== primaryModel ? scrollSession.runConfig.model : null))) ||
+        (currentSettings.model !== primaryModel ? currentSettings.model : null);
+      if (pinned) {
+        currentSettings.model = pinned;
+      }
+    }
+    let resp = await sendChunk(items, currentSettings, targetEpoch, runConfig);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
     }
@@ -538,21 +772,80 @@
       };
     }
 
+    syncFallbackState(resp);
+    refreshLivePin();
+
     if (resp && resp.error && isNonRetryable(resp.error)) {
       if (resp.error.code === 'RATE_LIMITED') {
         const retrySec = Math.ceil((resp.error.details?.retryAfterMs || 0) / 1000);
         console.warn(`[WebMCP Translator] Quota exceeded (${resp.error.details?.scope || 'tab'}): retry after ${retrySec}s`);
       }
-      return { applied: 0, failed: items.length, error: resp.error, fatal: true };
+      const isFb = Boolean(currentSettings.fallbackConsumed || resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed || runConfig?.fallbackConsumed || (scrollSession?.active && scrollSession?.fallbackConsumed));
+      const isRespFb = Boolean(resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed);
+      const fbMod = isFb
+        ? (isRespFb ? (resp.error.details?.model || resp.error.details?.lastAttemptedModel) : null) ||
+          (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+          (currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+          null
+        : null;
+      return {
+        applied: 0,
+        failed: items.length,
+        error: resp.error,
+        fatal: true,
+        ...(isFb ? { fallbackConsumed: true, fallbackModel: fbMod } : {}),
+        ...(resp.actualModel || fbMod ? { actualModel: resp.actualModel || fbMod } : {})
+      };
     }
 
     if (resp && Array.isArray(resp.results)) {
       if (resp.actualModel) {
-        lastTranslateStatus.actualModel = resp.actualModel;
-        lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+        const isRunFallback = Boolean(
+          currentSettings.fallbackConsumed ||
+          runConfig?.fallbackConsumed ||
+          (scrollSession?.active && scrollSession?.fallbackConsumed)
+        );
+        const isRespFallback = Boolean(resp.fallbackConsumed || (resp.fallbackIndex && resp.fallbackIndex > 0));
+        if (!isRunFallback || isRespFallback) {
+          lastTranslateStatus.actualModel = resp.actualModel;
+          lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+        }
       }
       const patchResult = await applyBatchThrottled(resp.results, targetEpoch);
-      return { applied: patchResult.applied, failed: 0 };
+      if (targetEpoch !== undefined && epoch !== targetEpoch) {
+        return { cancelled: true, applied: 0, failed: 0 };
+      }
+      refreshLivePin();
+      const failedCount = Array.isArray(resp.missingIds) ? resp.missingIds.length : (resp.failed || 0);
+      const missingIds = Array.isArray(resp.missingIds)
+        ? resp.missingIds
+        : (failedCount > 0 ? items.filter((it) => !resp.results?.some((r) => r && r.id === it.id)).map((it) => it.id) : []);
+      const isFallback = Boolean(
+        currentSettings.fallbackConsumed ||
+        resp.fallbackConsumed ||
+        runConfig?.fallbackConsumed ||
+        (scrollSession?.active && scrollSession?.fallbackConsumed) ||
+        (resp.fallbackIndex && resp.fallbackIndex > 0)
+      );
+      const isRespFallback = Boolean(resp.fallbackConsumed || (resp.fallbackIndex && resp.fallbackIndex > 0));
+      const fallbackModel = isFallback
+        ? (isRespFallback ? resp.actualModel : null) ||
+          (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+          (currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+          runConfig?.model ||
+          currentSettings.model ||
+          null
+        : null;
+      // return { applied: patchResult.applied, failed: failedCount, missingIds };
+      return {
+        applied: patchResult.applied,
+        failed: failedCount,
+        missingIds,
+        ...(isFallback ? { fallbackConsumed: true, fallbackModel } : {}),
+        ...(resp.actualModel || fallbackModel ? { actualModel: resp.actualModel || fallbackModel } : {})
+      };
     }
 
     // 2. Retry 1 time after ~800 ms if error
@@ -561,7 +854,17 @@
       return { cancelled: true, applied: 0, failed: 0 };
     }
 
-    resp = await sendChunk(items, settings, targetEpoch);
+    refreshLivePin();
+    if (currentSettings.fallbackConsumed) {
+      const pinned =
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (scrollSession?.active && (scrollSession.fallbackModel || (scrollSession.runConfig?.model !== primaryModel ? scrollSession.runConfig.model : null))) ||
+        (currentSettings.model !== primaryModel ? currentSettings.model : null);
+      if (pinned) {
+        currentSettings.model = pinned;
+      }
+    }
+    resp = await sendChunk(items, currentSettings, targetEpoch, runConfig);
     if (targetEpoch !== undefined && epoch !== targetEpoch) {
       return { cancelled: true, applied: 0, failed: 0 };
     }
@@ -577,48 +880,174 @@
       };
     }
 
+    syncFallbackState(resp);
+    refreshLivePin();
+
     if (resp && resp.error && isNonRetryable(resp.error)) {
-      return { applied: 0, failed: items.length, error: resp.error, fatal: true };
+      const isFb = Boolean(currentSettings.fallbackConsumed || resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed || runConfig?.fallbackConsumed || (scrollSession?.active && scrollSession?.fallbackConsumed));
+      const isRespFb = Boolean(resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed);
+      const fbMod = isFb
+        ? (isRespFb ? (resp.error.details?.model || resp.error.details?.lastAttemptedModel) : null) ||
+          (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+          (currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+          null
+        : null;
+      return {
+        applied: 0,
+        failed: items.length,
+        error: resp.error,
+        fatal: true,
+        ...(isFb ? { fallbackConsumed: true, fallbackModel: fbMod } : {}),
+        ...(resp.actualModel || fbMod ? { actualModel: resp.actualModel || fbMod } : {})
+      };
     }
 
     if (resp && Array.isArray(resp.results)) {
       if (resp.actualModel) {
-        lastTranslateStatus.actualModel = resp.actualModel;
-        lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+        const isRunFallback = Boolean(
+          currentSettings.fallbackConsumed ||
+          runConfig?.fallbackConsumed ||
+          (scrollSession?.active && scrollSession?.fallbackConsumed)
+        );
+        const isRespFallback = Boolean(resp.fallbackConsumed || (resp.fallbackIndex && resp.fallbackIndex > 0));
+        if (!isRunFallback || isRespFallback) {
+          lastTranslateStatus.actualModel = resp.actualModel;
+          lastTranslateStatus.fallbackIndex = resp.fallbackIndex || 0;
+        }
       }
       const patchResult = await applyBatchThrottled(resp.results, targetEpoch);
-      return { applied: patchResult.applied, failed: 0 };
+      if (targetEpoch !== undefined && epoch !== targetEpoch) {
+        return { cancelled: true, applied: 0, failed: 0 };
+      }
+      refreshLivePin();
+      const failedCount = Array.isArray(resp.missingIds) ? resp.missingIds.length : (resp.failed || 0);
+      const missingIds = Array.isArray(resp.missingIds)
+        ? resp.missingIds
+        : (failedCount > 0 ? items.filter((it) => !resp.results?.some((r) => r && r.id === it.id)).map((it) => it.id) : []);
+      const isFallback = Boolean(
+        currentSettings.fallbackConsumed ||
+        resp.fallbackConsumed ||
+        runConfig?.fallbackConsumed ||
+        (scrollSession?.active && scrollSession?.fallbackConsumed) ||
+        (resp.fallbackIndex && resp.fallbackIndex > 0)
+      );
+      const isRespFallback = Boolean(resp.fallbackConsumed || (resp.fallbackIndex && resp.fallbackIndex > 0));
+      const fallbackModel = isFallback
+        ? (isRespFallback ? resp.actualModel : null) ||
+          (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+          (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+          (currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+          runConfig?.model ||
+          currentSettings.model ||
+          null
+        : null;
+      return {
+        applied: patchResult.applied,
+        failed: failedCount,
+        missingIds,
+        ...(isFallback ? { fallbackConsumed: true, fallbackModel } : {}),
+        ...(resp.actualModel || fallbackModel ? { actualModel: resp.actualModel || fallbackModel } : {})
+      };
+    }
+
+    // If fallback was consumed, retry budget (1 retry) is now exhausted: terminal error.
+    // Do not bisect from primary, do not restart primary, do not escalate again.
+    if (currentSettings.fallbackConsumed) {
+      const pinned =
+        (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) ||
+        (scrollSession?.active && (scrollSession?.fallbackModel || (scrollSession?.runConfig?.model !== primaryModel ? scrollSession?.runConfig?.model : null))) ||
+        (currentSettings.model !== primaryModel ? currentSettings.model : null) ||
+        currentSettings.model;
+      return {
+        applied: 0,
+        failed: items.length,
+        error: resp?.error,
+        fatal: true,
+        fallbackConsumed: true,
+        fallbackModel: pinned,
+        actualModel: pinned
+      };
     }
 
     // 3. If still failing, depth < 2 and items.length > 8: binary split & recurse sequentially
     if (depth < 2 && items.length > 8) {
+      refreshLivePin();
       const mid = Math.ceil(items.length / 2);
       const leftItems = items.slice(0, mid);
       const rightItems = items.slice(mid);
 
-      const leftRes = await translateChunkWithRecovery(leftItems, settings, depth + 1, targetEpoch, runConfig);
+      const leftRes = await translateChunkWithRecovery(leftItems, currentSettings, depth + 1, targetEpoch, runConfig);
+      if (targetEpoch !== undefined && epoch !== targetEpoch) {
+        return { cancelled: true, applied: 0, failed: 0 };
+      }
       if (leftRes.cancelled || leftRes.fatal) {
         return leftRes;
       }
+      refreshLivePin();
 
-      const rightRes = await translateChunkWithRecovery(rightItems, settings, depth + 1, targetEpoch, runConfig);
+      const rightSettings = runConfig?.fallbackConsumed || leftRes.fallbackConsumed || (scrollSession?.active && scrollSession?.fallbackConsumed)
+        ? { ...currentSettings, model: (runConfig?.model && runConfig.model !== primaryModel ? runConfig.model : null) || leftRes.fallbackModel || (scrollSession?.active && scrollSession?.fallbackModel) || (currentSettings.model !== primaryModel ? currentSettings.model : null) || currentSettings.model, fallbackConsumed: true }
+        : currentSettings;
+
+      const rightRes = await translateChunkWithRecovery(rightItems, rightSettings, depth + 1, targetEpoch, runConfig);
+      if (targetEpoch !== undefined && epoch !== targetEpoch) {
+        return { cancelled: true, applied: 0, failed: 0 };
+      }
       if (rightRes.cancelled) {
         return rightRes;
       }
+      refreshLivePin();
+
+      const combinedMissing = [
+        ...(Array.isArray(leftRes.missingIds) ? leftRes.missingIds : []),
+        ...(Array.isArray(rightRes.missingIds) ? rightRes.missingIds : [])
+      ];
+
+      const splitFallbackConsumed = Boolean(
+        currentSettings.fallbackConsumed ||
+        leftRes.fallbackConsumed ||
+        rightRes.fallbackConsumed ||
+        runConfig?.fallbackConsumed ||
+        (scrollSession?.active && scrollSession?.fallbackConsumed)
+      );
+      const splitFallbackModel = splitFallbackConsumed
+        ? (rightRes.fallbackModel || leftRes.fallbackModel || runConfig?.model || (scrollSession?.active && scrollSession?.fallbackModel) || currentSettings.model || rightRes.actualModel || leftRes.actualModel || null)
+        : null;
 
       return {
-        applied: (leftRes.applied || 0) + (rightRes.applied || 0),
+        applied: (leftRes.applied || 0) + (rightRes.alreadyApplied || 0) + (leftRes.alreadyApplied || 0) + (rightRes.applied || 0),
+        alreadyApplied: (leftRes.alreadyApplied || 0) + (rightRes.alreadyApplied || 0),
         failed: (leftRes.failed || 0) + (rightRes.failed || 0),
+        missingIds: combinedMissing,
         error: rightRes.error || leftRes.error || resp?.error,
+        ...(splitFallbackConsumed ? { fallbackConsumed: true, fallbackModel: splitFallbackModel } : {}),
+        ...(rightRes.actualModel || leftRes.actualModel || splitFallbackModel ? { actualModel: rightRes.actualModel || leftRes.actualModel || splitFallbackModel } : {}),
         ...(rightRes.fatal ? { fatal: true } : {})
       };
     }
 
     // 4. Otherwise record failure
+    const isTerminalFallback = Boolean(
+      currentSettings.fallbackConsumed ||
+      resp?.fallbackConsumed ||
+      resp?.error?.fallbackConsumed ||
+      resp?.error?.details?.fallbackConsumed ||
+      runConfig?.fallbackConsumed ||
+      (scrollSession?.active && scrollSession?.fallbackConsumed) ||
+      (resp?.fallbackIndex && resp.fallbackIndex > 0)
+    );
+    const terminalFbModel = isTerminalFallback
+      ? (resp?.error?.details?.model || resp?.error?.details?.lastAttemptedModel || resp?.actualModel || runConfig?.model || (scrollSession?.active && scrollSession?.fallbackModel) || currentSettings.model || null)
+      : null;
+
     return {
       applied: 0,
       failed: items.length,
-      error: resp?.error || { code: 'CHUNK_FAILED', message: 'Chunk translation failed' }
+      missingIds: items.map((it) => it.id),
+      error: resp?.error || { code: 'CHUNK_FAILED', message: 'Chunk translation failed' },
+      ...(isTerminalFallback ? { fallbackConsumed: true, fallbackModel: terminalFbModel } : {}),
+      ...(resp?.actualModel || terminalFbModel ? { actualModel: resp?.actualModel || terminalFbModel } : {})
     };
   }
 
@@ -629,21 +1058,30 @@
     if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return { cancelled: true }; }
     if (isTranslating && !settings.force) return { alreadyRunning: true };
 
+    epoch++;
+    const currentEpoch = epoch;
+    __wmtFire({ action: 'CANCEL_PENDING', epoch: currentEpoch });
+    pendingSet.clear();
+
     // Stop scroll-follow session before starting full page translation
     stopScrollFollowSession(true);
 
     isTranslating = true;
     updateFabBusy();
     currentMode = 'full';
+    if (scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds.clear();
+    scrollSession.fallbackConsumed = false;
+    scrollSession.fallbackModel = null;
+    if (scrollSession.runConfig) {
+      scrollSession.runConfig.fallbackConsumed = false;
+      scrollSession.runConfig.model = null;
+      scrollSession.runConfig.primaryModel = null;
+    }
+    scrollSession.settings = {};
     const runToken = ++activeRunToken;
     const finishRun = () => { if (activeRunToken === runToken) { isTranslating = false; updateFabBusy(); } };
-    epoch++;
-    const currentEpoch = epoch;
     const startTime = Date.now();
     const targetModel = settings.model || 'ag/gemini-3.1-pro-low';
-
-    // Cancel pending queue in SW for this tab before starting new epoch (fire-and-forget, stale-safe)
-    __wmtFire({ action: 'CANCEL_PENDING', epoch: currentEpoch });
 
     try {
       const items = collect(document.body, false);
@@ -684,7 +1122,10 @@
       let chunksDone = 0;
       let lastError = null;
       let runAborted = false;
-      const runConfig = { revision: typeof settings.configRevision === 'number' ? settings.configRevision : null };
+      const runConfig = {
+        primaryModel: targetModel,
+        revision: typeof settings.configRevision === 'number' ? settings.configRevision : null
+      };
 
       async function worker() {
         while (nextIndex < chunks.length) {
@@ -697,7 +1138,9 @@
             {
               sourceLanguage: settings.sourceLanguage || 'auto',
               targetLanguage: settings.targetLanguage || 'vi',
-              model: targetModel
+              model: (runConfig && runConfig.model) || targetModel,
+              primaryModel: targetModel,
+              ...(runConfig?.fallbackConsumed ? { fallbackConsumed: true } : {})
             },
             0,
             currentEpoch,
@@ -706,14 +1149,15 @@
 
           if (epoch !== currentEpoch || runAborted) break;
 
-          totalApplied += chunkRes.applied || 0;
+          const chunkApplied = (chunkRes.applied || 0) + (chunkRes.alreadyApplied || 0);
+          totalApplied += chunkApplied;
           totalFailed += chunkRes.failed || 0;
           if (chunkRes.error) {
             lastError = chunkRes.error;
           }
 
           chunksDone++;
-          lastTranslateStatus.totalApplied = totalApplied;
+          lastTranslateStatus.totalApplied = Math.max(lastTranslateStatus.totalApplied || 0, totalApplied);
           lastTranslateStatus.totalFailed = totalFailed;
           lastTranslateStatus.chunksDone = chunksDone;
 
@@ -738,22 +1182,28 @@
       }
 
       const elapsedMs = Date.now() - startTime;
+      const finalApplied = Math.max(
+        totalApplied,
+        lastTranslateStatus.totalApplied || 0,
+        lastTranslateStatus.progressApplied || 0
+      );
       lastTranslateStatus.elapsedMs = elapsedMs;
       lastTranslateStatus.chunksDone = chunksDone;
-      lastTranslateStatus.totalApplied = totalApplied;
+      lastTranslateStatus.totalCollected = items.length;
+      lastTranslateStatus.totalApplied = finalApplied;
       lastTranslateStatus.totalFailed = totalFailed;
       lastTranslateStatus.model = targetModel;
 
       // Handle fatal or fully failed run
-      if ((totalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
+      if ((finalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
-        lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'Tất cả các chunk đều thất bại' };
+        lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'All chunks failed' };
         finishRun();
         return {
           ok: false,
           error: lastTranslateStatus.error,
           cancelled: runAborted || lastError?.code === 'ABORTED',
-          applied: totalApplied,
+          applied: finalApplied,
           failed: totalFailed,
           model: targetModel,
           elapsedMs
@@ -767,7 +1217,7 @@
       return {
         ok: true,
         collected: items.length,
-        applied: totalApplied,
+        applied: finalApplied,
         failed: totalFailed,
         model: targetModel,
         elapsedMs
@@ -800,11 +1250,55 @@
     scrollListener: null,
     readyBlocks: new Set(),
     blockedIds: new Set(),
+    failedIds: new Set(),
+    abortedIds: new Set(),
+    overflowQueue: [],
+    queuedIds: new Set(),
+    overflowWarned: false,
+    sweepTimer: null,
+    sweepActive: false,
+    sweepYieldCount: 0,
+    flushTimer: null,
+    flushBlockWalker: null,
+    flushCurrentBlock: null,
+    followUpDomWalker: null,
+    followUpConsecutivePastBottom: 0,
+    domSweepNeeded: false,
+    flushSeenRecIds: new Set(),
     debounceTimer: null,
     retryTimer: null,
+    watchdogTimer: null,
+    watchdogRounds: 0,
+    watchdogLastApplied: 0,
+    watchdogRunToken: 0,
     scrollRaf: null,
-    settings: {}
+    settings: {},
+    fallbackConsumed: false,
+    fallbackModel: null,
+    runConfig: null,
+    fallbackConsumedIds: new Set()
   };
+
+  function scheduleSweepYield(fn) {
+    if (typeof setTimeout === 'function') {
+      return { type: 'timer', id: setTimeout(fn, 0) };
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      return { type: 'raf', id: requestAnimationFrame(fn) };
+    }
+    return { type: 'promise', id: Promise.resolve().then(fn) };
+  }
+
+  function cancelSweepYield(handle) {
+    if (!handle) return;
+    try {
+      if (handle.type === 'timer' && typeof clearTimeout === 'function') {
+        clearTimeout(handle.id);
+      } else if (handle.type === 'raf' && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(handle.id);
+      }
+    } catch {}
+  }
 
   function scheduleScrollFlush() {
     if (__wmtHalted) return;
@@ -817,90 +1311,217 @@
     }, delay);
   }
 
-  async function flushReadyBlocks() {
-    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
-    if (!scrollSession.active) return;
-    // Dispatch ≤2 batch in-flight; batch 3 waits in readySet
-    if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
-
-    const H = window.innerHeight || 800;
-    const topBound = SCROLL_BEHIND_H * H;
-    const bottomBound = SCROLL_AHEAD_H * H;
-
-    const candidateRecs = [];
-    const seenRecIds = new Set();
-
-    if (scrollSession.readyBlocks.size === 0) {
-      const curBlocks = document.querySelectorAll(BLOCK_SELECTOR);
-      for (const b of curBlocks) {
-        if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
-        try {
-          const rect = b.getBoundingClientRect();
-          if (rect.bottom >= topBound && rect.top <= bottomBound) {
-            scrollSession.readyBlocks.add(b);
-          }
-        } catch {}
+  function getTextNodeRect(tn) {
+    if (!tn) return null;
+    try {
+      if (typeof document !== 'undefined' && typeof document.createRange === 'function') {
+        const range = document.createRange();
+        try { range.selectNodeContents(tn); } catch { range.selectNode(tn); }
+        const r = range.getBoundingClientRect();
+        if (r && (r.width > 0 || r.height > 0 || r.top !== 0 || r.bottom !== 0)) {
+          return r;
+        }
       }
-    }
-
-    for (const block of scrollSession.readyBlocks) {
-      if (!block || !block.isConnected) {
-        scrollSession.readyBlocks.delete(block);
-        continue;
+    } catch {}
+    try {
+      let cur = tn.parentElement;
+      while (cur) {
+        if (typeof cur.getBoundingClientRect === 'function') {
+          const r = cur.getBoundingClientRect();
+          if (r) return r;
+        }
+        cur = cur.parentElement;
       }
-      let rect;
-      try {
-        rect = block.getBoundingClientRect();
-      } catch {
-        continue;
-      }
-      // Check block within [-2H, 3H] viewport bounds; prune far blocks so
-      // fast long-distance scrolls don't grow the set unboundedly
-      if (rect.bottom < topBound || rect.top > bottomBound) {
-        scrollSession.readyBlocks.delete(block);
-        continue;
-      }
+    } catch {}
+    return null;
+  }
 
-      const blockCenterY = rect.top + rect.height / 2;
-      const distToViewport = Math.abs(blockCenterY - H / 2);
+  const MAX_OVERFLOW_ITEMS = 512;
 
-      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
-      let tn;
-      while ((tn = walker.nextNode())) {
-        if (!eligibleTextNode(tn)) continue;
-        const rec = ensureRec(tn);
-        refreshIfExternallyModified(rec);
-        if (scrollSession.blockedIds.has(rec.id)) continue;
-        if (rec.translated !== null && tn.nodeValue === rec.translated) continue;
+  function enqueueOverflowChunks(newChunks) {
+    if (!scrollSession.overflowQueue) scrollSession.overflowQueue = [];
+    if (!scrollSession.queuedIds) scrollSession.queuedIds = new Set();
+    if (!newChunks || newChunks.length === 0) return;
 
-        // Skip pending items by (id, revision, epoch)
-        const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
-        if (pendingSet.has(pendingKey)) continue;
+    for (const chunk of newChunks) {
+      if (chunk && chunk.length > 0) {
+        const uniqueChunk = [];
+        for (const it of chunk) {
+          if (!it || !it.id) continue;
+          if (scrollSession.queuedIds.has(it.id)) continue;
+          const rec = lookup(it.id);
+          if (!rec || !rec.node || !rec.node.isConnected) continue;
+          if (rec.translated !== null && rec.node.nodeValue === rec.translated) continue;
+          const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+          if (pendingSet.has(pendingKey)) continue;
+          if (scrollSession.blockedIds.has(rec.id) || scrollSession.failedIds.has(rec.id)) continue;
 
-        if (!seenRecIds.has(rec.id)) {
-          seenRecIds.add(rec.id);
-          candidateRecs.push({
-            id: rec.id,
-            text: tn.nodeValue,
-            revision: rec.revision,
-            documentId,
-            dist: distToViewport
-          });
+          scrollSession.queuedIds.add(it.id);
+          uniqueChunk.push(it);
+        }
+        if (uniqueChunk.length > 0) {
+          scrollSession.overflowQueue.push(uniqueChunk);
         }
       }
     }
 
-    if (candidateRecs.length === 0) {
-      if (scrollSession.inFlight === 0 && lastTranslateStatus.state === 'translating') {
-        lastTranslateStatus.state = 'done';
+    let totalItems = 0;
+    for (const chunk of scrollSession.overflowQueue) {
+      totalItems += chunk.length;
+    }
+
+    if (totalItems > MAX_OVERFLOW_ITEMS) {
+      let toDrop = totalItems - MAX_OVERFLOW_ITEMS;
+      let droppedRealCount = 0;
+      const droppedRealIds = new Set();
+
+      function isRealDrop(it) {
+        if (!it || !it.id) return false;
+        const rec = lookup(it.id);
+        if (!rec) return true;
+        // Node already translated / applied cannot be counted as a failed drop
+        if (rec.translated !== null && rec.node && rec.node.nodeValue === rec.translated) return false;
+        // Node currently in flight cannot be counted as a failed drop
+        const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+        if (pendingSet.has(pendingKey)) return false;
+        return true;
+      }
+
+      while (toDrop > 0 && scrollSession.overflowQueue.length > 0) {
+        const oldestChunk = scrollSession.overflowQueue[0];
+        if (oldestChunk.length <= toDrop) {
+          scrollSession.overflowQueue.shift();
+          for (const it of oldestChunk) {
+            if (it && it.id) {
+              scrollSession.queuedIds.delete(it.id);
+              if (isRealDrop(it) && !droppedRealIds.has(it.id)) {
+                droppedRealIds.add(it.id);
+                droppedRealCount++;
+                scrollSession.failedIds.add(it.id);
+              }
+            }
+          }
+          toDrop -= oldestChunk.length;
+        } else {
+          const droppedItems = oldestChunk.splice(0, toDrop);
+          for (const it of droppedItems) {
+            if (it && it.id) {
+              scrollSession.queuedIds.delete(it.id);
+              if (isRealDrop(it) && !droppedRealIds.has(it.id)) {
+                droppedRealIds.add(it.id);
+                droppedRealCount++;
+                scrollSession.failedIds.add(it.id);
+              }
+            }
+          }
+          toDrop = 0;
+        }
+      }
+
+      if (droppedRealCount > 0) {
+        lastTranslateStatus.totalFailed += droppedRealCount;
+        if (!scrollSession.overflowWarned) {
+          scrollSession.overflowWarned = true;
+          console.warn(`[translator] Overflow queue exceeded cap (${MAX_OVERFLOW_ITEMS}); dropped ${droppedRealCount} oldest items`);
+        }
+      }
+    }
+  }
+
+  function revalidateCandidate(it, chunkEpoch = epoch) {
+    if (!it || !it.id) return null;
+    const rec = lookup(it.id);
+    if (!rec || !rec.node || !rec.node.isConnected) return null;
+    refreshIfExternallyModified(rec);
+    if (scrollSession.blockedIds.has(rec.id) || scrollSession.failedIds.has(rec.id)) return null;
+    if (scrollSession.fallbackConsumedIds && scrollSession.fallbackConsumedIds.has(rec.id)) return null;
+    if (scrollSession.queuedIds && scrollSession.queuedIds.has(rec.id)) return null;
+    if (rec.translated !== null && rec.node.nodeValue === rec.translated) return null;
+    const pendingKey = `${rec.id}:${rec.revision}:${chunkEpoch}`;
+    if (pendingSet.has(pendingKey)) return null;
+    return {
+      id: rec.id,
+      text: rec.node.nodeValue,
+      revision: rec.revision,
+      documentId
+    };
+  }
+
+  function drainOverflowQueue() {
+    if (__wmtHalted || !__wmtValidContext() || !scrollSession.active) return false;
+    if (!scrollSession.overflowQueue || scrollSession.overflowQueue.length === 0) return false;
+    let dispatched = false;
+    while (scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES && scrollSession.overflowQueue.length > 0) {
+      const chunk = scrollSession.overflowQueue.shift();
+      if (!chunk || chunk.length === 0) continue;
+
+      if (scrollSession.queuedIds) {
+        for (const it of chunk) {
+          if (it && it.id) scrollSession.queuedIds.delete(it.id);
+        }
+      }
+
+      const validItems = [];
+      const batchPendingKeys = [];
+      const chunkEpoch = epoch;
+      const seenChunkIds = new Set();
+
+      for (const it of chunk) {
+        if (!it || !it.id || seenChunkIds.has(it.id)) continue;
+        const valid = revalidateCandidate(it, chunkEpoch);
+        if (!valid) continue;
+        const key = `${valid.id}:${valid.revision}:${chunkEpoch}`;
+        if (pendingSet.has(key)) continue;
+        pendingSet.add(key);
+        batchPendingKeys.push(key);
+        seenChunkIds.add(valid.id);
+        validItems.push(valid);
+      }
+
+      if (validItems.length === 0) continue;
+
+      scrollSession.inFlight++;
+      updateFabBusy();
+      dispatched = true;
+      dispatchScrollBatch(validItems, batchPendingKeys, chunkEpoch);
+    }
+    return dispatched;
+  }
+
+  function dispatchScrollCandidateRecs(candidateRecs) {
+    if (!candidateRecs || candidateRecs.length === 0) {
+      if (scrollSession.inFlight === 0 && (!scrollSession.overflowQueue || scrollSession.overflowQueue.length === 0) && !scrollSession.sweepActive) {
+        checkWatchdogReconciliation();
+      }
+      return;
+    }
+
+    const curEpoch = epoch;
+    const validRecs = [];
+    const seenBatchIds = new Set();
+
+    for (const c of candidateRecs) {
+      if (!c || !c.id || seenBatchIds.has(c.id)) continue;
+      const valid = revalidateCandidate(c, curEpoch);
+      if (!valid) continue;
+      seenBatchIds.add(c.id);
+      validRecs.push({
+        ...valid,
+        dist: typeof c.dist === 'number' ? c.dist : 0
+      });
+    }
+
+    if (validRecs.length === 0) {
+      if (scrollSession.inFlight === 0 && (!scrollSession.overflowQueue || scrollSession.overflowQueue.length === 0) && !scrollSession.sweepActive) {
+        checkWatchdogReconciliation();
       }
       return;
     }
 
     // Sort by distance to viewport center
-    candidateRecs.sort((a, b) => a.dist - b.dist);
+    validRecs.sort((a, b) => a.dist - b.dist);
 
-    const items = candidateRecs.map((c) => ({
+    const items = validRecs.map((c) => ({
       id: c.id,
       text: c.text,
       revision: c.revision,
@@ -909,8 +1530,8 @@
 
     // Track unique collected nodes for status (scroll mode collects over time)
     if (!scrollSession.collectedIds) scrollSession.collectedIds = new Set();
-    for (const c of candidateRecs) {
-      scrollSession.collectedIds.add(c.id);
+    for (const it of items) {
+      scrollSession.collectedIds.add(it.id);
     }
     lastTranslateStatus.totalCollected = scrollSession.collectedIds.size;
 
@@ -920,42 +1541,444 @@
       const chunk = chunks.shift();
       if (!chunk || chunk.length === 0) break;
 
-      const chunkEpoch = epoch;
+      const readyChunk = [];
       const batchPendingKeys = [];
       for (const it of chunk) {
-        const key = `${it.id}:${it.revision}:${chunkEpoch}`;
+        const valid = revalidateCandidate(it, curEpoch);
+        if (!valid) continue;
+        const key = `${valid.id}:${valid.revision}:${curEpoch}`;
+        if (pendingSet.has(key)) continue;
         pendingSet.add(key);
         batchPendingKeys.push(key);
+        readyChunk.push(valid);
       }
+
+      if (readyChunk.length === 0) continue;
 
       scrollSession.inFlight++;
       updateFabBusy();
-      dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch);
+      dispatchScrollBatch(readyChunk, batchPendingKeys, curEpoch);
     }
+
+    if (chunks.length > 0) {
+      enqueueOverflowChunks(chunks);
+    }
+  }
+
+  const SWEEP_SLICE_TIME_BUDGET_MS = 8;
+  const SWEEP_SLICE_NODE_BUDGET = 250;
+  const SWEEP_MAX_CONSECUTIVE_PAST_BOTTOM = 30;
+  const SWEEP_MAX_TOTAL_SCANNED = 10000;
+
+  function initialScrollSweep() {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+    if (!scrollSession.active) return;
+    if (scrollSession.sweepActive) return;
+
+    const H = window.innerHeight || 800;
+    const topBound = SCROLL_BEHIND_H * H;
+    const bottomBound = SCROLL_AHEAD_H * H;
+
+    const root = document.body || document.documentElement;
+    if (!root) {
+      flushReadyBlocks();
+      return;
+    }
+
+    let walker;
+    try {
+      walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    } catch {
+      flushReadyBlocks();
+      return;
+    }
+    if (!walker) {
+      flushReadyBlocks();
+      return;
+    }
+
+    const sweepEpoch = epoch;
+    const seenRecIds = new Set();
+    const candidateRecs = [];
+    let totalScanned = 0;
+    let consecutivePastBottom = 0;
+
+    scrollSession.sweepActive = true;
+
+    function step() {
+      scrollSession.sweepTimer = null;
+      if (__wmtHalted || !__wmtValidContext() || !scrollSession.active || epoch !== sweepEpoch) {
+        scrollSession.sweepActive = false;
+        return;
+      }
+
+      // Revalidate any buffered candidates after yield to drop nodes translated by a flush
+      if (candidateRecs.length > 0) {
+        for (let i = candidateRecs.length - 1; i >= 0; i--) {
+          if (!revalidateCandidate(candidateRecs[i], sweepEpoch)) {
+            candidateRecs.splice(i, 1);
+          }
+        }
+      }
+
+      const sliceStart = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+      let sliceNodes = 0;
+      let stoppedEarly = false;
+      let hitSliceBudget = false;
+
+      try {
+        let tn;
+        while ((tn = walker.nextNode())) {
+          totalScanned++;
+          sliceNodes++;
+
+          if (eligibleTextNode(tn)) {
+            const rect = getTextNodeRect(tn);
+            if (rect) {
+              if (rect.top > bottomBound) {
+                consecutivePastBottom++;
+                if (consecutivePastBottom >= SWEEP_MAX_CONSECUTIVE_PAST_BOTTOM) {
+                  stoppedEarly = true;
+                  break;
+                }
+              } else if (rect.bottom >= topBound) {
+                consecutivePastBottom = 0;
+
+                const blockCenterY = rect.top + (rect.height || (rect.bottom - rect.top) || 0) / 2;
+                const distToViewport = Math.abs(blockCenterY - H / 2);
+
+                const rec = ensureRec(tn);
+                refreshIfExternallyModified(rec);
+                if (!scrollSession.blockedIds.has(rec.id) && !scrollSession.failedIds.has(rec.id) && !(scrollSession.queuedIds && scrollSession.queuedIds.has(rec.id))) {
+                  if (rec.translated === null || tn.nodeValue !== rec.translated) {
+                    const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+                    if (!pendingSet.has(pendingKey) && !seenRecIds.has(rec.id)) {
+                      seenRecIds.add(rec.id);
+                      candidateRecs.push({
+                        id: rec.id,
+                        text: tn.nodeValue,
+                        revision: rec.revision,
+                        documentId,
+                        dist: distToViewport
+                      });
+
+                      // Dispatch immediately as soon as we have enough for a batch!
+                      if (candidateRecs.length >= SCROLL_MAX_BATCH_ITEMS && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+                        const batch = candidateRecs.splice(0, SCROLL_MAX_BATCH_ITEMS);
+                        dispatchScrollCandidateRecs(batch);
+                      }
+                    }
+                  }
+                }
+              } else {
+                consecutivePastBottom = 0;
+              }
+            }
+          }
+
+          if (totalScanned >= SWEEP_MAX_TOTAL_SCANNED) {
+            stoppedEarly = true;
+            break;
+          }
+
+          if (sliceNodes >= SWEEP_SLICE_NODE_BUDGET) {
+            hitSliceBudget = true;
+            break;
+          }
+          const now = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+          if (now - sliceStart >= SWEEP_SLICE_TIME_BUDGET_MS) {
+            hitSliceBudget = true;
+            break;
+          }
+        }
+      } catch (err) {
+        stoppedEarly = true;
+      }
+
+      // If yielding and haven't dispatched any batch yet, dispatch whatever we have collected so far!
+      if (hitSliceBudget && scrollSession.inFlight === 0 && candidateRecs.length > 0) {
+        const batch = candidateRecs.splice(0, Math.min(candidateRecs.length, SCROLL_MAX_BATCH_ITEMS));
+        dispatchScrollCandidateRecs(batch);
+      }
+
+      const isExhausted = stoppedEarly || totalScanned >= SWEEP_MAX_TOTAL_SCANNED || (!hitSliceBudget);
+
+      if (!isExhausted) {
+        scrollSession.sweepYieldCount++;
+        scrollSession.sweepTimer = scheduleSweepYield(step);
+        return;
+      }
+
+      // Sweep finished
+      scrollSession.sweepActive = false;
+      if (candidateRecs.length > 0) {
+        dispatchScrollCandidateRecs(candidateRecs.splice(0, candidateRecs.length));
+      } else if (scrollSession.inFlight === 0 && (!scrollSession.overflowQueue || scrollSession.overflowQueue.length === 0)) {
+        if (scrollSession.readyBlocks.size > 0 || scrollSession.domSweepNeeded || scrollSession.flushBlockWalker || scrollSession.followUpDomWalker) {
+          flushReadyBlocks();
+        } else {
+          checkWatchdogReconciliation();
+          updateFabBusy();
+        }
+      }
+    }
+
+    // Run first step synchronously so the first batch goes out immediately!
+    step();
+  }
+
+  async function flushReadyBlocks() {
+    if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+    if (!scrollSession.active) return;
+
+    if (scrollSession.flushTimer) {
+      cancelSweepYield(scrollSession.flushTimer);
+      scrollSession.flushTimer = null;
+    }
+
+    // F2: Prioritize pending overflow queue
+    drainOverflowQueue();
+
+    // Dispatch ≤2 batch in-flight; batch 3 waits in readySet
+    if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
+
+    const H = window.innerHeight || 800;
+    const topBound = SCROLL_BEHIND_H * H;
+    const bottomBound = SCROLL_AHEAD_H * H;
+
+    const sliceStart = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+    let sliceNodes = 0;
+    let hitBudget = false;
+    const candidateRecs = [];
+    if (!scrollSession.flushSeenRecIds) scrollSession.flushSeenRecIds = new Set();
+    const seenRecIds = scrollSession.flushSeenRecIds;
+
+    // Phase A: Process blocks currently in readyBlocks or active flushBlockWalker
+    while (scrollSession.readyBlocks.size > 0 || scrollSession.flushBlockWalker) {
+      if (sliceNodes >= SWEEP_SLICE_NODE_BUDGET) {
+        hitBudget = true;
+        break;
+      }
+      const now = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+      if (now - sliceStart >= SWEEP_SLICE_TIME_BUDGET_MS) {
+        hitBudget = true;
+        break;
+      }
+
+      if (!scrollSession.flushBlockWalker) {
+        const it = scrollSession.readyBlocks.values().next();
+        if (it.done) break;
+        const block = it.value;
+        scrollSession.readyBlocks.delete(block);
+        sliceNodes++;
+
+        if (!block || !block.isConnected) continue;
+        let rect;
+        try { rect = block.getBoundingClientRect(); } catch { continue; }
+        if (rect.bottom < topBound || rect.top > bottomBound) continue;
+
+        const blockCenterY = rect.top + (rect.height || (rect.bottom - rect.top) || 0) / 2;
+        const distToViewport = Math.abs(blockCenterY - H / 2);
+        scrollSession.flushCurrentBlock = { block, dist: distToViewport };
+        try {
+          scrollSession.flushBlockWalker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+        } catch {
+          scrollSession.flushBlockWalker = null;
+          continue;
+        }
+      }
+
+      const walker = scrollSession.flushBlockWalker;
+      const distToViewport = scrollSession.flushCurrentBlock?.dist || 0;
+      let tn;
+      while ((tn = walker.nextNode())) {
+        sliceNodes++;
+        if (eligibleTextNode(tn)) {
+          const rec = ensureRec(tn);
+          refreshIfExternallyModified(rec);
+          if (!scrollSession.blockedIds.has(rec.id) && !scrollSession.failedIds.has(rec.id) && !(scrollSession.queuedIds && scrollSession.queuedIds.has(rec.id))) {
+            if (rec.translated === null || tn.nodeValue !== rec.translated) {
+              const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+              if (!pendingSet.has(pendingKey) && !seenRecIds.has(rec.id)) {
+                seenRecIds.add(rec.id);
+                candidateRecs.push({
+                  id: rec.id,
+                  text: tn.nodeValue,
+                  revision: rec.revision,
+                  documentId,
+                  dist: distToViewport
+                });
+
+                if (candidateRecs.length >= SCROLL_MAX_BATCH_ITEMS && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+                  const batch = candidateRecs.splice(0, SCROLL_MAX_BATCH_ITEMS);
+                  dispatchScrollCandidateRecs(batch);
+                }
+              }
+            }
+          }
+        }
+
+        if (sliceNodes >= SWEEP_SLICE_NODE_BUDGET) {
+          hitBudget = true;
+          break;
+        }
+        const now = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+        if (now - sliceStart >= SWEEP_SLICE_TIME_BUDGET_MS) {
+          hitBudget = true;
+          break;
+        }
+      }
+
+      if (hitBudget) {
+        break;
+      } else {
+        scrollSession.flushBlockWalker = null;
+        scrollSession.flushCurrentBlock = null;
+      }
+    }
+
+    // Phase B: Walk DOM text nodes in [topBound, bottomBound] if domSweepNeeded or followUpDomWalker active
+    if (!hitBudget && (scrollSession.domSweepNeeded || scrollSession.followUpDomWalker)) {
+      if (!scrollSession.followUpDomWalker) {
+        const root = document.body || document.documentElement;
+        if (root) {
+          try {
+            scrollSession.followUpDomWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+          } catch {
+            scrollSession.followUpDomWalker = null;
+          }
+        }
+      }
+
+      while (scrollSession.followUpDomWalker) {
+        let tn;
+        try {
+          tn = scrollSession.followUpDomWalker.nextNode();
+        } catch {
+          scrollSession.followUpDomWalker = null;
+          break;
+        }
+        if (!tn) {
+          scrollSession.followUpDomWalker = null;
+          scrollSession.domSweepNeeded = false;
+          break;
+        }
+
+        sliceNodes++;
+        if (eligibleTextNode(tn)) {
+          const rect = getTextNodeRect(tn);
+          if (rect && rect.bottom >= topBound && rect.top <= bottomBound) {
+            const blockCenterY = rect.top + (rect.height || (rect.bottom - rect.top) || 0) / 2;
+            const distToViewport = Math.abs(blockCenterY - H / 2);
+            const rec = ensureRec(tn);
+            refreshIfExternallyModified(rec);
+            if (!scrollSession.blockedIds.has(rec.id) && !scrollSession.failedIds.has(rec.id) && !(scrollSession.fallbackConsumedIds && scrollSession.fallbackConsumedIds.has(rec.id)) && !(scrollSession.queuedIds && scrollSession.queuedIds.has(rec.id))) {
+              if (rec.translated === null || tn.nodeValue !== rec.translated) {
+                const pendingKey = `${rec.id}:${rec.revision}:${epoch}`;
+                if (!pendingSet.has(pendingKey) && !seenRecIds.has(rec.id)) {
+                  seenRecIds.add(rec.id);
+                  candidateRecs.push({
+                    id: rec.id,
+                    text: tn.nodeValue,
+                    revision: rec.revision,
+                    documentId,
+                    dist: distToViewport
+                  });
+
+                  if (candidateRecs.length >= SCROLL_MAX_BATCH_ITEMS && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+                    const batch = candidateRecs.splice(0, SCROLL_MAX_BATCH_ITEMS);
+                    dispatchScrollCandidateRecs(batch);
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (sliceNodes >= SWEEP_SLICE_NODE_BUDGET) {
+          hitBudget = true;
+          break;
+        }
+        const now = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+        if (now - sliceStart >= SWEEP_SLICE_TIME_BUDGET_MS) {
+          hitBudget = true;
+          break;
+        }
+      }
+    }
+
+    if (candidateRecs.length > 0) {
+      dispatchScrollCandidateRecs(candidateRecs);
+    }
+
+    const hasMore = hitBudget || scrollSession.readyBlocks.size > 0 || Boolean(scrollSession.flushBlockWalker) || Boolean(scrollSession.followUpDomWalker);
+
+    if (hasMore) {
+      scrollSession.sweepYieldCount++;
+      scrollSession.flushTimer = scheduleSweepYield(() => {
+        scrollSession.flushTimer = null;
+        flushReadyBlocks();
+      });
+    } else {
+      seenRecIds.clear();
+    }
+  }
+
+  function hasResultsTraceSigns(str) {
+    if (!str || typeof str !== 'string') return false;
+    const trimmed = str.trim();
+    if (!trimmed) return false;
+    if (trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE')) return false;
+    const hasResultsKey = /["']?results["']?\s*:/i.test(trimmed) || /["']results["']/i.test(trimmed);
+    const hasItemFragment = /\{\s*["']?id["']?/i.test(trimmed);
+    const hasResultsTrace = hasResultsKey || hasItemFragment;
+    const hasErrorKey = /["']?error["']?\s*:/i.test(trimmed);
+    if (hasErrorKey && !hasResultsTrace) return false;
+    return hasResultsTrace;
+  }
+
+  function isZeroByteOrZeroTrace(err) {
+    if (!err) return false;
+    if (err.code !== 'INVALID_SCHEMA' && err.code !== 'ZERO_ITEM') return false;
+    const details = err.details;
+    if (!details) return false;
+    if (details.isErrorJson) return true;
+    if (details.contentBytes === 0) return true;
+    if (details.streamBytes === 0) return true;
+    if (details.rawHead === '') return true;
+    if (typeof details.rawHead === 'string') {
+      return !hasResultsTraceSigns(details.rawHead);
+    }
+    return false;
   }
 
   async function dispatchScrollBatch(chunk, batchPendingKeys, chunkEpoch) {
     // Fatal outcomes must not reschedule a flush (avoids hot-loop spam)
     let batchFatal = false;
     try {
-      if (__wmtHalted || !__wmtValidContext()) {
-        __wmtHaltStale();
+      if (__wmtHalted || !__wmtValidContext() || (chunkEpoch !== undefined && epoch !== chunkEpoch) || !scrollSession.active) {
+        if (__wmtHalted || !__wmtValidContext()) __wmtHaltStale();
         batchFatal = true;
         return;
       }
+      const hasConsumedItem = Array.isArray(chunk) && chunk.some((it) => scrollSession?.fallbackConsumedIds?.has(it?.id));
+      const isFallbackActive = Boolean(hasConsumedItem || scrollSession.fallbackConsumed || scrollSession.runConfig?.fallbackConsumed);
+      const scrollModel = (isFallbackActive && (scrollSession.fallbackModel || scrollSession.runConfig?.model)) || scrollSession.settings.model || 'ag/gemini-3.1-pro-low';
       const res = await translateChunkWithRecovery(
         chunk,
         {
           sourceLanguage: scrollSession.settings.sourceLanguage || 'auto',
           targetLanguage: scrollSession.settings.targetLanguage || 'vi',
-          model: scrollSession.settings.model || 'ag/gemini-3.1-pro-low',
-          configRevision: scrollSession.settings.configRevision
+          model: scrollModel,
+          configRevision: scrollSession.settings.configRevision,
+          ...(isFallbackActive ? { fallbackConsumed: true } : {})
         },
         0,
-        chunkEpoch
+        chunkEpoch,
+        scrollSession.runConfig
       );
 
-      if (epoch !== chunkEpoch || !scrollSession.active) {
+      if ((chunkEpoch !== undefined && epoch !== chunkEpoch) || !scrollSession.active || res?.cancelled) {
         return;
       }
 
@@ -963,17 +1986,79 @@
         lastTranslateStatus.totalApplied += res.applied;
         lastTranslateStatus.lastError = null;
       }
+      const isFallbackConsumed = Boolean(
+        res.error?.details?.fallbackConsumed ||
+        res.error?.fallbackConsumed ||
+        res.fallbackConsumed ||
+        scrollSession.runConfig?.fallbackConsumed
+      );
+      if (isFallbackConsumed) {
+        scrollSession.fallbackConsumed = true;
+        const sessionPrimary = (scrollSession?.active ? scrollSession?.settings?.model : null) || scrollSession?.runConfig?.primaryModel || 'ag/gemini-3.1-pro-low';
+        const fbModel =
+          (res.fallbackModel && res.fallbackModel !== sessionPrimary ? res.fallbackModel : null) ||
+          (scrollSession.fallbackModel && scrollSession.fallbackModel !== sessionPrimary ? scrollSession.fallbackModel : null) ||
+          (scrollSession.runConfig?.model && scrollSession.runConfig.model !== sessionPrimary ? scrollSession.runConfig.model : null) ||
+          (res.actualModel && res.actualModel !== sessionPrimary ? res.actualModel : null) ||
+          res.fallbackModel ||
+          scrollSession.fallbackModel ||
+          scrollSession.runConfig?.model ||
+          res.error?.details?.model ||
+          res.error?.details?.lastAttemptedModel;
+        if (fbModel) {
+          scrollSession.fallbackModel = fbModel;
+        }
+        if (Array.isArray(chunk)) {
+          if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+          for (const it of chunk) {
+            if (it?.id) scrollSession.fallbackConsumedIds.add(it.id);
+          }
+        }
+      }
       if (res.failed) {
-        lastTranslateStatus.totalFailed += res.failed;
+        const isBypass = !isFallbackConsumed && (res.error?.code === 'INVALID_SCHEMA' || res.error?.code === 'ZERO_ITEM') && !isZeroByteOrZeroTrace(res.error);
+        if (!res.error || !isBypass) {
+          lastTranslateStatus.totalFailed += res.failed;
+        }
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
       }
 
+      // WI-20 / WI-23: Missing or failed items in this batch are recorded in blockedIds and failedIds for the current run
+      // so they are counted as failed only once and not repeatedly rescheduled across scroll events in this session.
+      if (Array.isArray(res.missingIds) && res.missingIds.length > 0 && res.error?.code !== 'RATE_LIMITED') {
+        for (const mid of res.missingIds) {
+          scrollSession.blockedIds.add(mid);
+          scrollSession.failedIds.add(mid);
+          if (isFallbackConsumed) {
+            if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+            scrollSession.fallbackConsumedIds.add(mid);
+          }
+        }
+      }
+
       if (res.fatal) {
         batchFatal = true;
         if (res.error?.code !== 'RATE_LIMITED') {
-          for (const item of chunk) scrollSession.blockedIds.add(item.id);
+          for (const item of chunk) {
+            scrollSession.blockedIds.add(item.id);
+            if (isFallbackConsumed) {
+              if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+              scrollSession.fallbackConsumedIds.add(item.id);
+            }
+            const isWatchdogRetryable = !isFallbackConsumed && (res.error?.code === 'INVALID_SCHEMA' || res.error?.code === 'ZERO_ITEM') && !isZeroByteOrZeroTrace(res.error);
+            if (!['OPT_IN_REQUIRED', 'SITE_NOT_ALLOWED', 'PERMISSION_REQUIRED',
+              'CONSENT_STATE_UNAVAILABLE', 'CONSENT_DENIED', 'KEY_ACCESS_UNAVAILABLE',
+              'MISSING_CONFIG', 'HTTP_401', 'HTTP_403', 'DROPPED_ON_RESTART'].includes(res.error?.code) && !isWatchdogRetryable) {
+              scrollSession.failedIds.add(item.id);
+            }
+            if (res.error?.code === 'ABORTED' || res.cancelled) {
+              if (!scrollSession.abortedIds) scrollSession.abortedIds = new Set();
+              scrollSession.abortedIds.add(item.id);
+              scrollSession.failedIds.add(item.id);
+            }
+          }
         }
         // Lifecycle aborts stop this batch without replay; the watcher stays
         // available for a later scroll after config changes or SW restart.
@@ -997,6 +2082,12 @@
       } else if (res.error && res.error.code === 'ABORTED') {
         // Cancelled on purpose (navigation/config/epoch): do not reschedule
         batchFatal = true;
+        for (const item of chunk) {
+          scrollSession.blockedIds.add(item.id);
+          scrollSession.failedIds.add(item.id);
+          if (!scrollSession.abortedIds) scrollSession.abortedIds = new Set();
+          scrollSession.abortedIds.add(item.id);
+        }
       }
     } catch (err) {
       // Non-fatal error during scroll dispatch
@@ -1005,12 +2096,143 @@
       for (const k of batchPendingKeys) {
         pendingSet.delete(k);
       }
-      scrollSession.inFlight = Math.max(0, scrollSession.inFlight - 1);
-      updateFabBusy();
-      if (!batchFatal && scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
-        scheduleScrollFlush();
+      if ((chunkEpoch === undefined || epoch === chunkEpoch) && scrollSession.active) {
+        scrollSession.inFlight = Math.max(0, scrollSession.inFlight - 1);
+        updateFabBusy();
+        if (!batchFatal && scrollSession.active && scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES) {
+          if (scrollSession.overflowQueue && scrollSession.overflowQueue.length > 0) {
+            drainOverflowQueue();
+          }
+          if (scrollSession.inFlight < MAX_IN_FLIGHT_BATCHES && (scrollSession.readyBlocks.size > 0 || scrollSession.domSweepNeeded || scrollSession.flushBlockWalker || scrollSession.followUpDomWalker)) {
+            scheduleScrollFlush();
+          }
+        }
+        if (scrollSession.inFlight === 0 && (!scrollSession.overflowQueue || scrollSession.overflowQueue.length === 0) && !scrollSession.sweepActive) {
+          checkWatchdogReconciliation();
+        }
       }
     }
+  }
+
+  function checkWatchdogReconciliation() {
+    if (__wmtHalted || !__wmtValidContext()) return;
+    if (!scrollSession.active || !scrollSession.watching) {
+      if (lastTranslateStatus.state === 'translating') {
+        lastTranslateStatus.state = lastTranslateStatus.totalApplied > 0 ? 'done' : 'idle';
+      }
+      return;
+    }
+    if (scrollSession.inFlight > 0) return;
+    if (scrollSession.overflowQueue && scrollSession.overflowQueue.length > 0) return;
+    if (scrollSession.sweepActive) return;
+    if (scrollSession.watchdogTimer) return;
+
+    if (scrollSession.watchdogRunToken !== activeRunToken) {
+      scrollSession.watchdogRunToken = activeRunToken;
+      scrollSession.watchdogRounds = 0;
+      scrollSession.watchdogLastApplied = lastTranslateStatus.totalApplied || 0;
+    }
+
+    const currentApplied = lastTranslateStatus.totalApplied || 0;
+    const currentCollected = scrollSession.collectedIds ? scrollSession.collectedIds.size : (lastTranslateStatus.totalCollected || 0);
+
+    // Find collected items that are not yet applied and not in failedIds (excluding settled failed items)
+    const unappliedRecs = [];
+    if (scrollSession.collectedIds) {
+      for (const id of scrollSession.collectedIds) {
+        if (scrollSession.failedIds && scrollSession.failedIds.has(id)) continue;
+        if (scrollSession.abortedIds && scrollSession.abortedIds.has(id)) continue;
+        const rec = lookup(id);
+        if (!rec || !rec.node || !rec.node.isConnected) continue;
+        if (rec.translated !== null || restoreKept.has(id) || rec.node.nodeValue === rec.translated) continue;
+        unappliedRecs.push(rec);
+      }
+    }
+
+    if (unappliedRecs.length === 0) {
+      if (lastTranslateStatus.state === 'translating') {
+        lastTranslateStatus.state = 'done';
+      }
+      lastTranslateStatus.stable = true;
+      return;
+    }
+
+    // Unapplied items exist!
+    // Rule: No infinite loop: bound rounds/run-token, stop when no progress (applied does not increase between rounds)
+    // Max 2 rounds per run:
+    const canRequeue = scrollSession.watchdogRounds < 2 &&
+      (scrollSession.watchdogRounds === 0 || currentApplied > scrollSession.watchdogLastApplied);
+
+    if (!canRequeue) {
+      // Stop: remainder into footer failed-count + Log entry + existing Retry button
+      for (const rec of unappliedRecs) {
+        scrollSession.failedIds.add(rec.id);
+        scrollSession.blockedIds.add(rec.id);
+      }
+      lastTranslateStatus.totalFailed = scrollSession.failedIds.size;
+      if (lastTranslateStatus.state === 'translating') {
+        lastTranslateStatus.state = 'done';
+      }
+      lastTranslateStatus.stable = true;
+
+      // Log entry to SW:
+      try {
+        if (chrome?.runtime?.sendMessage) {
+          const p = chrome.runtime.sendMessage({
+            action: 'RECORD_ERROR_LOG',
+            error: {
+              code: 'WATCHDOG_UNAPPLIED',
+              message: `Watchdog reconciliation: ${unappliedRecs.length} item(s) unapplied after retry`,
+              details: {
+                unappliedCount: unappliedRecs.length,
+                ids: unappliedRecs.map((r) => r.id),
+                totalCollected: currentCollected,
+                totalApplied: currentApplied,
+                totalFailed: lastTranslateStatus.totalFailed
+              }
+            },
+            model: scrollSession.settings?.model || lastTranslateStatus.model || '',
+            isTerminal: false
+          });
+          if (p && typeof p.catch === 'function') {
+            p.catch(() => {});
+          }
+        }
+      } catch {}
+      return;
+    }
+
+    // Auto re-queue 1 round (backoff)
+    scrollSession.watchdogRounds++;
+    scrollSession.watchdogLastApplied = currentApplied;
+    const backoffMs = typeof scrollSession.settings?.watchdogBackoffMs === 'number'
+      ? scrollSession.settings.watchdogBackoffMs
+      : (scrollSession.watchdogRounds * 500);
+
+    const curToken = activeRunToken;
+    scrollSession.watchdogTimer = setTimeout(() => {
+      scrollSession.watchdogTimer = null;
+      if (__wmtHalted || !scrollSession.active || activeRunToken !== curToken) return;
+
+      // Unblock unapplied items so they can be dispatched
+      for (const rec of unappliedRecs) {
+        if (scrollSession.abortedIds && scrollSession.abortedIds.has(rec.id)) continue;
+        if (scrollSession.failedIds && scrollSession.failedIds.has(rec.id)) continue;
+        if (scrollSession.fallbackConsumedIds && scrollSession.fallbackConsumedIds.has(rec.id)) continue;
+        scrollSession.blockedIds.delete(rec.id);
+        scrollSession.failedIds.delete(rec.id);
+        if (scrollSession.queuedIds) scrollSession.queuedIds.delete(rec.id);
+      }
+      const eligibleToDispatch = unappliedRecs.filter((r) =>
+        (!scrollSession.abortedIds || !scrollSession.abortedIds.has(r.id)) &&
+        (!scrollSession.failedIds || !scrollSession.failedIds.has(r.id)) &&
+        (!scrollSession.fallbackConsumedIds || !scrollSession.fallbackConsumedIds.has(r.id))
+      );
+      if (eligibleToDispatch.length > 0) {
+        dispatchScrollCandidateRecs(eligibleToDispatch);
+      }
+      drainOverflowQueue();
+    }, backoffMs);
   }
 
   function startScrollFollowSession(settings = {}) {
@@ -1019,15 +2241,40 @@
     isTranslating = false;
     activeRunToken++;
 
+    epoch++;
+    const currentEpoch = epoch;
+    __wmtFire({ action: 'CANCEL_PENDING', epoch: currentEpoch });
+    pendingSet.clear();
+
     stopScrollFollowSession(false);
 
     currentMode = 'scroll-follow';
     scrollSession.active = true;
     scrollSession.watching = true;
     scrollSession.settings = settings || {};
+    scrollSession.fallbackConsumed = false;
+    scrollSession.fallbackModel = null;
+    scrollSession.runConfig = {
+      primaryModel: settings?.model || 'ag/gemini-3.1-pro-low',
+      revision: typeof settings.configRevision === 'number' ? settings.configRevision : null,
+      fallbackConsumed: false,
+      model: null
+    };
     scrollSession.blockedIds.clear();
+    scrollSession.failedIds.clear();
+    if (!scrollSession.abortedIds) scrollSession.abortedIds = new Set();
+    else scrollSession.abortedIds.clear();
+    if (!scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds = new Set();
+    else scrollSession.fallbackConsumedIds.clear();
+    scrollSession.watchdogRounds = 0;
+    scrollSession.watchdogLastApplied = 0;
+    scrollSession.watchdogRunToken = activeRunToken;
+    if (scrollSession.watchdogTimer) {
+      clearTimeout(scrollSession.watchdogTimer);
+      scrollSession.watchdogTimer = null;
+    }
     updateFabBusy();
-    scrollSession.epoch = epoch;
+    scrollSession.epoch = currentEpoch;
 
     lastTranslateStatus.mode = 'scroll-follow';
     lastTranslateStatus.watching = true;
@@ -1035,6 +2282,8 @@
     lastTranslateStatus.lastError = null;
     lastTranslateStatus.progressApplied = 0;
     lastTranslateStatus.model = settings.model || 'ag/gemini-3.1-pro-low';
+    lastTranslateStatus.actualModel = null;
+    lastTranslateStatus.fallbackIndex = 0;
 
     // 1 IntersectionObserver for block containers (viewport + one ahead)
     scrollSession.mainObserver = new IntersectionObserver((entries) => {
@@ -1104,7 +2353,8 @@
     // Fallback scroll listener for rapid scroll updates (rAF-coalesced so
     // very fast up/down flings don't run full scans more than once per frame)
     scrollSession.scrollListener = () => {
-      scrollSession.blockedIds.clear();
+      // WI-23: Retain IDs already marked failed in current run; only clear non-failed blocked IDs (lifecycle aborts)
+      scrollSession.blockedIds = new Set(scrollSession.failedIds);
       if (scrollSession.scrollRaf) return;
       scrollSession.scrollRaf = requestAnimationFrame(() => {
         scrollSession.scrollRaf = null;
@@ -1114,21 +2364,12 @@
     };
 
     const scanViewportBlocks = () => {
-      const curH = window.innerHeight || 800;
-      const curTopBound = SCROLL_BEHIND_H * curH;
-      const curBottomBound = SCROLL_AHEAD_H * curH;
-      const allBlocks = document.querySelectorAll(BLOCK_SELECTOR);
-      for (const b of allBlocks) {
-        if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
-        try {
-          const rect = b.getBoundingClientRect();
-          if (rect.bottom >= curTopBound && rect.top <= curBottomBound) {
-            scrollSession.readyBlocks.add(b);
-          } else {
-            scrollSession.readyBlocks.delete(b);
-          }
-        } catch {}
+      scrollSession.domSweepNeeded = true;
+      if (scrollSession.overflowQueue && scrollSession.overflowQueue.length > 0) {
+        drainOverflowQueue();
       }
+      if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
+      scrollSession.followUpDomWalker = null;
       scheduleScrollFlush();
     };
     window.addEventListener('scroll', scrollSession.scrollListener, { passive: true });
@@ -1140,17 +2381,18 @@
         for (const node of m.addedNodes) {
           if (node.nodeType === 1) {
             if (node.id === '__wmt-widget-host' || (node.hasAttribute && node.hasAttribute('data-wmt-ignore'))) continue;
+            scrollSession.readyBlocks.add(node);
+            scrollSession.domSweepNeeded = true;
             if (node.matches && node.matches(BLOCK_SELECTOR)) {
               scrollSession.mainObserver?.observe(node);
-              hasNew = true;
             }
             if (node.querySelectorAll) {
               const sub = node.querySelectorAll(BLOCK_SELECTOR);
               for (const s of sub) {
                 scrollSession.mainObserver?.observe(s);
-                hasNew = true;
               }
             }
+            hasNew = true;
           }
         }
       }
@@ -1162,9 +2404,10 @@
       subtree: true
     });
 
-    // Flush immediately (no debounce wait): observers are attached, so this
-    // only ever sends each node once thanks to the pendingSet guard.
-    flushReadyBlocks();
+    // WI-26: Initial sweep collects ALL eligible text nodes in viewport + ahead
+    // (regardless of tag, including DIV/SPAN on Douyin-style pages), and sends the first batch.
+    // Leftover or newly revealed items are handled via observer/scan on scroll.
+    initialScrollSweep();
   }
 
   function stopScrollFollowSession(updateStatus = true) {
@@ -1196,7 +2439,46 @@
       clearTimeout(scrollSession.retryTimer);
       scrollSession.retryTimer = null;
     }
+    if (scrollSession.sweepTimer) {
+      cancelSweepYield(scrollSession.sweepTimer);
+      scrollSession.sweepTimer = null;
+    }
+    if (scrollSession.flushTimer) {
+      cancelSweepYield(scrollSession.flushTimer);
+      scrollSession.flushTimer = null;
+    }
+    scrollSession.flushBlockWalker = null;
+    scrollSession.flushCurrentBlock = null;
+    scrollSession.followUpDomWalker = null;
+    scrollSession.followUpConsecutivePastBottom = 0;
+    scrollSession.domSweepNeeded = false;
+    scrollSession.overflowWarned = false;
+    if (scrollSession.flushSeenRecIds) {
+      scrollSession.flushSeenRecIds.clear();
+    }
+    scrollSession.overflowQueue = [];
+    if (scrollSession.queuedIds) scrollSession.queuedIds.clear();
+    scrollSession.sweepActive = false;
+    scrollSession.sweepYieldCount = 0;
     scrollSession.readyBlocks.clear();
+    scrollSession.blockedIds.clear();
+    scrollSession.failedIds.clear();
+    if (scrollSession.abortedIds) scrollSession.abortedIds.clear();
+    if (scrollSession.fallbackConsumedIds) scrollSession.fallbackConsumedIds.clear();
+    scrollSession.fallbackConsumed = false;
+    scrollSession.fallbackModel = null;
+    if (scrollSession.runConfig) {
+      scrollSession.runConfig.fallbackConsumed = false;
+      scrollSession.runConfig.model = null;
+      scrollSession.runConfig.primaryModel = null;
+    }
+    scrollSession.settings = {};
+    if (scrollSession.watchdogTimer) {
+      clearTimeout(scrollSession.watchdogTimer);
+      scrollSession.watchdogTimer = null;
+    }
+    scrollSession.watchdogRounds = 0;
+    scrollSession.watchdogLastApplied = 0;
     scrollSession.active = false;
     scrollSession.watching = false;
     scrollSession.inFlight = 0;
@@ -1213,6 +2495,11 @@
   }
 
   function cancelActiveTranslation() {
+    if (autoStartTimer) {
+      clearTimeout(autoStartTimer);
+      autoStartTimer = null;
+    }
+    autoStarting = false;
     epoch++;
     __wmtFire({ action: 'CANCEL_PENDING', epoch });
     stopScrollFollowSession(true);
@@ -1244,14 +2531,81 @@
         all: initial;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         font-size: 13px;
+        --wmt-fs-scale: 1;
+        --wmt-fab-scale: 1;
         color: #f4f4f5;
+        --wmt-panel-bg: #121318;
+        --wmt-text-title: #f4f4f5;
+        --wmt-text-body: #f4f4f5;
+        --wmt-text-secondary: #a1a1aa;
+        --wmt-text-muted: #71717a;
+        --wmt-border: rgba(255, 255, 255, 0.08);
+        --wmt-surface: rgba(255, 255, 255, 0.04);
+        --wmt-surface-hover: rgba(255, 255, 255, 0.09);
+        --wmt-mode-bg: rgba(255, 255, 255, 0.03);
+        --wmt-mode-border: rgba(255, 255, 255, 0.06);
+        --wmt-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+      :host([data-fontscale="sm"]) {
+        font-size: 11.5px;
+        --wmt-fs-scale: 0.9;
+      }
+      :host([data-fontscale="sm"]) .wmt-panel {
+        font-size: 11.5px;
+        padding: 11px;
+        gap: 8px;
+      }
+      :host([data-fontscale="sm"]) .wmt-title {
+        font-size: 12.5px;
+      }
+      :host([data-fontscale="sm"]) .wmt-switch-btn,
+      :host([data-fontscale="sm"]) .wmt-action-btn,
+      :host([data-fontscale="sm"]) .wmt-model-select {
+        font-size: 11px;
+        padding: 5px 10px;
+      }
+      :host([data-fontscale="md"]) {
+        font-size: 13px;
+        --wmt-fs-scale: 1;
+      }
+      :host([data-fontscale="lg"]) {
+        font-size: 15px;
+        --wmt-fs-scale: 1.15;
+      }
+      :host([data-fontscale="lg"]) .wmt-panel {
+        font-size: 15px;
+        padding: 16px;
+        gap: 12px;
+      }
+      :host([data-fontscale="lg"]) .wmt-title {
+        font-size: 16px;
+      }
+      :host([data-fontscale="lg"]) .wmt-switch-btn,
+      :host([data-fontscale="lg"]) .wmt-action-btn,
+      :host([data-fontscale="lg"]) .wmt-model-select {
+        font-size: 13.5px;
+        padding: 7px 14px;
+      }
+      :host([data-theme="light"]) {
+        color: #0f172a;
+        --wmt-panel-bg: #ffffff;
+        --wmt-text-title: #0f172a;
+        --wmt-text-body: #1e293b;
+        --wmt-text-secondary: #475569;
+        --wmt-text-muted: #64748b;
+        --wmt-border: rgba(0, 0, 0, 0.1);
+        --wmt-surface: rgba(0, 0, 0, 0.04);
+        --wmt-surface-hover: rgba(0, 0, 0, 0.08);
+        --wmt-mode-bg: rgba(0, 0, 0, 0.02);
+        --wmt-mode-border: rgba(0, 0, 0, 0.08);
+        --wmt-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.8);
       }
       *, *::before, *::after {
         box-sizing: border-box;
       }
       .wmt-btn {
-        width: 44px;
-        height: 44px;
+        width: calc(44px * var(--wmt-fab-scale, 1));
+        height: calc(44px * var(--wmt-fab-scale, 1));
         border-radius: 50%;
         background: #3b82f6;
         color: #ffffff;
@@ -1267,6 +2621,10 @@
         transition: transform 0.15s ease, background-color 0.2s;
         outline: none;
       }
+      .wmt-btn svg {
+        width: calc(22px * var(--wmt-fab-scale, 1));
+        height: calc(22px * var(--wmt-fab-scale, 1));
+      }
       .wmt-btn:hover {
         background: #2563eb;
       }
@@ -1279,10 +2637,10 @@
       }
       .wmt-badge {
         position: absolute;
-        top: 2px;
-        right: 2px;
-        width: 10px;
-        height: 10px;
+        top: calc(2px * var(--wmt-fab-scale, 1));
+        right: calc(2px * var(--wmt-fab-scale, 1));
+        width: calc(10px * var(--wmt-fab-scale, 1));
+        height: calc(10px * var(--wmt-fab-scale, 1));
         border-radius: 50%;
         border: 2px solid #ffffff;
         background: #9ca3af;
@@ -1307,13 +2665,16 @@
       }
       .wmt-panel {
         position: absolute;
-        bottom: 54px;
+        bottom: calc(44px * var(--wmt-fab-scale, 1) + 10px);
         right: 0;
         width: 280px;
-        background: #121318;
+        transform: scale(var(--wmt-fs-scale, 1));
+        transform-origin: bottom right;
+        background: var(--wmt-panel-bg);
         border-radius: 12px;
-        box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: var(--wmt-shadow);
+        border: 1px solid var(--wmt-border);
+        color: var(--wmt-text-body);
         padding: 14px;
         display: flex;
         flex-direction: column;
@@ -1328,18 +2689,18 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        border-bottom: 1px solid var(--wmt-border);
         padding-bottom: 8px;
       }
       .wmt-title {
         font-weight: 600;
         font-size: 14px;
-        color: #f4f4f5;
+        color: var(--wmt-text-title);
       }
       .wmt-close {
         background: transparent;
         border: none;
-        color: #71717a;
+        color: var(--wmt-text-muted);
         cursor: pointer;
         font-size: 16px;
         line-height: 1;
@@ -1347,8 +2708,8 @@
         border-radius: 4px;
       }
       .wmt-close:hover {
-        color: #ffffff;
-        background: rgba(255, 255, 255, 0.09);
+        color: var(--wmt-text-title);
+        background: var(--wmt-surface-hover);
       }
       .wmt-row {
         display: flex;
@@ -1360,12 +2721,39 @@
         font-weight: 600;
         padding: 2px 8px;
         border-radius: 9999px;
-        background: rgba(255, 255, 255, 0.06);
-        color: #a1a1aa;
+        background: var(--wmt-surface);
+        color: var(--wmt-text-secondary);
       }
       .wmt-status-tag.on {
         background: rgba(16, 185, 129, 0.15);
         color: #34d399;
+      }
+      .wmt-model-row {
+        gap: 8px;
+        align-items: center;
+      }
+      .wmt-model-lbl {
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--wmt-text-secondary);
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .wmt-model-select {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 11.5px;
+        font-family: inherit;
+        border: 1px solid var(--wmt-border);
+        background: var(--wmt-surface);
+        color: var(--wmt-text-title);
+        outline: none;
+        cursor: pointer;
+      }
+      .wmt-model-select:focus-visible {
+        border-color: #3b82f6;
       }
       .wmt-switch-btn {
         width: 100%;
@@ -1374,14 +2762,14 @@
         font-size: 12px;
         font-weight: 500;
         cursor: pointer;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.04);
-        color: #a1a1aa;
+        border: 1px solid var(--wmt-border);
+        background: var(--wmt-surface);
+        color: var(--wmt-text-secondary);
         transition: background 0.15s;
       }
       .wmt-switch-btn:hover {
-        background: rgba(255, 255, 255, 0.09);
-        color: #ffffff;
+        background: var(--wmt-surface-hover);
+        color: var(--wmt-text-title);
       }
       .wmt-switch-btn.active {
         background: #ef4444;
@@ -1392,10 +2780,10 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--wmt-mode-bg);
         padding: 8px 10px;
         border-radius: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--wmt-mode-border);
       }
       .wmt-mode-label {
         font-size: 12px;
@@ -1427,13 +2815,13 @@
         background: #2563eb;
       }
       .wmt-btn-secondary {
-        background: rgba(255, 255, 255, 0.04);
-        color: #a1a1aa;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: var(--wmt-surface);
+        color: var(--wmt-text-secondary);
+        border: 1px solid var(--wmt-border);
       }
       .wmt-btn-secondary:hover {
-        background: rgba(255, 255, 255, 0.09);
-        color: #ffffff;
+        background: var(--wmt-surface-hover);
+        color: var(--wmt-text-title);
       }
       .wmt-progress {
         font-size: 11px;
@@ -1443,7 +2831,7 @@
       }
       .wmt-hint {
         font-size: 11px;
-        color: #71717a;
+        color: var(--wmt-text-muted);
         text-align: center;
         line-height: 1.3;
       }
@@ -1473,30 +2861,34 @@
       <div class="wmt-panel" id="wmt-panel" style="display: none;">
         <div class="wmt-header">
           <span class="wmt-title">WebMCP Translator</span>
-          <button class="wmt-close" id="wmt-close" aria-label="Đóng panel">✕</button>
+          <button class="wmt-close" id="wmt-close" aria-label="Close">✕</button>
         </div>
         <div class="wmt-row">
-          <span>Trạng thái:</span>
-          <span class="wmt-status-tag" id="wmt-status-tag">Đang tắt</span>
+          <span class="wmt-status-lbl"></span>
+          <span class="wmt-status-tag" id="wmt-status-tag"></span>
         </div>
-        <button class="wmt-switch-btn" id="wmt-toggle-tab">Bật dịch tab này</button>
+        <div class="wmt-row wmt-model-row">
+          <span class="wmt-model-lbl"></span>
+          <select class="wmt-model-select" id="wmt-model-select" aria-label="Model"></select>
+        </div>
+        <button class="wmt-switch-btn" id="wmt-toggle-tab"></button>
         <div class="wmt-mode-group">
           <label class="wmt-mode-label">
             <input type="radio" name="wmt-mode" value="scroll-follow" checked />
-            Dịch đuổi theo scroll
+            <span class="wmt-mode-text-scroll"></span>
           </label>
           <label class="wmt-mode-label">
             <input type="radio" name="wmt-mode" value="full" />
-            Dịch toàn trang
+            <span class="wmt-mode-text-full"></span>
           </label>
         </div>
         <div class="wmt-actions">
-          <button class="wmt-action-btn wmt-btn-primary" id="wmt-action-translate">Dịch ngay</button>
-          <button class="wmt-action-btn wmt-btn-secondary" id="wmt-action-restore">Khôi phục</button>
+          <button class="wmt-action-btn wmt-btn-primary" id="wmt-action-translate"></button>
+          <button class="wmt-action-btn wmt-btn-secondary" id="wmt-action-restore"></button>
         </div>
         <div id="wmt-progress" class="wmt-progress" style="display:none;"></div>
         <div id="wmt-warn-msg" class="wmt-warning" style="display:none;"></div>
-        <div class="wmt-hint">Mở popup để cấu hình key/quyền/model</div>
+        <div class="wmt-hint"></div>
       </div>
     `;
 
@@ -1509,6 +2901,7 @@
       if (f) f.classList.toggle('busy', busy);
       if (b) b.classList.toggle('busy', busy);
     };
+    updateFabBusy();
 
     const fab = container.querySelector('#wmt-fab');
     const panel = container.querySelector('#wmt-panel');
@@ -1521,6 +2914,54 @@
     const modeRadios = container.querySelectorAll('input[name="wmt-mode"]');
     const warnMsg = container.querySelector('#wmt-warn-msg');
     const progressEl = container.querySelector('#wmt-progress');
+    const statusLbl = container.querySelector('.wmt-status-lbl');
+    const modelSelect = container.querySelector('#wmt-model-select');
+    const modelLbl = container.querySelector('.wmt-model-lbl');
+    const modeTextScroll = container.querySelector('.wmt-mode-text-scroll');
+    const modeTextFull = container.querySelector('.wmt-mode-text-full');
+    const hintEl = container.querySelector('.wmt-hint');
+
+    let currentUiLocale = 'vi';
+    let currentTheme = 'dark';
+    let currentFontScale = 'md';
+    let isPanelOpen = false;
+    let widgetState = {
+      effective: 'off',
+      siteEnabled: false,
+      tabOverride: null,
+      permission: false,
+      mode: 'scroll-follow',
+      widgetVisible: true,
+      position: null,
+      hasKey: false,
+      uiLocale: 'vi',
+      theme: 'dark',
+      uiFontScale: 'md'
+    };
+
+    function wmtT(key, params) {
+      if (typeof window !== 'undefined' && window.__wmtI18n && typeof window.__wmtI18n.t === 'function') {
+        return window.__wmtI18n.t(currentUiLocale, key, params);
+      }
+      return WIDGET_FALLBACK_LABELS[key] || key;
+    }
+    widgetTHook = wmtT;
+
+    function renderWidgetI18n() {
+      if (closeBtn) closeBtn.setAttribute('aria-label', wmtT('widget_close_label'));
+      if (statusLbl) statusLbl.textContent = wmtT('widget_status_label');
+      if (modelLbl) modelLbl.textContent = wmtT('widget_model_label');
+      if (modelSelect) modelSelect.setAttribute('aria-label', wmtT('widget_model_label'));
+      if (modeTextScroll) modeTextScroll.textContent = wmtT('widget_mode_scroll');
+      if (modeTextFull) modeTextFull.textContent = wmtT('widget_mode_full');
+      if (translateBtn) translateBtn.textContent = wmtT('widget_btn_translate');
+      if (restoreBtn) restoreBtn.textContent = wmtT('widget_btn_restore');
+      if (hintEl) hintEl.textContent = wmtT('widget_hint');
+      const isEffectiveOn = widgetState.effective === 'on';
+      if (statusTag) statusTag.textContent = isEffectiveOn ? wmtT('widget_status_on') : wmtT('widget_status_off');
+      if (toggleTabBtn) toggleTabBtn.textContent = isEffectiveOn ? wmtT('widget_toggle_tab_on') : wmtT('widget_toggle_tab_off');
+    }
+    renderWidgetI18n();
 
     function refreshWidgetProgress() {
       if (!progressEl) return;
@@ -1533,34 +2974,87 @@
       const applied = st.totalApplied || 0;
       const collected = st.totalCollected || 0;
       const failed = st.totalFailed || 0;
-      let text = collected > 0 ? `Đang dịch ${applied}/${collected} nodes...` : 'Đang dịch...';
-      if (failed > 0) text += ` (${failed} lỗi)`;
+      let text = collected > 0
+        ? wmtT('detail_translating_nodes', { applied, collected })
+        : wmtT('status_translating');
+      if (failed > 0) text += ' ' + wmtT('status_failed_count', { count: failed });
       if (st.lastError && st.lastError.code) text += ` [${st.lastError.code}]`;
       progressEl.textContent = text;
       progressEl.style.display = 'block';
     }
     widgetProgressIntervalId = setInterval(refreshWidgetProgress, 800);
 
-    let isPanelOpen = false;
-    let widgetState = {
-      effective: 'off',
-      siteEnabled: false,
-      tabOverride: null,
-      permission: false,
-      mode: 'scroll-follow',
-      widgetVisible: true,
-      position: null,
-      hasKey: false
-    };
-
     function setPanelVisibility(open) {
       isPanelOpen = open;
       panel.style.display = isPanelOpen ? 'flex' : 'none';
+      if (isPanelOpen) {
+        renderWidgetI18n();
+      }
     }
 
     function applyState(st) {
       if (!st) return;
       widgetState = { ...widgetState, ...st };
+
+      if (modelSelect) {
+        const curModel = st.model || widgetState.model || '';
+        const list = Array.isArray(st.availableModels) && st.availableModels.length > 0
+          ? st.availableModels
+          : (Array.isArray(widgetState.availableModels) && widgetState.availableModels.length > 0
+              ? widgetState.availableModels
+              : [curModel].filter(Boolean));
+        if (list.length > 0) {
+          modelSelect.innerHTML = '';
+          if ((st.showFavoritesOnly || widgetState.showFavoritesOnly) && (st.favoritesHint || widgetState.favoritesHint)) {
+            const hintOpt = document.createElement('option');
+            hintOpt.disabled = true;
+            hintOpt.textContent = `(${wmtT('fav_empty_hint_dropdown')})`;
+            modelSelect.appendChild(hintOpt);
+          }
+          const seen = new Set();
+          for (const m of list) {
+            const val = typeof m === 'string' ? m : m?.id;
+            if (val && !seen.has(val)) {
+              seen.add(val);
+              const opt = document.createElement('option');
+              opt.value = val;
+              opt.textContent = val;
+              if (val === curModel) opt.selected = true;
+              modelSelect.appendChild(opt);
+            }
+          }
+          if (curModel && !seen.has(curModel)) {
+            const opt = document.createElement('option');
+            opt.value = curModel;
+            opt.textContent = curModel;
+            opt.selected = true;
+            modelSelect.appendChild(opt);
+          }
+          modelSelect.value = curModel;
+        }
+      }
+
+      const supportedUiLocales = (typeof window !== 'undefined' && window.__wmtI18n && window.__wmtI18n.SUPPORTED_UI_LOCALES) || ['vi', 'en', 'ja', 'ko', 'zh', 'es', 'ru'];
+      if (widgetState.uiLocale && supportedUiLocales.includes(widgetState.uiLocale)) {
+        currentUiLocale = widgetState.uiLocale;
+        renderWidgetI18n();
+      }
+
+      if (widgetState.theme && (widgetState.theme === 'dark' || widgetState.theme === 'light')) {
+        currentTheme = widgetState.theme;
+        host.setAttribute('data-theme', currentTheme);
+      }
+
+      if (widgetState.uiFontScale && (widgetState.uiFontScale === 'sm' || widgetState.uiFontScale === 'md' || widgetState.uiFontScale === 'lg')) {
+        currentFontScale = widgetState.uiFontScale;
+        host.setAttribute('data-fontscale', currentFontScale);
+      }
+
+      if (typeof widgetState.fabSize === 'number' && !Number.isNaN(widgetState.fabSize)) {
+        const clampedFabSize = Math.max(0.75, Math.min(1.5, widgetState.fabSize));
+        host.setAttribute('data-fabsize', String(clampedFabSize));
+        host.style.setProperty('--wmt-fab-scale', String(clampedFabSize));
+      }
 
       // Effective Consent
       const isEffectiveOn = widgetState.effective === 'on';
@@ -1570,6 +3064,8 @@
           autoStartTimer = null;
         }
         autoStartAttempted = false;
+        autoStarting = false;
+        updateFabBusy();
         if (isTranslating || scrollSession.active || scrollSession.watching || scrollSession.inFlight > 0) {
           cancelActiveTranslation();
         }
@@ -1583,10 +3079,10 @@
       host.style.display = 'block';
 
       badge.classList.toggle('active', isEffectiveOn);
-      statusTag.textContent = isEffectiveOn ? 'Đang bật' : 'Đang tắt';
+      statusTag.textContent = isEffectiveOn ? wmtT('widget_status_on') : wmtT('widget_status_off');
       statusTag.classList.toggle('on', isEffectiveOn);
 
-      toggleTabBtn.textContent = isEffectiveOn ? 'Tắt dịch tab này' : 'Bật dịch tab này';
+      toggleTabBtn.textContent = isEffectiveOn ? wmtT('widget_toggle_tab_on') : wmtT('widget_toggle_tab_off');
       toggleTabBtn.classList.toggle('active', isEffectiveOn);
 
       // Mode
@@ -1608,10 +3104,10 @@
 
       // Warnings
       if (!widgetState.permission) {
-        warnMsg.textContent = 'Thiếu quyền host! Mở popup để cấp quyền.';
+        warnMsg.textContent = wmtT('widget_warn_no_perm');
         warnMsg.style.display = 'block';
       } else if (!widgetState.hasKey) {
-        warnMsg.textContent = 'Chưa cấu hình API key! Mở popup để nhập key.';
+        warnMsg.textContent = wmtT('widget_warn_no_key');
         warnMsg.style.display = 'block';
       } else {
         warnMsg.style.display = 'none';
@@ -1636,14 +3132,33 @@
       // response must not block a later enabled push, because the
       // WIDGET_STATE_CHANGED re-query requires !autoStartAttempted.
       autoStartAttempted = true;
+      autoStarting = true;
+      updateFabBusy();
 
       autoStartTimer = setTimeout(() => {
         autoStartTimer = null;
         try {
-          if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
-          if (userRestored) return;
-          if (isTranslating || scrollSession.watching) return;
-          if (!lastTranslateStatus) return;
+          if (__wmtHalted || !__wmtValidContext()) {
+            autoStarting = false;
+            updateFabBusy();
+            __wmtHaltStale();
+            return;
+          }
+          if (userRestored) {
+            autoStarting = false;
+            updateFabBusy();
+            return;
+          }
+          if (isTranslating || scrollSession.watching) {
+            autoStarting = false;
+            updateFabBusy();
+            return;
+          }
+          if (!lastTranslateStatus) {
+            autoStarting = false;
+            updateFabBusy();
+            return;
+          }
 
           // Re-check the latest state: permission/hasKey/autoStart may have
           // changed during the settle interval while effective stayed on.
@@ -1652,15 +3167,23 @@
           const latest = widgetState || st || {};
           if (!latest.autoStart || latest.effective !== 'on' || latest.hasKey !== true || latest.permission !== true) {
             autoStartAttempted = false;
+            autoStarting = false;
+            updateFabBusy();
             return;
           }
           if (location.protocol !== 'http:' && location.protocol !== 'https:') {
             autoStartAttempted = false;
+            autoStarting = false;
+            updateFabBusy();
             return;
           }
           const targetMode = latest.mode || 'scroll-follow';
           currentMode = targetMode;
           lastTranslateStatus.mode = targetMode;
+
+          // Auto-start scheduled window elapsed: hand over to in-flight translation
+          autoStarting = false;
+          updateFabBusy();
 
           if (targetMode === 'scroll-follow') {
             startScrollFollowSession(latest);
@@ -1670,6 +3193,8 @@
             });
           }
         } catch (err) {
+          autoStarting = false;
+          updateFabBusy();
           if (__wmtInvalidatedErr(err)) { __wmtHaltStale(); return; }
           try { console.error('[WebMCP Translator] auto-start failed:', err && err.message ? err.message : err); } catch {}
           try {
@@ -1848,7 +3373,7 @@
           } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
           if (resp && resp.error) {
           if (resp.error.code === 'PERMISSION_REQUIRED') {
-            warnMsg.textContent = 'Cần cấp quyền host! Hãy mở popup để cấp quyền.';
+            warnMsg.textContent = wmtT('widget_warn_no_perm');
             warnMsg.style.display = 'block';
           }
           return;
@@ -1863,7 +3388,7 @@
             __wmtFire({ action: 'CANCEL_PENDING', epoch });
           }
         } else if (widgetState.effective === 'on') {
-          // Turning ON starts translating immediately (scroll-aware), same as Dịch ngay
+          // Turning ON starts translating immediately (scroll-aware), same as translate now
           try {
             if (currentMode === 'scroll-follow' || widgetState.mode === 'scroll-follow') {
               startScrollFollowSession(widgetState);
@@ -1912,6 +3437,31 @@
         }
       });
     });
+
+    if (modelSelect) {
+      modelSelect.addEventListener('change', () => {
+        if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
+        const selectedModel = modelSelect.value;
+        if (!selectedModel) return;
+        try {
+          chrome.runtime.sendMessage({
+            action: 'WIDGET_SET_MODE',
+            mode: currentMode,
+            model: selectedModel
+          }, (resp) => {
+            try {
+              if (chrome.runtime && chrome.runtime.lastError) {
+                if (/extension context invalidated|context invalidated/i.test(chrome.runtime.lastError.message || '')) { __wmtHaltStale(); return; }
+                return;
+              }
+            } catch (e) { if (__wmtInvalidatedErr(e)) { __wmtHaltStale(); return; } return; }
+            if (resp && !resp.error) {
+              widgetState.model = selectedModel;
+            }
+          });
+        } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+      });
+    }
 
     // Translate Now Button
     translateBtn.addEventListener('click', () => {
@@ -1967,6 +3517,8 @@
             autoStartTimer = null;
             autoStartAttempted = false;
           }
+          autoStarting = false;
+          updateFabBusy();
         } catch {}
         try {
           const { action, ...pushedState } = msg;
@@ -2124,8 +3676,10 @@
           return false;
         }
         restoreKept.set(rec.id, rec);
-        if (scrollSession.collectedIds) scrollSession.collectedIds.add(rec.id);
-        else lastTranslateStatus.totalCollected++;
+        if (currentMode === 'scroll-follow') {
+          if (scrollSession.collectedIds) scrollSession.collectedIds.add(rec.id);
+          else lastTranslateStatus.totalCollected++;
+        }
         lastTranslateStatus.totalApplied++;
         lastTranslateStatus.progressApplied = (lastTranslateStatus.progressApplied || 0) + 1;
         updateFabBusy();
@@ -2144,7 +3698,9 @@
           mode: currentMode,
           watching: scrollSession.watching,
           actualModel: lastTranslateStatus.actualModel || lastTranslateStatus.model,
-          fallbackIndex: lastTranslateStatus.fallbackIndex || 0
+          fallbackIndex: lastTranslateStatus.fallbackIndex || 0,
+          autoStarting,
+          busy: Boolean(autoStarting || isTranslating || scrollSession.inFlight > 0)
         },
         restorableCount: restoreKept.size,
         documentId,
@@ -2168,19 +3724,42 @@
       ...lastTranslateStatus,
       mode: currentMode,
       watching: scrollSession.watching,
-      restorable: restoreKept.size
+      restorable: restoreKept.size,
+      autoStarting,
+      busy: Boolean(autoStarting || isTranslating || scrollSession.inFlight > 0)
     }),
+    isAutoStarting: () => autoStarting,
+    isFabBusy: () => Boolean(autoStarting || isTranslating || scrollSession.inFlight > 0),
     _getWidgetHost: () => document.getElementById('__wmt-widget-host'),
+    _wmtT: (k, p) => widgetTHook(k, p),
     documentId,
     getEpoch: () => epoch,
     setEpoch: (n) => { epoch = n; },
     startScrollFollowSession,
-    stopScrollFollowSession
+    stopScrollFollowSession,
+    flushReadyBlocks,
+    initialScrollSweep,
+    getScrollSession: () => scrollSession,
+    getOverflowQueue: () => scrollSession.overflowQueue,
+    checkWatchdogReconciliation,
+    dispatchScrollBatch,
+    dispatchScrollCandidateRecs,
+    getWatchdogStatus: () => ({
+      rounds: scrollSession.watchdogRounds,
+      lastApplied: scrollSession.watchdogLastApplied,
+      runToken: scrollSession.watchdogRunToken
+    })
   };
 
   // Fire-and-forget CANCEL_PENDING on navigation / page hide (stale-safe)
   window.addEventListener('pagehide', () => {
     try {
+      if (autoStartTimer) {
+        clearTimeout(autoStartTimer);
+        autoStartTimer = null;
+      }
+      autoStarting = false;
+      updateFabBusy();
       epoch++;
       __wmtFire({ action: 'CANCEL_PENDING', epoch, reason: 'pagehide' });
     } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }

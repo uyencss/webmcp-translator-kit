@@ -166,3 +166,59 @@ export function createTranslationCache({
     clear
   };
 }
+
+export const L2_CACHE_KEY = 'trCache';
+export const L2_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (604,800,000 ms)
+export const L2_MAX_SIZE_BYTES = 2.5 * 1024 * 1024; // 2.5 MiB (2,621,440 bytes)
+
+/**
+ * Prunes expired entries and applies LRU eviction (by savedAt) to keep trCache within maxSizeBytes.
+ * Mutates trCache in-place.
+ *
+ * @param {Record<string, { text: string, savedAt: number }>} trCache
+ * @param {number} [incomingBytes=0]
+ * @param {{ ttlMs?: number, maxSizeBytes?: number, now?: () => number }} [options]
+ * @returns {boolean} true if within budget, false if incoming exceeds max budget
+ */
+export function pruneL2Cache(trCache, incomingBytes = 0, {
+  ttlMs = L2_CACHE_TTL_MS,
+  maxSizeBytes = L2_MAX_SIZE_BYTES,
+  now = Date.now
+} = {}) {
+  if (!trCache || typeof trCache !== 'object') return false;
+  if (incomingBytes > maxSizeBytes) return false;
+
+  const currentTime = typeof now === 'function' ? now() : (typeof now === 'number' ? now : Date.now());
+
+  // 1. Evict expired entries
+  for (const key of Object.keys(trCache)) {
+    const entry = trCache[key];
+    if (!entry || typeof entry.savedAt !== 'number' || currentTime - entry.savedAt >= ttlMs) {
+      delete trCache[key];
+    }
+  }
+
+  // 2. Measure UTF-8 bytes and evict LRU if needed
+  let curBytes = countUtf8Bytes(JSON.stringify(trCache));
+  if (curBytes + incomingBytes <= maxSizeBytes) {
+    return true;
+  }
+
+  // Sort keys by savedAt ascending (oldest first)
+  const sortedKeys = Object.keys(trCache).sort((a, b) => {
+    const sa = trCache[a]?.savedAt || 0;
+    const sb = trCache[b]?.savedAt || 0;
+    return sa - sb;
+  });
+
+  for (const k of sortedKeys) {
+    delete trCache[k];
+    curBytes = countUtf8Bytes(JSON.stringify(trCache));
+    if (curBytes + incomingBytes <= maxSizeBytes) {
+      break;
+    }
+  }
+
+  return true;
+}
+

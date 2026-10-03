@@ -71,8 +71,10 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
   }
 
   function release() {
-    if (queue.length > 0) {
+    activeCount = Math.max(0, activeCount - 1);
+    if (queue.length > 0 && activeCount < maxConcurrency) {
       const next = queue.shift();
+      activeCount++;
       if (next.timer) {
         clearTimeout(next.timer);
       }
@@ -80,8 +82,23 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
         next.signal.removeEventListener('abort', next.onAbort);
       }
       next.resolve(true);
-    } else {
-      activeCount = Math.max(0, activeCount - 1);
+    }
+  }
+
+  function setMaxConcurrency(newConcurrency) {
+    const parsed = typeof newConcurrency === 'number' ? newConcurrency : parseInt(newConcurrency, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    maxConcurrency = Math.floor(parsed);
+    while (queue.length > 0 && activeCount < maxConcurrency) {
+      const next = queue.shift();
+      activeCount++;
+      if (next.timer) {
+        clearTimeout(next.timer);
+      }
+      if (next.onAbort && next.signal) {
+        next.signal.removeEventListener('abort', next.onAbort);
+      }
+      next.resolve(true);
     }
   }
 
@@ -100,6 +117,7 @@ export function createSemaphore({ maxConcurrency = 2, timeoutMs = 120000 } = {})
     withPermit,
     active: () => activeCount,
     waiting: () => queue.length,
-    getMaxConcurrency: () => maxConcurrency
+    getMaxConcurrency: () => maxConcurrency,
+    setMaxConcurrency
   };
 }

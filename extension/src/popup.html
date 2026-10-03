@@ -20,25 +20,61 @@
         <h1 class="brand-title">WebMCP Translator</h1>
       </div>
       <div class="header-right">
-        <span class="privacy-note" title="Dữ liệu trang được gửi an toàn tới Base URL đã cấu hình" aria-label="Thông tin bảo mật">
+        <span class="privacy-note" title="Dữ liệu trang được gửi an toàn tới Base URL đã cấu hình" aria-label="Thông tin bảo mật" data-i18n-title="privacy_note" data-i18n-aria-label="privacy_aria">
           <svg class="icon icon-sm text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
           </svg>
         </span>
-        <span class="badge" id="slice-badge" title="Chế độ dịch trực tiếp qua 9router API">Direct</span>
+        <button type="button" id="btn-header-menu" class="btn-icon header-menu-btn" title="Cài đặt & nhật ký" aria-label="Mở menu cài đặt" aria-haspopup="true" aria-expanded="false" data-i18n-title="menu_settings_title" data-i18n-aria-label="menu_settings_aria">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="1.5"/>
+            <circle cx="19" cy="12" r="1.5"/>
+            <circle cx="5" cy="12" r="1.5"/>
+          </svg>
+        </button>
       </div>
     </header>
+
+    <!-- Settings Dropdown Menu Overlay -->
+    <div id="menu-overlay" class="menu-overlay" style="display: none;" aria-hidden="true">
+      <div id="menu-backdrop" class="menu-backdrop"></div>
+      <div id="settings-menu" class="settings-dropdown" role="menu" aria-label="Menu cài đặt" data-i18n-aria-label="menu_title">
+        <button type="button" class="menu-item" id="menu-item-config" role="menuitem">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 10a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M6 4v4"/><path d="M6 12v8"/><path d="M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M12 4v10"/><path d="M12 18v2"/><path d="M16 7a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M18 4v1"/><path d="M18 9v11"/>
+          </svg>
+          <span data-i18n="tab_config">Cấu hình</span>
+        </button>
+        <button type="button" class="menu-item" id="menu-item-log" role="menuitem">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
+            <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/>
+            <path d="M9 9l1 0"/><path d="M9 13l6 0"/><path d="M9 17l6 0"/>
+          </svg>
+          <span data-i18n="tab_log">Nhật ký</span>
+        </button>
+        <div class="menu-separator"></div>
+        <button type="button" class="menu-item" id="menu-item-export" role="menuitem">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/>
+            <polyline points="7 11 12 16 17 11"/>
+            <line x1="12" y1="4" x2="12" y2="16"/>
+          </svg>
+          <span data-i18n="menu_export_json">Xuất cấu hình JSON</span>
+        </button>
+      </div>
+    </div>
 
     <!-- Key access banner (Fail-closed error only, hidden by default) -->
     <div class="error-banner" id="key-access-banner" role="alert" style="display: none;">
       <svg class="icon icon-sm text-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/>
       </svg>
-      <span>[KEY_ACCESS_UNAVAILABLE] Lỗi bộ nhớ extension.</span>
+      <span data-i18n="key_access_error">[KEY_ACCESS_UNAVAILABLE] Lỗi bộ nhớ extension.</span>
     </div>
 
     <!-- Tablist (role=tablist) -->
-    <div class="tab-list" role="tablist" aria-label="Cài đặt translator">
+    <div class="tab-list" role="tablist" aria-label="Cài đặt translator" data-i18n-aria-label="tablist_aria">
       <button type="button" class="tab-btn active" role="tab" id="tab-translate" aria-selected="true" aria-controls="tabpanel-translate" tabindex="0">
         <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/>
@@ -46,21 +82,14 @@
           <path d="M12 20l4 -9l4 9"/>
           <path d="M19.1 18h-6.2"/>
         </svg>
-        <span>Dịch</span>
+        <span data-i18n="tab_translate">Dịch</span>
       </button>
       <button type="button" class="tab-btn" role="tab" id="tab-auto" aria-selected="false" aria-controls="tabpanel-auto" tabindex="-1">
         <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/>
           <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/>
         </svg>
-        <span>Tự động</span>
-      </button>
-      <button type="button" class="tab-btn" role="tab" id="tab-connect" aria-selected="false" aria-controls="tabpanel-connect" tabindex="-1">
-        <svg class="icon tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/>
-          <path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M20 9l-3.5 3.5"/>
-        </svg>
-        <span>Kết nối</span>
+        <span data-i18n="tab_auto">Tự động</span>
       </button>
     </div>
 
@@ -69,48 +98,29 @@
       <!-- Ngôn ngữ -->
       <div class="form-row">
         <div class="form-group flex-1">
-          <label for="select-src-lang">Nguồn</label>
-          <select id="select-src-lang" aria-label="Ngôn ngữ nguồn">
-            <option value="auto">Tự động (auto)</option>
-            <option value="zh">Tiếng Trung (zh)</option>
-            <option value="en">Tiếng Anh (en)</option>
-            <option value="ja">Tiếng Nhật (ja)</option>
-            <option value="ko">Tiếng Hàn (ko)</option>
-          </select>
+          <label for="select-src-lang" id="label-src-lang" data-i18n="src_lang_label">Nguồn</label>
+          <select id="select-src-lang" aria-label="Ngôn ngữ nguồn" data-i18n-aria-label="src_lang_aria"></select>
         </div>
         <div class="form-group flex-1">
-          <label for="select-tgt-lang">Đích</label>
-          <select id="select-tgt-lang" aria-label="Ngôn ngữ đích">
-            <option value="vi" selected>Tiếng Việt (vi)</option>
-            <option value="en">Tiếng Anh (en)</option>
-            <option value="zh">Tiếng Trung (zh)</option>
-          </select>
+          <label for="select-tgt-lang" id="label-tgt-lang" data-i18n="tgt_lang_label">Đích</label>
+          <select id="select-tgt-lang" aria-label="Ngôn ngữ đích" data-i18n-aria-label="tgt_lang_aria"></select>
         </div>
       </div>
 
       <!-- Actions: Translate (Primary) & Restore (Ghost) -->
-      <div class="actions-card" aria-label="Hành động dịch">
-        <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" disabled>
+      <div class="actions-card" aria-label="Hành động dịch" data-i18n-aria-label="actions_aria">
+        <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" data-i18n-title="btn_translate_title" data-i18n-aria-label="btn_translate_title" disabled>
           <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M7 4v16l13 -8z"/>
           </svg>
-          <span>Dịch trang</span>
+          <span id="btn-translate-text" data-i18n="btn_translate">Dịch trang</span>
         </button>
-        <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" disabled>
+        <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" data-i18n-title="btn_restore_title" data-i18n-aria-label="btn_restore_title" disabled>
           <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>
           </svg>
-          <span>Khôi phục</span>
+          <span id="btn-restore-text" data-i18n="btn_restore">Khôi phục</span>
         </button>
-      </div>
-
-      <!-- Floating widget toggle -->
-      <div class="form-group-checkbox">
-        <label class="toggle-switch-label" for="checkbox-widget-visible">
-          <input type="checkbox" id="checkbox-widget-visible" checked />
-          <span class="toggle-slider"></span>
-          <span class="toggle-text">Hiện icon nổi trên trang</span>
-        </label>
       </div>
     </section>
 
@@ -119,8 +129,8 @@
       <!-- Thêm site tự dịch -->
       <div class="card-compact auto-translate-header-card">
         <div class="compact-header">
-          <span class="field-title">Trang tự động dịch</span>
-          <button type="button" id="btn-add-current-site" class="btn-icon btn-sm" title="Thêm trang (lấy sẵn trang hiện tại)" aria-label="Thêm trang vào danh sách tự động dịch">
+          <span class="field-title" data-i18n="auto_header_title">Trang tự động dịch</span>
+          <button type="button" id="btn-add-current-site" class="btn-icon btn-sm" title="Thêm trang (lấy sẵn trang hiện tại)" aria-label="Thêm trang vào danh sách tự động dịch" data-i18n-title="auto_add_current_title" data-i18n-aria-label="auto_add_current">
             <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
             </svg>
@@ -130,122 +140,305 @@
       </div>
 
       <!-- Danh sách site cấu hình riêng -->
-      <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch"></div>
+      <div class="auto-sites-list" id="auto-sites-list" role="list" aria-label="Danh sách trang web tự động dịch" data-i18n-aria-label="auto_sites_list_aria"></div>
     </section>
 
-    <!-- Tab 3: Kết nối (icon-first, autosave — không nút Lưu) -->
-    <section class="section tab-panel hidden" id="tabpanel-connect" role="tabpanel" aria-labelledby="tab-connect" tabindex="0">
-      <!-- Primary connection section -->
-      <div class="card-compact primary-connect-card">
-        <div class="compact-header">
-          <span class="key-status-indicator" id="key-status-indicator">Chưa lưu key</span>
-        </div>
-
-        <div class="form-group">
-          <div class="input-with-button">
-            <span class="field-icon" title="Base URL" aria-hidden="true">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M10 13a5 5 0 0 0 7.54 .54l3 -3a5 5 0 0 0 -7.07 -7.07l-1.72 1.71"/>
-                <path d="M14 11a5 5 0 0 0 -7.54 -.54l-3 3a5 5 0 0 0 7.07 7.07l1.71 -1.71"/>
-              </svg>
-            </span>
-            <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" title="Base URL của 9router" />
-            <button type="button" id="btn-base-perm" class="btn-icon" title="Cấp quyền kết nối Base URL" aria-label="Cấp quyền kết nối Base URL">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 3l7 3v5c0 5 -3.5 8.5 -7 10c-3.5 -1.5 -7 -5 -7 -10v-5z"/>
-                <path d="M9 12l2 2l4 -4"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <div class="input-with-button">
-            <span class="field-icon" title="API Key" aria-hidden="true">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="8" cy="15" r="4"/>
-                <path d="M10.85 12.15l8.5 -8.5"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>
-              </svg>
-            </span>
-            <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" title="API Key — tự lưu khi gõ xong" />
-            <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện hoặc ẩn API key" aria-label="Hiện hoặc ẩn API key">
-              <svg class="icon icon-sm eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/>
-                <path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6"/>
-              </svg>
-            </button>
-            <button type="button" id="btn-delete-key" class="btn-icon btn-danger-icon" title="Xoá API key" aria-label="Xoá API key">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <div class="input-with-button">
-            <span class="field-icon" title="Model" aria-hidden="true">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M7 7h10v10h-10z"/><path d="M9 2v3"/><path d="M15 2v3"/><path d="M9 19v3"/><path d="M15 19v3"/><path d="M2 9h3"/><path d="M2 15h3"/><path d="M19 9h3"/><path d="M19 15h3"/>
-              </svg>
-            </span>
-            <select id="select-model" aria-label="Chọn primary model dịch" title="Primary model dịch">
-              <optgroup label="Recommended">
-                <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
-                <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
-                <option value="do/deepseek-v4.1-flash">do/deepseek-v4.1-flash</option>
-                <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
-              </optgroup>
-            </select>
-            <button type="button" id="btn-toggle-favorite" class="btn-icon btn-star" title="Thêm/bỏ yêu thích model này" aria-label="Thêm hoặc bỏ model đang chọn khỏi danh sách yêu thích">
-              <svg class="icon icon-sm star-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/>
-              </svg>
-            </button>
-            <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Fallbacks section (Fallback v2) -->
-      <div class="card-compact fallbacks-card">
-        <div class="compact-header">
-          <div class="fallbacks-title-group">
-            <span class="field-icon" title="Dự phòng (tối đa 2)" aria-hidden="true">
-              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2l9 5l-9 5l-9 -5z"/><path d="M3 12l9 5l9 -5"/><path d="M3 17l9 5l9 -5"/>
-              </svg>
-            </span>
-            <span class="sub-hint" title="Tối đa 2 fallback models/providers khi primary gặp lỗi 5xx">(tối đa 2)</span>
-          </div>
-          <button type="button" id="btn-add-fallback" class="btn btn-xs btn-outline" title="Thêm fallback row" aria-label="Thêm fallback row">
-            <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+    <!-- Modal Dialog Overlay for Config and Log -->
+    <div id="modal-overlay" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="modal-title">
+      <div id="modal-backdrop" class="modal-backdrop"></div>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 id="modal-title" class="modal-title" data-i18n="tab_config">Cấu hình</h2>
+          <button type="button" id="modal-close-btn" class="modal-close-btn" title="Đóng cửa sổ" aria-label="Đóng cửa sổ" data-i18n-title="btn_close_modal" data-i18n-aria-label="btn_close_modal">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
-            <span>Thêm dự phòng</span>
+          </button>
+        </div>
+        <div class="modal-body" id="modal-body">
+          <!-- Tab 3: Cấu hình (Sub-menu: Kết nối | Giao diện | Yêu thích) -->
+          <section class="section tab-panel hidden" id="tabpanel-config" role="tabpanel" aria-labelledby="menu-item-config" tabindex="0">
+      <nav class="subtab-nav" role="tablist" aria-label="Phân mục cấu hình" data-i18n-aria-label="config_subnav_aria">
+        <button type="button" class="subtab-btn active" id="subtab-connect" role="tab" aria-selected="true" aria-controls="config-section-connect" data-subtab="connect">
+          <span data-i18n="config_subtab_connect">Kết nối</span>
+        </button>
+        <button type="button" class="subtab-btn" id="subtab-appearance" role="tab" aria-selected="false" aria-controls="config-section-appearance" data-subtab="appearance">
+          <span data-i18n="config_subtab_appearance">Giao diện</span>
+        </button>
+        <button type="button" class="subtab-btn" id="subtab-favorites" role="tab" aria-selected="false" aria-controls="config-section-favorites" data-subtab="favorites">
+          <span data-i18n="config_subtab_favorites">Yêu thích</span>
+        </button>
+      </nav>
+
+      <!-- Subpanel 1: Kết nối -->
+      <div class="config-subpanel" id="config-section-connect" role="tabpanel" aria-labelledby="subtab-connect">
+        <div class="card-compact primary-connect-card">
+          <div class="compact-header">
+            <span class="key-status-indicator" id="key-status-indicator" data-i18n="conn_key_not_stored">Chưa lưu key</span>
+          </div>
+
+          <div class="form-group">
+            <div class="input-with-button">
+              <span class="field-icon" title="Base URL" aria-hidden="true" data-i18n-title="conn_base_url_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54 .54l3 -3a5 5 0 0 0 -7.07 -7.07l-1.72 1.71"/>
+                  <path d="M14 11a5 5 0 0 0 -7.54 -.54l-3 3a5 5 0 0 0 7.07 7.07l1.71 -1.71"/>
+                </svg>
+              </span>
+              <input type="text" id="input-base-url" placeholder="http://localhost:8080/v1" autocomplete="off" aria-label="Base URL của 9router" title="Base URL của 9router" data-i18n-placeholder="conn_base_url_placeholder" data-i18n-aria-label="conn_base_url_aria" data-i18n-title="conn_base_url_aria" />
+              <button type="button" id="btn-base-perm" class="btn-icon" title="Cấp quyền kết nối Base URL" aria-label="Cấp quyền kết nối Base URL" data-i18n-title="conn_base_perm_title" data-i18n-aria-label="conn_base_perm_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 3l7 3v5c0 5 -3.5 8.5 -7 10c-3.5 -1.5 -7 -5 -7 -10v-5z"/>
+                  <path d="M9 12l2 2l4 -4"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="input-with-button">
+              <span class="field-icon" title="API Key" aria-hidden="true" data-i18n-title="conn_api_key_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="8" cy="15" r="4"/>
+                  <path d="M10.85 12.15l8.5 -8.5"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>
+                </svg>
+              </span>
+              <input type="password" id="input-api-key" placeholder="Nhập API key" autocomplete="off" aria-label="API Key" title="API Key — tự lưu khi gõ xong" data-i18n-placeholder="conn_api_key_placeholder" data-i18n-aria-label="conn_api_key_label" data-i18n-title="conn_api_key_title" />
+              <button type="button" id="btn-toggle-key" class="btn-icon" title="Hiện hoặc ẩn API key" aria-label="Hiện hoặc ẩn API key" data-i18n-title="conn_btn_toggle_key_title" data-i18n-aria-label="conn_btn_toggle_key_title">
+                <svg class="icon icon-sm eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/>
+                  <path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6"/>
+                </svg>
+              </button>
+              <button type="button" id="btn-delete-key" class="btn-icon btn-danger-icon" title="Xoá API key" aria-label="Xoá API key" data-i18n-title="conn_btn_delete_key_title" data-i18n-aria-label="conn_btn_delete_key_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="input-with-button">
+              <span class="field-icon" title="Model" aria-hidden="true" data-i18n-title="conn_model_label">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 7h10v10h-10z"/><path d="M9 2v3"/><path d="M15 2v3"/><path d="M9 19v3"/><path d="M15 19v3"/><path d="M2 9h3"/><path d="M2 15h3"/><path d="M19 9h3"/><path d="M19 15h3"/>
+                </svg>
+              </span>
+              <select id="select-model" aria-label="Chọn primary model dịch" title="Primary model dịch" data-i18n-aria-label="conn_model_select_aria" data-i18n-title="conn_model_select_title">
+                <optgroup label="Recommended" data-i18n-label="model_group_recommended">
+                  <option value="ag/gemini-3.1-pro-low" selected>ag/gemini-3.1-pro-low</option>
+                  <option value="do/glm-5.3-flash">do/glm-5.3-flash</option>
+                  <option value="do/deepseek-v4.1-flash">do/deepseek-v4.1-flash</option>
+                  <option value="ag/gemini-3.8-flash">ag/gemini-3.8-flash</option>
+                </optgroup>
+              </select>
+              <button type="button" id="btn-toggle-favorite" class="btn-icon btn-star" title="Thêm/bỏ yêu thích model này" aria-label="Thêm hoặc bỏ model đang chọn khỏi danh sách yêu thích" data-i18n-title="fav_add" data-i18n-aria-label="fav_add">
+                <svg class="icon icon-sm star-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/>
+                </svg>
+              </button>
+              <button type="button" id="btn-refresh-models" class="btn-icon" title="Làm mới danh sách model" aria-label="Làm mới danh sách model" data-i18n-title="conn_btn_refresh_models_title" data-i18n-aria-label="conn_btn_refresh_models_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fallbacks section (Fallback v2) -->
+        <div class="card-compact fallbacks-card">
+          <div class="compact-header">
+            <div class="fallbacks-title-group">
+              <span class="field-icon" title="Dự phòng (tối đa 2)" aria-hidden="true" data-i18n-title="conn_fallbacks_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2l9 5l-9 5l-9 -5z"/><path d="M3 12l9 5l9 -5"/><path d="M3 17l9 5l9 -5"/>
+                </svg>
+              </span>
+              <span class="sub-hint" title="Tối đa 2 fallback models/providers khi primary gặp lỗi 5xx" data-i18n-title="conn_fallbacks_hint_title" data-i18n="conn_fallbacks_max">(tối đa 2)</span>
+            </div>
+            <button type="button" id="btn-add-fallback" class="btn btn-xs btn-outline" title="Thêm fallback row" aria-label="Thêm fallback row" data-i18n-title="conn_btn_add_fallback_title" data-i18n-aria-label="conn_btn_add_fallback">
+              <svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+              </svg>
+              <span data-i18n="conn_btn_add_fallback">Thêm dự phòng</span>
+            </button>
+          </div>
+
+          <div class="fallback-list" id="fallback-list" aria-label="Danh sách fallback providers" data-i18n-aria-label="conn_fallback_list_aria">
+            <!-- Fallback rows dynamically rendered by JS -->
+          </div>
+        </div>
+
+        <!-- Rate Limits section (WI-28) -->
+        <div class="card-compact rate-limits-card">
+          <div class="compact-header">
+            <div class="rate-limits-title-group">
+              <span class="field-icon" title="Giới hạn tốc độ" aria-hidden="true" data-i18n-title="conn_rate_limits_title">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/>
+                  <path d="M12 7v5l3 3"/>
+                </svg>
+              </span>
+              <span class="field-title" data-i18n="conn_rate_limits_title">Giới hạn tốc độ</span>
+            </div>
+          </div>
+
+          <div class="rate-limits-inputs">
+            <div class="rate-limit-row">
+              <label for="input-rate-tab" class="rate-limit-label" data-i18n="conn_rate_tab_label">Batch tối đa / phút / tab</label>
+              <input type="number" id="input-rate-tab" min="1" max="20" step="1" value="4" class="rate-limit-input" aria-label="Batch tối đa / phút / tab" data-i18n-aria-label="conn_rate_tab_label" />
+            </div>
+            <div class="rate-limit-row">
+              <label for="input-rate-site" class="rate-limit-label" data-i18n="conn_rate_site_label">Batch tối đa / phút / site</label>
+              <input type="number" id="input-rate-site" min="1" max="60" step="1" value="12" class="rate-limit-input" aria-label="Batch tối đa / phút / site" data-i18n-aria-label="conn_rate_site_label" />
+            </div>
+            <div class="rate-limit-row">
+              <label for="input-rate-concurrency" class="rate-limit-label" data-i18n="conn_rate_concurrency_label">Số request đồng thời</label>
+              <input type="number" id="input-rate-concurrency" min="1" max="4" step="1" value="2" class="rate-limit-input" aria-label="Số request đồng thời" data-i18n-aria-label="conn_rate_concurrency_label" />
+            </div>
+          </div>
+
+          <div id="rate-limits-hint" class="rate-limits-hint" role="status" style="display: none;"></div>
+          <div class="rate-limits-warning" data-i18n="conn_rate_warning">Lưu ý: Tăng giá trị quá cao có thể khiến provider trả lỗi rate limit hoặc khoá tài khoản.</div>
+        </div>
+
+        <div class="export-config-row" style="margin-top: 10px;">
+          <div class="form-group-checkbox export-keys-checkbox-wrap" style="margin-bottom: 8px;">
+            <label class="toggle-switch-label" for="checkbox-export-keys">
+              <input type="checkbox" id="checkbox-export-keys" checked />
+              <span class="toggle-slider"></span>
+              <span class="toggle-text" id="label-export-keys" data-i18n="export_include_keys_label">Kèm API keys</span>
+            </label>
+          </div>
+          <button type="button" id="btn-export-config-connect" class="btn btn-secondary w-full" title="Xuất cấu hình JSON" aria-label="Xuất cấu hình JSON" data-i18n-title="menu_export_json" data-i18n-aria-label="menu_export_json">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/>
+              <polyline points="7 11 12 16 17 11"/>
+              <line x1="12" y1="4" x2="12" y2="16"/>
+            </svg>
+            <span data-i18n="menu_export_json">Xuất cấu hình JSON</span>
           </button>
         </div>
 
-        <div class="fallback-list" id="fallback-list" aria-label="Danh sách fallback providers">
-          <!-- Fallback rows dynamically rendered by JS -->
+        <div id="config-message-connect" class="config-message" aria-live="polite"></div>
+      </div>
+
+      <!-- Subpanel 2: Giao diện -->
+      <div class="config-subpanel hidden" id="config-section-appearance" role="tabpanel" aria-labelledby="subtab-appearance">
+        <div class="card-compact config-card">
+          <div class="form-group">
+            <label for="select-ui-locale" id="label-ui-locale" data-i18n="config_ui_locale_label">Ngôn ngữ hiển thị</label>
+            <select id="select-ui-locale" aria-label="Ngôn ngữ hiển thị" data-i18n-aria-label="config_ui_locale_label">
+              <option value="vi">Tiếng Việt (vi)</option>
+              <option value="en">English (en)</option>
+              <option value="ja">日本語 (ja)</option>
+              <option value="ko">한국어 (ko)</option>
+              <option value="zh">中文 (zh)</option>
+              <option value="es">Español (es)</option>
+              <option value="ru">Русский (ru)</option>
+            </select>
+          </div>
+
+          <div class="form-group-checkbox">
+            <label class="toggle-switch-label" for="checkbox-widget-visible">
+              <input type="checkbox" id="checkbox-widget-visible" checked />
+              <span class="toggle-slider"></span>
+              <span class="toggle-text" id="label-widget-visible" data-i18n="config_widget_visible_label">Hiện icon nổi trên trang</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="select-theme" id="label-theme" data-i18n="config_theme_label">Giao diện</label>
+            <select id="select-theme" aria-label="Giao diện" data-i18n-aria-label="config_theme_label">
+              <option value="dark" data-i18n="config_theme_dark">Tối (Dark)</option>
+              <option value="light" data-i18n="config_theme_light">Sáng (Light)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="select-ui-font-scale" id="label-ui-font-scale" data-i18n="config_font_scale_label">Cỡ chữ</label>
+            <select id="select-ui-font-scale" aria-label="Cỡ chữ" data-i18n-aria-label="config_font_scale_label">
+              <option value="sm" data-i18n="config_font_scale_sm">Nhỏ</option>
+              <option value="md" data-i18n="config_font_scale_md" selected>Vừa</option>
+              <option value="lg" data-i18n="config_font_scale_lg">Lớn</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <div class="slider-header-row">
+              <label for="input-fab-size" id="label-fab-size" data-i18n="config_fab_size_label">Cỡ icon nổi</label>
+              <span class="slider-value-badge" id="fab-size-value">1.00x</span>
+            </div>
+            <div class="slider-control-row">
+              <input type="range" id="input-fab-size" min="0.75" max="1.5" step="0.05" value="1.0" class="fab-size-slider" aria-label="Cỡ icon nổi" data-i18n-aria-label="config_fab_size_label" />
+            </div>
+          </div>
+
+          <div class="config-version-row">
+            <span class="config-version-label" id="label-version" data-i18n="config_version_label">Phiên bản</span>
+            <span class="config-version-badge" id="config-version-text">v0.1.0</span>
+          </div>
         </div>
       </div>
 
-      <div id="config-message-connect" class="config-message" aria-live="polite"></div>
+      <!-- Subpanel 3: Yêu thích -->
+      <div class="config-subpanel hidden" id="config-section-favorites" role="tabpanel" aria-labelledby="subtab-favorites">
+        <div class="card-compact favorites-card">
+          <div class="form-group-checkbox">
+            <label class="toggle-switch-label" for="checkbox-favorites-only">
+              <input type="checkbox" id="checkbox-favorites-only" />
+              <span class="toggle-slider"></span>
+              <span class="toggle-text" id="label-favorites-only" data-i18n="config_favorites_only_label">Chỉ hiện model yêu thích</span>
+            </label>
+          </div>
+
+          <div class="compact-header" style="margin-top: 10px;">
+            <span class="field-title" id="favorites-section-title" data-i18n="fav_manage_title">Danh sách model yêu thích (0/50)</span>
+            <span class="sub-hint" id="favorites-count-badge">0/50</span>
+          </div>
+
+          <div class="input-with-button" style="margin-top: 6px;">
+            <select id="select-add-favorite" data-i18n-aria-label="fav_add_model_aria" data-i18n-placeholder="fav_add_model_placeholder"></select>
+            <button type="button" id="btn-add-favorite" class="btn btn-xs btn-primary">
+              <span data-i18n="fav_btn_add">Thêm</span>
+            </button>
+          </div>
+          <div id="favorites-add-hint" class="empty-hint hidden" data-i18n="fav_no_models_to_add"></div>
+
+          <div id="favorites-list-container" class="favorites-list-wrap" style="margin-top: 8px;">
+            <div id="favorites-empty-hint" class="empty-hint hidden" data-i18n="fav_empty_hint">Chưa có model yêu thích nào cho provider này.</div>
+            <div id="favorites-list" class="favorites-list" role="list"></div>
+          </div>
+        </div>
+        <div id="config-message-favorites" class="config-message" aria-live="polite"></div>
+      </div>
     </section>
+
+    <!-- Tab 4: Nhật ký (Log) -->
+    <section class="section tab-panel hidden" id="tabpanel-log" role="tabpanel" aria-labelledby="menu-item-log" tabindex="0">
+      <div class="card-compact log-card">
+        <div class="compact-header">
+          <span class="field-title" data-i18n="log_header_title">Nhật ký lỗi & phiên gần nhất</span>
+          <button type="button" id="btn-clear-log" class="btn btn-xs btn-outline" data-i18n="log_clear">Xóa nhật ký</button>
+        </div>
+        <div class="log-list" id="log-list" role="log" aria-live="polite"></div>
+      </div>
+    </section>
+        </div>
+      </div>
+    </div>
 
     <!-- Footer (right side = live translate status) -->
     <footer class="footer">
       <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.0</span></span>
-      <span class="status-indicator status-footer" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái...">
+      <span class="status-indicator status-footer" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái..." data-i18n-title="status_checking">
         <span class="status-icon" id="status-icon" aria-hidden="true">
           <span class="status-dot"></span>
         </span>
-        <span class="status-text" id="status-text">Đang tải...</span>
+        <span class="status-text" id="status-text" data-i18n="status_loading">Đang tải...</span>
       </span>
       <span class="status-detail-hidden" id="status-detail" aria-hidden="true" style="display: none;"></span>
     </footer>

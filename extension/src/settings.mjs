@@ -2,8 +2,22 @@
 // Contract Version: webmcp-translator-contract/1
 
 import { normalizeOrigin } from './consent.mjs';
+import { SUPPORTED_UI_LOCALES } from './i18n.mjs';
 
-export const SETTINGS_VERSION = 5;
+export const SETTINGS_VERSION = 9;
+
+export const FAB_SIZE_BOUNDS = Object.freeze({
+  min: 0.75,
+  max: 1.5,
+  default: 1.0
+});
+
+export function clampFabSize(val) {
+  const num = typeof val === 'number' ? val : parseFloat(val);
+  if (!Number.isFinite(num)) return FAB_SIZE_BOUNDS.default;
+  const clamped = Math.max(FAB_SIZE_BOUNDS.min, Math.min(FAB_SIZE_BOUNDS.max, num));
+  return Math.round(clamped * 100) / 100;
+}
 
 export const VALID_PER_SITE_MODES = Object.freeze(['inherit', 'scroll-follow', 'full']);
 
@@ -59,6 +73,38 @@ export function normalizePerSiteConfig(item) {
   return null;
 }
 
+export const RATE_LIMIT_BOUNDS = Object.freeze({
+  tabMaxBatches: Object.freeze({ min: 1, max: 20, default: 4 }),
+  siteMaxBatches: Object.freeze({ min: 1, max: 60, default: 12 }),
+  providerConcurrency: Object.freeze({ min: 1, max: 4, default: 2 })
+});
+
+export function clampTabMaxBatches(val) {
+  const num = typeof val === 'number' ? val : parseInt(val, 10);
+  if (!Number.isFinite(num)) return RATE_LIMIT_BOUNDS.tabMaxBatches.default;
+  return Math.max(RATE_LIMIT_BOUNDS.tabMaxBatches.min, Math.min(RATE_LIMIT_BOUNDS.tabMaxBatches.max, Math.round(num)));
+}
+
+export function clampSiteMaxBatches(val) {
+  const num = typeof val === 'number' ? val : parseInt(val, 10);
+  if (!Number.isFinite(num)) return RATE_LIMIT_BOUNDS.siteMaxBatches.default;
+  return Math.max(RATE_LIMIT_BOUNDS.siteMaxBatches.min, Math.min(RATE_LIMIT_BOUNDS.siteMaxBatches.max, Math.round(num)));
+}
+
+export function clampProviderConcurrency(val) {
+  const num = typeof val === 'number' ? val : parseInt(val, 10);
+  if (!Number.isFinite(num)) return RATE_LIMIT_BOUNDS.providerConcurrency.default;
+  return Math.max(RATE_LIMIT_BOUNDS.providerConcurrency.min, Math.min(RATE_LIMIT_BOUNDS.providerConcurrency.max, Math.round(num)));
+}
+
+export function clampRateLimitValues({ tabMaxBatches, siteMaxBatches, providerConcurrency } = {}) {
+  return {
+    tabMaxBatches: clampTabMaxBatches(tabMaxBatches),
+    siteMaxBatches: clampSiteMaxBatches(siteMaxBatches),
+    providerConcurrency: clampProviderConcurrency(providerConcurrency)
+  };
+}
+
 export const DEFAULT_SETTINGS = Object.freeze({
   version: SETTINGS_VERSION,
   baseURL: 'http://localhost:8080/v1',
@@ -69,8 +115,15 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoTranslateSites: Object.freeze([]),
   translationMode: 'scroll-follow',
   widgetVisible: true,
+  uiLocale: 'vi',
+  theme: 'dark',
+  uiFontScale: 'md',
+  fabSize: 1.0,
+  showFavoritesOnly: false,
+  cacheEnabled: true,
   sourceLanguage: 'auto',
   targetLanguage: 'vi',
+  providerConcurrency: 2,
   rateLimits: Object.freeze({
     windowSeconds: 60,
     tab: Object.freeze({
@@ -180,6 +233,34 @@ export function migrateSettings(raw) {
   // v2: widgetVisible (boolean)
   if (typeof res.widgetVisible !== 'boolean') {
     res.widgetVisible = DEFAULT_SETTINGS.widgetVisible;
+  }
+
+  // v6: uiLocale
+  if (!SUPPORTED_UI_LOCALES.includes(res.uiLocale)) {
+    res.uiLocale = DEFAULT_SETTINGS.uiLocale;
+  }
+
+  // v6: theme ('dark' | 'light')
+  if (res.theme !== 'dark' && res.theme !== 'light') {
+    res.theme = DEFAULT_SETTINGS.theme;
+  }
+
+  // v7: uiFontScale ('sm' | 'md' | 'lg')
+  if (res.uiFontScale !== 'sm' && res.uiFontScale !== 'md' && res.uiFontScale !== 'lg') {
+    res.uiFontScale = DEFAULT_SETTINGS.uiFontScale;
+  }
+
+  // v8: showFavoritesOnly (boolean)
+  if (typeof res.showFavoritesOnly !== 'boolean') {
+    res.showFavoritesOnly = DEFAULT_SETTINGS.showFavoritesOnly;
+  }
+
+  // v9: fabSize (number 0.75..1.5, default 1.0)
+  res.fabSize = clampFabSize(res.fabSize);
+
+  // cacheEnabled (boolean)
+  if (typeof res.cacheEnabled !== 'boolean') {
+    res.cacheEnabled = DEFAULT_SETTINGS.cacheEnabled;
   }
 
   // v3: fallbacks (0-2 items, unique non-empty id, non-empty model, optional baseURL)
@@ -326,21 +407,27 @@ export function migrateSettings(raw) {
     ? res.rateLimits
     : {};
 
+  // providerConcurrency (1..4, default 2)
+  const rawConcurrency = (typeof res.providerConcurrency === 'number')
+    ? res.providerConcurrency
+    : (typeof rawRL.providerConcurrency === 'number' ? rawRL.providerConcurrency : DEFAULT_SETTINGS.providerConcurrency);
+  res.providerConcurrency = clampProviderConcurrency(rawConcurrency);
+
   res.rateLimits = {
     windowSeconds: typeof rawRL.windowSeconds === 'number' && rawRL.windowSeconds > 0
       ? rawRL.windowSeconds
       : DEFAULT_SETTINGS.rateLimits.windowSeconds,
     tab: {
-      maxBatches: typeof rawRL.tab?.maxBatches === 'number' && rawRL.tab.maxBatches > 0
-        ? rawRL.tab.maxBatches
+      maxBatches: typeof rawRL.tab?.maxBatches === 'number'
+        ? clampTabMaxBatches(rawRL.tab.maxBatches)
         : DEFAULT_SETTINGS.rateLimits.tab.maxBatches,
       maxSourceCodePoints: typeof rawRL.tab?.maxSourceCodePoints === 'number' && rawRL.tab.maxSourceCodePoints > 0
         ? rawRL.tab.maxSourceCodePoints
         : DEFAULT_SETTINGS.rateLimits.tab.maxSourceCodePoints
     },
     site: {
-      maxBatches: typeof rawRL.site?.maxBatches === 'number' && rawRL.site.maxBatches > 0
-        ? rawRL.site.maxBatches
+      maxBatches: typeof rawRL.site?.maxBatches === 'number'
+        ? clampSiteMaxBatches(rawRL.site.maxBatches)
         : DEFAULT_SETTINGS.rateLimits.site.maxBatches,
       maxSourceCodePoints: typeof rawRL.site?.maxSourceCodePoints === 'number' && rawRL.site.maxSourceCodePoints > 0
         ? rawRL.site.maxSourceCodePoints
@@ -402,6 +489,48 @@ export function validateSettings(settings) {
   // Check widgetVisible
   if (settings.widgetVisible !== undefined && typeof settings.widgetVisible !== 'boolean') {
     errors.push('widgetVisible must be a boolean');
+  }
+
+  // Check uiLocale (v6)
+  if (settings.uiLocale !== undefined) {
+    if (!SUPPORTED_UI_LOCALES.includes(settings.uiLocale)) {
+      errors.push(`uiLocale must be one of: ${SUPPORTED_UI_LOCALES.join(', ')}`);
+    }
+  }
+
+  // Check theme (v6)
+  if (settings.theme !== undefined) {
+    if (settings.theme !== 'dark' && settings.theme !== 'light') {
+      errors.push("theme must be 'dark' or 'light'");
+    }
+  }
+
+  // Check uiFontScale (v7)
+  if (settings.uiFontScale !== undefined) {
+    if (settings.uiFontScale !== 'sm' && settings.uiFontScale !== 'md' && settings.uiFontScale !== 'lg') {
+      errors.push("uiFontScale must be 'sm', 'md', or 'lg'");
+    }
+  }
+
+  // Check showFavoritesOnly (v8)
+  if (settings.showFavoritesOnly !== undefined) {
+    if (typeof settings.showFavoritesOnly !== 'boolean') {
+      errors.push('showFavoritesOnly must be a boolean');
+    }
+  }
+
+  // Check fabSize (v9)
+  if (settings.fabSize !== undefined) {
+    if (typeof settings.fabSize !== 'number' || Number.isNaN(settings.fabSize) || settings.fabSize < FAB_SIZE_BOUNDS.min || settings.fabSize > FAB_SIZE_BOUNDS.max) {
+      errors.push(`fabSize must be a number between ${FAB_SIZE_BOUNDS.min} and ${FAB_SIZE_BOUNDS.max}`);
+    }
+  }
+
+  // Check cacheEnabled
+  if (settings.cacheEnabled !== undefined) {
+    if (typeof settings.cacheEnabled !== 'boolean') {
+      errors.push('cacheEnabled must be a boolean');
+    }
   }
 
   // Check fallbacks
@@ -586,6 +715,13 @@ export function validateSettings(settings) {
     }
   }
 
+  // Validate providerConcurrency if present
+  if (settings.providerConcurrency !== undefined) {
+    if (typeof settings.providerConcurrency !== 'number' || !Number.isInteger(settings.providerConcurrency) || settings.providerConcurrency < 1 || settings.providerConcurrency > 4) {
+      errors.push('providerConcurrency must be an integer between 1 and 4');
+    }
+  }
+
   // Validate rateLimits if present
   if (settings.rateLimits !== undefined) {
     if (typeof settings.rateLimits !== 'object' || settings.rateLimits === null || Array.isArray(settings.rateLimits)) {
@@ -625,5 +761,67 @@ export function validateSettings(settings) {
   return {
     valid: errors.length === 0,
     errors: errors.length > 0 ? errors : undefined
+  };
+}
+
+/**
+ * Builds a sanitized, exportable configuration object.
+ * Strictly guarantees ZERO secrets/api keys are present.
+ *
+ * @param {object} [params]
+ * @param {object} [params.settings] - The settings object.
+ * @param {Record<string, boolean>|Map<string, boolean>} [params.fallbackKeyPresence] - Map or object indicating if fallback item has a key stored.
+ * @param {boolean} [params.hasStoredKey] - Whether main API key is stored.
+ * @param {string} [params.exportedAt] - ISO timestamp string.
+ * @returns {Record<string, any>}
+ */
+export function buildExportConfig({ settings, fallbackKeyPresence = {}, hasStoredKey = false, exportedAt } = {}) {
+  const s = migrateSettings(settings);
+  const ts = (typeof exportedAt === 'string' && exportedAt.trim()) ? exportedAt.trim() : new Date().toISOString();
+
+  const getFallbackHasKey = (fbId) => {
+    if (!fbId) return false;
+    if (fallbackKeyPresence instanceof Map) {
+      return Boolean(fallbackKeyPresence.get(fbId));
+    }
+    if (fallbackKeyPresence && typeof fallbackKeyPresence === 'object') {
+      return Boolean(fallbackKeyPresence[fbId]);
+    }
+    return false;
+  };
+
+  const sanitizedFallbacks = (Array.isArray(s.fallbacks) ? s.fallbacks : []).map((fb) => {
+    const item = {
+      id: fb.id,
+      model: fb.model,
+      hasKey: getFallbackHasKey(fb.id)
+    };
+    if (typeof fb.baseURL === 'string' && fb.baseURL.trim()) {
+      item.baseURL = fb.baseURL.trim();
+    }
+    return item;
+  });
+
+  return {
+    version: s.version,
+    exportedAt: ts,
+    baseURL: s.baseURL,
+    model: s.model,
+    hasKey: Boolean(hasStoredKey),
+    fallbacks: sanitizedFallbacks,
+    autoTranslateSites: s.autoTranslateSites || [],
+    translationMode: s.translationMode,
+    sourceLanguage: s.sourceLanguage,
+    targetLanguage: s.targetLanguage,
+    uiLocale: s.uiLocale,
+    theme: s.theme,
+    uiFontScale: s.uiFontScale,
+    fabSize: s.fabSize,
+    widgetVisible: s.widgetVisible,
+    showFavoritesOnly: s.showFavoritesOnly,
+    rateLimits: s.rateLimits,
+    favoriteModelsByBaseURL: s.favoriteModelsByBaseURL || {},
+    favoriteModels: s.favoriteModels || [],
+    cacheEnabled: s.cacheEnabled
   };
 }

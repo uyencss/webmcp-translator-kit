@@ -19,14 +19,19 @@ import {
   prune,
   evaluate,
   record,
-  resolveLimits,
+  resolveLimits as resolveLimitsRL,
   DEFAULT_RATE_LIMITS
 } from './rate-limits.mjs';
 import {
   createTranslationCache,
   cacheKey,
+  hashText,
   normalizeSourceText,
-  PROMPT_VERSION
+  PROMPT_VERSION,
+  L2_CACHE_KEY,
+  L2_CACHE_TTL_MS,
+  L2_MAX_SIZE_BYTES,
+  pruneL2Cache
 } from './cache.mjs';
 import {
   createSemaphore
@@ -37,7 +42,8 @@ import {
   migrateSettings,
   validateSettings,
   normalizeBaseURLKey,
-  normalizePerSiteConfig
+  normalizePerSiteConfig,
+  clampProviderConcurrency
 } from './settings.mjs';
 
 const TRANSLATE_TIMEOUT_MS = 60000;
@@ -57,11 +63,344 @@ const translationCache = createTranslationCache({
   maxSizeBytes: 2097152
 });
 
-// Provider concurrency semaphore = 2
+// L2 Persistent Cache (chrome.storage.local key 'trCache')
+let pendingL2Writes = new Map();
+let l2WriteTimer = null;
+let l2Epoch = 0;
+let isClearingL2 = false;
+let clearingL2Count = 0;
+let l2MemoryOnly = false;
+
+// L2 Storage Mutex: serializes clearL2Cache and flushL2Cache to prevent race conditions
+let l2StorageChain = Promise.resolve();
+
+function runInL2StorageChain(fn) {
+  const next = l2StorageChain.then(fn, fn);
+  l2StorageChain = next.catch(() => {});
+  return next;
+}
+
+export function getL2Epoch() {
+  return l2Epoch;
+}
+
+export function isL2MemoryOnly() {
+  return l2MemoryOnly;
+}
+
+export function _setL2MemoryOnlyForTest(val) {
+  l2MemoryOnly = Boolean(val);
+}
+
+export function isL2Clearing() {
+  return isClearingL2;
+}
+
+export function enqueueL2Cache(key, text) {
+  if (!key || typeof text !== 'string') return;
+  if (isClearingL2 || l2MemoryOnly) return;
+  const l2Key = /^[0-9a-f]{8}$/i.test(key) ? key : hashText(key);
+  const entryEpoch = l2Epoch;
+  pendingL2Writes.set(l2Key, { keyHash: hashText(key), text, savedAt: Date.now(), epoch: entryEpoch });
+  if (l2WriteTimer) clearTimeout(l2WriteTimer);
+  l2WriteTimer = setTimeout(() => {
+    flushL2Cache().catch(() => {});
+  }, 2000);
+}
+
+export async function clearL2Cache() {
+  l2Epoch++;
+  if (l2WriteTimer) {
+    clearTimeout(l2WriteTimer);
+    l2WriteTimer = null;
+  }
+  pendingL2Writes.clear();
+  clearingL2Count++;
+  isClearingL2 = true;
+
+  return runInL2StorageChain(async () => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        l2MemoryOnly = false;
+        return;
+      }
+
+      let removeSucceeded = false;
+      // Attempt 1: remove
+      try {
+        await chrome.storage.local.remove([L2_CACHE_KEY]);
+        removeSucceeded = true;
+      } catch (e1) {
+        // Retry 1 lần
+        try {
+          await chrome.storage.local.remove([L2_CACHE_KEY]);
+          removeSucceeded = true;
+        } catch (e2) {
+          removeSucceeded = false;
+        }
+      }
+
+      if (removeSucceeded) {
+        l2MemoryOnly = false;
+        return;
+      }
+
+      // Vẫn fail → set trCache = {} thay vì remove, đọc-verify lại
+      try {
+        await chrome.storage.local.set({ [L2_CACHE_KEY]: {} });
+        const verify = await chrome.storage.local.get([L2_CACHE_KEY]);
+        const cacheObj = verify?.[L2_CACHE_KEY];
+        const isClean = !cacheObj || (typeof cacheObj === 'object' && Object.keys(cacheObj).length === 0);
+        if (isClean) {
+          l2MemoryOnly = false;
+        } else {
+          l2MemoryOnly = true;
+        }
+      } catch (setErr) {
+        l2MemoryOnly = true;
+      }
+    } catch (outerErr) {
+      l2MemoryOnly = true;
+    } finally {
+      clearingL2Count = Math.max(0, clearingL2Count - 1);
+      if (clearingL2Count === 0) {
+        isClearingL2 = false;
+      }
+      pendingL2Writes.clear();
+      if (l2WriteTimer) {
+        clearTimeout(l2WriteTimer);
+        l2WriteTimer = null;
+      }
+    }
+  });
+}
+
+export async function flushL2Cache() {
+  if (l2MemoryOnly || isClearingL2) return;
+  const currentEpoch = l2Epoch;
+  if (l2WriteTimer) {
+    clearTimeout(l2WriteTimer);
+    l2WriteTimer = null;
+  }
+  if (pendingL2Writes.size === 0) return;
+  const toWrite = new Map(pendingL2Writes);
+  pendingL2Writes.clear();
+
+  return runInL2StorageChain(async () => {
+    if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
+      const res = await chrome.storage.local.get([L2_CACHE_KEY]);
+      if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
+      const rawCache = (res && res[L2_CACHE_KEY] && typeof res[L2_CACHE_KEY] === 'object')
+        ? res[L2_CACHE_KEY]
+        : {};
+      const trCache = {};
+      for (const [k, v] of Object.entries(rawCache)) {
+        if (v && typeof v === 'object' && typeof v.keyHash === 'string' && !('key' in v)) {
+          trCache[k] = {
+            keyHash: v.keyHash,
+            text: v.text,
+            savedAt: v.savedAt
+          };
+        }
+      }
+      for (const [k, v] of toWrite.entries()) {
+        if (v && (v.epoch === undefined || v.epoch === currentEpoch)) {
+          trCache[k] = {
+            keyHash: v.keyHash,
+            text: v.text,
+            savedAt: v.savedAt
+          };
+        }
+      }
+      pruneL2Cache(trCache, 0, { ttlMs: L2_CACHE_TTL_MS, maxSizeBytes: L2_MAX_SIZE_BYTES });
+      if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
+      await chrome.storage.local.set({ [L2_CACHE_KEY]: trCache });
+    } catch (e) {
+      // Quota or storage write failures ignored silently per WI-15 spec
+    }
+  });
+}
+
+export const MAX_ERROR_LOG_ENTRIES = 50;
+let errorLog = [];
+
+export async function initErrorLog() {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
+      const res = await chrome.storage.session.get(['errorLog']);
+      if (Array.isArray(res?.errorLog)) {
+        errorLog = res.errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
+      }
+    }
+  } catch {}
+}
+initErrorLog().catch(() => {});
+
+export async function getErrorLog() {
+  return [...errorLog];
+}
+
+export async function clearErrorLog() {
+  errorLog = [];
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
+      await chrome.storage.session.remove(['errorLog']);
+    }
+  } catch {}
+  return { ok: true };
+}
+
+export async function recordErrorLog(err, { model = '', tabId = null, isTerminal = false } = {}) {
+  if (!err) return null;
+  const entry = {
+    time: new Date().toISOString(),
+    code: err.code || err.name || 'ERROR',
+    message: err.message || (typeof err === 'string' ? err : 'Unknown error'),
+    model: model || err.model || '',
+    tabId: tabId ?? null
+  };
+  errorLog.unshift(entry);
+  if (errorLog.length > MAX_ERROR_LOG_ENTRIES) {
+    errorLog = errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
+  }
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
+      await chrome.storage.session.set({ errorLog });
+    }
+  } catch {}
+
+  if (isTerminal) {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'TRANSLATE_TERMINAL_ERROR',
+          error: entry,
+          tabId
+        }).catch(() => {});
+      }
+    } catch {}
+  }
+  return entry;
+}
+
+export function reconcileWatchdog(state = {}) {
+  const {
+    queue = [],
+    queueLength = Array.isArray(queue) ? queue.length : (typeof queue === 'number' ? queue : 0),
+    inFlight = 0,
+    watching = false,
+    collected = 0,
+    applied = 0,
+    failed = 0,
+    runToken = 0,
+    rounds = 0,
+    lastApplied = 0
+  } = state;
+
+  // khi queue rỗng + hết in-flight + watching mà còn items collected-chưa-applied (ngoài failed đã chốt)
+  if (queueLength > 0 || inFlight > 0 || !watching) {
+    return {
+      action: 'none',
+      shouldRequeue: false,
+      stable: false,
+      rounds,
+      failed,
+      applied,
+      collected,
+      runToken
+    };
+  }
+
+  const unapplied = Math.max(0, collected - applied - failed);
+
+  if (unapplied === 0) {
+    return {
+      action: 'stable',
+      shouldRequeue: false,
+      stable: true,
+      rounds,
+      failed,
+      applied,
+      collected,
+      runToken,
+      unappliedRemainder: 0
+    };
+  }
+
+  // Không vòng lặp vô hạn: đếm vòng/run-token, dừng khi không tiến triển (applied không tăng giữa 2 vòng).
+  // Tối đa 2 vòng/run:
+  if (rounds >= 2 || (rounds > 0 && applied <= lastApplied)) {
+    // Dừng: số dư cuối vào footer failed-count + Log entry + nút Thử lại hiện có
+    const finalFailed = failed + unapplied;
+    return {
+      action: 'finalize',
+      shouldRequeue: false,
+      stable: true,
+      rounds,
+      failed: finalFailed,
+      applied,
+      collected,
+      runToken,
+      unappliedRemainder: unapplied,
+      logEntry: {
+        code: 'WATCHDOG_UNAPPLIED',
+        message: `Watchdog reconciliation: ${unapplied} item(s) unapplied after retry`,
+        details: { unappliedRemainder: unapplied, finalFailed }
+      },
+      stoppedReason: rounds >= 2 ? 'max_rounds' : 'no_progress'
+    };
+  }
+
+  // Tự re-queue 1 vòng (tối đa 2 vòng/run, backoff)
+  const nextRound = rounds + 1;
+  const backoffMs = nextRound * 500;
+  return {
+    action: 'requeue',
+    shouldRequeue: true,
+    stable: false,
+    rounds: nextRound,
+    lastApplied: applied,
+    backoffMs,
+    unappliedCount: unapplied,
+    failed,
+    applied,
+    collected,
+    runToken
+  };
+}
+
+// Provider concurrency semaphore = 2 (default, updated dynamically from settings)
 const providerSemaphore = createSemaphore({
-  maxConcurrency: 2,
+  maxConcurrency: DEFAULT_SETTINGS.providerConcurrency || 2,
   timeoutMs: 120000
 });
+
+export function getProviderSemaphore() {
+  return providerSemaphore;
+}
+
+export function updateProviderConcurrency(concurrency) {
+  const valid = clampProviderConcurrency(concurrency);
+  if (providerSemaphore && typeof providerSemaphore.setMaxConcurrency === 'function') {
+    providerSemaphore.setMaxConcurrency(valid);
+  }
+  return providerSemaphore.getMaxConcurrency();
+}
+
+/**
+ * Resolves limits from settings or rateLimits, falling back to defaults.
+ */
+export function resolveLimits(settingsOrRateLimits) {
+  if (!settingsOrRateLimits || typeof settingsOrRateLimits !== 'object') {
+    return resolveLimitsRL();
+  }
+  const rl = (settingsOrRateLimits.rateLimits && typeof settingsOrRateLimits.rateLimits === 'object')
+    ? settingsOrRateLimits.rateLimits
+    : settingsOrRateLimits;
+  return resolveLimitsRL(rl);
+}
 
 let storageAccessInitialized = false;
 let storageAccessFailed = false;
@@ -123,7 +462,7 @@ export const FALLBACK_ELIGIBLE_CODES = Object.freeze([
  * @param {number} attemptIndex - 0-based index of current attempt
  * @returns {{ shouldFallback: boolean, nextIndex?: number, nextModel?: string, reason?: string, terminalError?: any }}
  */
-export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
+export function resolveFallbackPlan(err, chain, attemptIndex = 0, options = {}) {
   if (!err) {
     return { shouldFallback: false, reason: 'NO_ERROR' };
   }
@@ -132,16 +471,37 @@ export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
     ? (err.error?.code || err.code || '')
     : '';
 
+  const details = (typeof err === 'object' && err !== null)
+    ? (err.error?.details || err.details || {})
+    : {};
+
+  const rawHead = details?.rawHead || '';
+  const isErrJson = Boolean(details?.isErrorJson) || (
+    typeof rawHead === 'string' &&
+    /["']?error["']?\s*:/i.test(rawHead) &&
+    !(/["']?results["']?\s*:/i.test(rawHead) || /["']results["']/i.test(rawHead) || /\{\s*["']?id["']?/i.test(rawHead))
+  );
+
+  const isExhaustedZeroItem = code === 'INVALID_SCHEMA' &&
+    !isErrJson &&
+    Boolean(details?.exhausted || err?.exhausted || err?.error?.exhausted);
+
+  // INVALID_SCHEMA giữ nguyên là STOP cho mọi case khác.
+  // Ngoại lệ DUY NHẤT: zero-item/truncated-zero đã cạn bisect + watchdog
+  // (adapter đánh dấu exhausted: true trong error details, KHÔNG đánh cho các INVALID_SCHEMA khác)
+  // → được leo fallback đúng 1 lần sang model kế tiếp trong chain [primary, ...fallbacks].
   if (STOP_ERROR_CODES.includes(code)) {
-    return {
-      shouldFallback: false,
-      reason: 'STOP_LIST',
-      terminalError: err,
-      attemptIndex
-    };
+    if (!isExhaustedZeroItem) {
+      return {
+        shouldFallback: false,
+        reason: 'STOP_LIST',
+        terminalError: err,
+        attemptIndex
+      };
+    }
   }
 
-  if (!FALLBACK_ELIGIBLE_CODES.includes(code)) {
+  if (!FALLBACK_ELIGIBLE_CODES.includes(code) && !isExhaustedZeroItem) {
     return {
       shouldFallback: false,
       reason: 'NOT_ELIGIBLE',
@@ -150,10 +510,22 @@ export function resolveFallbackPlan(err, chain, attemptIndex = 0) {
     };
   }
 
+  // Fallback chain rỗng → behavior cũ (terminal ngay)
   if (!Array.isArray(chain) || chain.length <= 1) {
     return {
       shouldFallback: false,
       reason: 'NO_FALLBACK_MODELS',
+      terminalError: err,
+      attemptIndex
+    };
+  }
+
+  // Chống loop: batch origin đã leo fallback thì gắn fallbackConsumed: true;
+  // model fallback mà vẫn zero-item → terminal error (không ping-pong về primary, không leo tiếp vòng 2).
+  if (options?.fallbackConsumed || details.fallbackConsumed || (isExhaustedZeroItem && attemptIndex > 0)) {
+    return {
+      shouldFallback: false,
+      reason: 'FALLBACK_CONSUMED',
       terminalError: err,
       attemptIndex
     };
@@ -203,15 +575,25 @@ export function extractHost(urlStr) {
 // Pure helper to resolve the full provider chain with inheritance rules
 export function resolveFallbackChain(settings = {}, fallbackApiKeys = {}, primaryKey = '') {
   const primaryModel = settings.model || DEFAULT_MODEL;
+  const configuredFallbacks = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
+  const match = settings.fallbackConsumed && configuredFallbacks.find((fb) => fb && fb.model && fb.model.trim() === primaryModel);
+  let primaryBaseURL = settings.baseURL || '';
+  let primaryApiKey = primaryKey || '';
+  if (match) {
+    const fbId = typeof match.id === 'string' && match.id.trim() ? match.id.trim() : 'fb1';
+    if (match.baseURL && typeof match.baseURL === 'string') primaryBaseURL = match.baseURL.trim();
+    if (fbId && fallbackApiKeys && fallbackApiKeys[fbId]) {
+      primaryApiKey = fallbackApiKeys[fbId];
+    }
+  }
   const primaryConfig = {
     id: 'primary',
-    baseURL: settings.baseURL || '',
-    apiKey: primaryKey || '',
+    baseURL: primaryBaseURL,
+    apiKey: primaryApiKey,
     model: primaryModel
   };
 
   const primaryOrigin = primaryConfig.baseURL ? normalizeOrigin(primaryConfig.baseURL) : null;
-  const configuredFallbacks = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
   const fallbackConfigs = [];
   const skippedFallbacks = [];
 
@@ -287,9 +669,14 @@ let _testRateLimits = null;
 let _testRateWindowSeconds = null;
 let _testMaxQueue = null;
 let _testMaxRetries = null;
+let _testTranslateBatch = null;
+
+export function _setTranslateBatchForTest(fn) {
+  _testTranslateBatch = fn;
+}
 
 // TEST-ONLY: Activate test mode for automated test suites
-function _setTestMode(enabled) {
+export function _setTestMode(enabled) {
   _testMode = Boolean(enabled);
   if (!_testMode) {
     _testPermissionOverrides.clear();
@@ -298,6 +685,7 @@ function _setTestMode(enabled) {
     _testRateWindowSeconds = null;
     _testMaxQueue = null;
     _testMaxRetries = null;
+    _testTranslateBatch = null;
   }
 }
 
@@ -307,7 +695,7 @@ function _setTestMaxRetries(n) {
 }
 
 // TEST-ONLY: Set explicit permission status for origin
-function _setTestPermission(origin, granted) {
+export function _setTestPermission(origin, granted) {
   if (!_testMode) return;
   const norm = normalizeOrigin(origin);
   if (norm) {
@@ -320,7 +708,7 @@ function _setTestPermission(origin, granted) {
  * SET_TAB_OVERRIDE) can resolve it without a real chrome tab. Read only when
  * _testMode is on; production never populates the registry.
  */
-function _registerTestTab(tabId, url) {
+export function _registerTestTab(tabId, url) {
   const id = Number(tabId);
   if (!Number.isFinite(id)) return;
   if (url === null || url === undefined) {
@@ -486,11 +874,17 @@ async function getStoredSettings({ persistMigration = true } = {}) {
   const res = await chrome.storage.local.get(['settings']);
   const raw = res.settings;
   const migrated = migrateSettings(raw);
+  if (migrated.providerConcurrency) {
+    updateProviderConcurrency(migrated.providerConcurrency);
+  }
   if ((!raw || raw.version !== SETTINGS_VERSION) && persistMigration) {
     return serializeSettingsWrite(async () => {
       await ensureStorageAccess();
       const latestRaw = (await chrome.storage.local.get(['settings'])).settings;
       const latestMigrated = migrateSettings(latestRaw);
+      if (latestMigrated.providerConcurrency) {
+        updateProviderConcurrency(latestMigrated.providerConcurrency);
+      }
       if (!latestRaw || latestRaw.version !== SETTINGS_VERSION) {
         await chrome.storage.local.set({ settings: latestMigrated });
       }
@@ -1139,7 +1533,7 @@ async function reconcilePermissions() {
             diff.toRegister.map((item) => ({
               id: item.scriptId,
               matches: item.matches,
-              js: ['content.js'],
+              js: ['i18n-globals.js', 'content.js'],
               runAt: 'document_start',
               allFrames: false,
               persistAcrossSessions: true
@@ -1465,6 +1859,9 @@ async function listModels(options = {}) {
 
 // Batch Translation (delegated to adapter)
 async function translateBatch(input = {}) {
+  if (_testMode && typeof _testTranslateBatch === 'function') {
+    return await _testTranslateBatch(input);
+  }
   await ensureStorageAccess();
   const settings = await getStoredSettings();
   const apiKey = await getStoredApiKey();
@@ -1499,7 +1896,7 @@ function pushTranslateProgress(tabId, epoch, item) {
   } catch {}
 }
 
-async function executeBatchTranslation({
+export async function executeBatchTranslation({
   payload = {},
   misses = [],
   hits = [],
@@ -1522,17 +1919,18 @@ async function executeBatchTranslation({
     });
   }
 
+  const currentSemaphore = providerSemaphore;
   const signal = controller ? controller.signal : payload.signal;
 
   try {
-    await providerSemaphore.acquire(undefined, signal);
+    await currentSemaphore.acquire(undefined, signal);
   } catch (err) {
     if (controller) {
       activeBatchControllers.delete(requestId);
     }
     if (err?.code === 'TIMEOUT') {
       return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
-        maxConcurrentRequests: providerSemaphore.getMaxConcurrency()
+        maxConcurrentRequests: currentSemaphore.getMaxConcurrency()
       });
     }
     if (err?.code === 'ABORTED' || err?.name === 'AbortError') {
@@ -1545,7 +1943,7 @@ async function executeBatchTranslation({
 
   // After acquiring semaphore: check if already aborted while waiting for permit
   if (signal?.aborted) {
-    providerSemaphore.release();
+    currentSemaphore.release();
     if (controller) {
       activeBatchControllers.delete(requestId);
     }
@@ -1562,7 +1960,7 @@ async function executeBatchTranslation({
     expectedConfigRevision: batchConfigRevision
   });
   if (guardCheck && guardCheck.error) {
-    providerSemaphore.release();
+    currentSemaphore.release();
     if (controller) {
       activeBatchControllers.delete(requestId);
     }
@@ -1579,8 +1977,8 @@ async function executeBatchTranslation({
 
   const chain = resolveFallbackChain(
     (payload && typeof payload.model === 'string' && payload.model.trim())
-      ? { ...storedSettings, model: payload.model.trim() }
-      : storedSettings,
+      ? { ...storedSettings, model: payload.model.trim(), fallbackConsumed: Boolean(payload?.fallbackConsumed) }
+      : { ...storedSettings, fallbackConsumed: Boolean(payload?.fallbackConsumed) },
     storedFbKeys,
     primaryKey
   );
@@ -1589,9 +1987,12 @@ async function executeBatchTranslation({
   let currentMisses = [...misses];
   let currentHits = [...hits];
   let finalProviderRes = null;
-  let actualModel = requestedModel;
+  let actualModel = null;
   let actualBaseURL = chain[0]?.baseURL || storedSettings.baseURL || '';
   let fallbackIndex = 0;
+  let fallbackConsumed = Boolean(payload?.fallbackConsumed);
+  let lastAttemptedModel = requestedModel;
+  const newlyTranslatedItems = [];
 
   try {
     for (let attemptIndex = 0; attemptIndex < chain.length && attemptIndex < 3; attemptIndex++) {
@@ -1599,6 +2000,7 @@ async function executeBatchTranslation({
       const currentModel = currentConfig.model;
       const currentBaseURL = currentConfig.baseURL;
       const currentApiKey = currentConfig.apiKey;
+      lastAttemptedModel = currentModel;
 
       // Re-verify signal and policy guard before each attempt
       if (signal?.aborted) {
@@ -1648,6 +2050,45 @@ async function executeBatchTranslation({
         }
         currentMisses = remainingMisses;
 
+        if (storedSettings.cacheEnabled !== false && !l2MemoryOnly && !isClearingL2 && remainingMisses.length > 0) {
+          try {
+            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+              const readEpoch = l2Epoch;
+              const l2Res = await chrome.storage.local.get([L2_CACHE_KEY]);
+              if (!l2MemoryOnly && !isClearingL2 && l2Epoch === readEpoch) {
+                const trCache = l2Res?.[L2_CACHE_KEY];
+                if (trCache && typeof trCache === 'object') {
+                  const now = Date.now();
+                  const afterL2Misses = [];
+                  for (const m of remainingMisses) {
+                    const l2Key = /^[0-9a-f]{8}$/i.test(m.key) ? m.key : hashText(m.key);
+                    const entry = trCache[l2Key];
+                    const reqHash = hashText(m.key);
+                    const isValidShape = entry && typeof entry === 'object' && typeof entry.text === 'string' && typeof entry.keyHash === 'string' && !('key' in entry);
+                    const isMatch = isValidShape && entry.keyHash === reqHash;
+                    if (isMatch && (now - (entry.savedAt || 0) < L2_CACHE_TTL_MS)) {
+                      const normText = normalizeSourceText(m.item?.text);
+                      translationCache.set(m.key, entry.text, normText);
+                      currentHits.push({
+                        index: m.index,
+                        result: {
+                          id: m.item.id,
+                          revision: m.item.revision,
+                          text: entry.text
+                        }
+                      });
+                    } else {
+                      afterL2Misses.push(m);
+                    }
+                  }
+                  remainingMisses.length = 0;
+                  remainingMisses.push(...afterL2Misses);
+                }
+              }
+            }
+          } catch {}
+        }
+
         // If all misses hit cache for this fallback model, complete without provider call
         if (currentMisses.length === 0) {
           actualModel = currentModel;
@@ -1679,61 +2120,99 @@ async function executeBatchTranslation({
         fallbackIndex = attemptIndex;
         finalProviderRes = attemptRes;
 
-        // Populate cache strictly under actualModel and actualBaseURL
-        const actualCacheContext = {
-          baseURL: actualBaseURL || '',
-          model: actualModel,
-          sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
-          targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
-          promptVersion: PROMPT_VERSION
-        };
-
+        // Collect newly translated items; caching is deferred until configRevision & tabEpoch checks pass
         for (let i = 0; i < currentMisses.length; i++) {
           const miss = currentMisses[i];
-          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id) || attemptRes.results[i];
+          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id);
           if (resItem && typeof resItem.text === 'string') {
-            const k = cacheKey(miss.item, actualCacheContext);
-            translationCache.set(k, resItem.text, normalizeSourceText(miss.item?.text));
+            newlyTranslatedItems.push({
+              item: miss.item,
+              text: resItem.text
+            });
           }
         }
 
         // Add translated items to currentHits
         for (let i = 0; i < currentMisses.length; i++) {
           const miss = currentMisses[i];
-          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id) || attemptRes.results[i];
-          currentHits.push({
-            index: miss.index,
-            result: {
-              id: miss.item.id,
-              revision: miss.item.revision,
-              text: resItem ? resItem.text : miss.item.text
-            }
-          });
+          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id);
+          if (resItem && typeof resItem.text === 'string') {
+            currentHits.push({
+              index: miss.index,
+              result: {
+                id: miss.item.id,
+                revision: miss.item.revision,
+                text: resItem.text
+              }
+            });
+          }
         }
         break;
       }
 
       // Handle attempt failure
       finalProviderRes = attemptRes;
-      const plan = resolveFallbackPlan(attemptRes, chain, attemptIndex);
+      const plan = resolveFallbackPlan(attemptRes, chain, attemptIndex, { fallbackConsumed });
       if (!plan.shouldFallback) {
         break;
       }
+
+      fallbackConsumed = true;
+      if (payload) {
+        payload.fallbackConsumed = true;
+      }
+
+      // Log entry ghi rõ model đã đổi (dùng message/provider-message hiện có)
+      const providerMsg = attemptRes?.error?.details?.providerMessage ||
+        attemptRes?.error?.message ||
+        'Model fallback';
+      const logMessage = `${providerMsg} (model changed: ${currentModel} -> ${plan.nextModel})`;
+      await recordErrorLog({
+        code: attemptRes?.error?.code || 'MODEL_FALLBACK',
+        message: logMessage,
+        details: {
+          ...(attemptRes?.error?.details || {}),
+          fromModel: currentModel,
+          toModel: plan.nextModel,
+          providerMessage: attemptRes?.error?.details?.providerMessage || undefined,
+          fallbackConsumed: true
+        }
+      }, {
+        model: `${currentModel} -> ${plan.nextModel}`,
+        tabId,
+        isTerminal: false
+      });
     }
   } finally {
-    providerSemaphore.release();
+    currentSemaphore.release();
     if (controller) {
       activeBatchControllers.delete(requestId);
     }
   }
 
   if (finalProviderRes && finalProviderRes.error) {
+    if (fallbackConsumed) {
+      finalProviderRes.error.details = {
+        ...(finalProviderRes.error.details || {}),
+        fallbackConsumed: true
+      };
+    }
     if (chain.skippedFallbacks && chain.skippedFallbacks.length > 0) {
       finalProviderRes.error.details = {
         ...(finalProviderRes.error.details || {}),
         skippedFallbacks: chain.skippedFallbacks
       };
     }
+    const finalModel = lastAttemptedModel || actualModel || requestedModel;
+    if (finalProviderRes.error.details) {
+      finalProviderRes.error.details.model = finalModel;
+      finalProviderRes.error.details.lastAttemptedModel = finalModel;
+    }
+    await recordErrorLog(finalProviderRes.error, {
+      model: finalModel,
+      tabId,
+      isTerminal: true
+    });
     return finalProviderRes;
   }
 
@@ -1764,22 +2243,63 @@ async function executeBatchTranslation({
     );
   }
 
+  // Populate cache strictly under actualModel and actualBaseURL only after config & epoch checks pass
+  if (newlyTranslatedItems.length > 0) {
+    const actualCacheContext = {
+      baseURL: actualBaseURL || '',
+      model: actualModel,
+      sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
+      targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
+      promptVersion: PROMPT_VERSION
+    };
+
+    for (const { item, text } of newlyTranslatedItems) {
+      const k = cacheKey(item, actualCacheContext);
+      translationCache.set(k, text, normalizeSourceText(item?.text));
+      if (storedSettings.cacheEnabled !== false && !l2MemoryOnly) {
+        enqueueL2Cache(k, text);
+      }
+    }
+  }
+
   // Merge hits and misses preserving the exact original order
   const totalCount = hits.length + misses.length;
   const merged = new Array(totalCount);
 
   for (const h of currentHits) {
-    merged[h.index] = h.result;
+    if (h && typeof h.index === 'number') {
+      merged[h.index] = h.result;
+    }
   }
 
+  const cleanResults = merged.filter(Boolean);
   const actualBaseURLHost = extractHost(actualBaseURL);
+  const missingIds = Array.isArray(finalProviderRes?.missingIds) ? finalProviderRes.missingIds : [];
+
+  if (missingIds.length > 0) {
+    try {
+      await recordErrorLog({
+        code: 'PARTIAL_BATCH',
+        message: `Batch partially completed: ${missingIds.length} item(s) missing`,
+        details: { missingIds }
+      }, {
+        model: actualModel || currentModel,
+        tabId,
+        isTerminal: false
+      });
+    } catch {}
+  }
 
   return {
     ...finalProviderRes,
-    results: merged,
+    results: cleanResults,
+    partial: Boolean(finalProviderRes?.partial || missingIds.length > 0),
+    missingIds,
+    failed: missingIds.length,
     requestedModel,
-    actualModel,
+    actualModel: actualModel || requestedModel,
     fallbackIndex,
+    fallbackConsumed: Boolean(payload?.fallbackConsumed || (typeof fallbackIndex === 'number' && fallbackIndex > 0)),
     actualBaseURLHost,
     configRevision: batchConfigRevision,
     currentConfigRevision: configRevision
@@ -1964,6 +2484,9 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
 
         const migrated = migrateSettings(mergedRaw);
+        if (migrated.providerConcurrency) {
+          updateProviderConcurrency(migrated.providerConcurrency);
+        }
 
         // Only bump revision if fields affecting translation change
         const configChanged = (
@@ -1978,6 +2501,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (configChanged) {
           configRevision++;
           translationCache.clear();
+          pendingL2Writes.clear();
+          if (l2WriteTimer) {
+            clearTimeout(l2WriteTimer);
+            l2WriteTimer = null;
+          }
           // Abort active in-flight requests across all tabs
           for (const [reqId, active] of activeBatchControllers.entries()) {
             try { active.controller.abort('config_changed'); } catch {}
@@ -1998,9 +2526,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           tabQueues.clear();
         }
 
-        // Invalidate model cache if baseURL changed
+        // Invalidate model cache if baseURL changed (best-effort)
         if (oldSettings.baseURL !== migrated.baseURL) {
-          await chrome.storage.local.remove(['modelListCache']);
+          try {
+            await chrome.storage.local.remove(['modelListCache']);
+          } catch {}
         }
 
         // Prune orphan fallback keys when a fallback is removed
@@ -2023,10 +2553,14 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         await chrome.storage.local.set({ settings: migrated });
 
-        // Push WIDGET_STATE_CHANGED if mode, widgetVisible or autoTranslateSites changed
+        // Push WIDGET_STATE_CHANGED if mode, widgetVisible, uiLocale, theme, uiFontScale, fabSize or autoTranslateSites changed
         if (
           oldSettings.translationMode !== migrated.translationMode ||
           oldSettings.widgetVisible !== migrated.widgetVisible ||
+          oldSettings.uiLocale !== migrated.uiLocale ||
+          oldSettings.theme !== migrated.theme ||
+          oldSettings.uiFontScale !== migrated.uiFontScale ||
+          oldSettings.fabSize !== migrated.fabSize ||
           JSON.stringify(oldSettings.autoTranslateSites) !== JSON.stringify(migrated.autoTranslateSites)
         ) {
           notifyAllWidgetStateChanged();
@@ -2085,8 +2619,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
-        // Invalidate model list cache on key change
-        await chrome.storage.local.remove(['modelListCache']);
+        await clearL2Cache();
+        // Invalidate model list cache on key change (best-effort)
+        try {
+          await chrome.storage.local.remove(['modelListCache']);
+        } catch {}
         if (typeof message.key === 'string') {
           await chrome.storage.local.set({ api_key: message.key });
         }
@@ -2134,6 +2671,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
+        await clearL2Cache();
 
         const res = await chrome.storage.local.get(['fallback_api_keys']);
         const fbKeys = res.fallback_api_keys || {};
@@ -2174,6 +2712,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
+        await clearL2Cache();
 
         const res = await chrome.storage.local.get(['fallback_api_keys']);
         const fbKeys = res.fallback_api_keys || {};
@@ -2211,6 +2750,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
         tabQueues.clear();
+        await clearL2Cache();
         // Invalidate model list cache on key removal, and remove all fallback keys
         await chrome.storage.local.remove(['modelListCache', 'api_key', 'fallback_api_keys']);
         notifyAllWidgetStateChanged();
@@ -2316,7 +2856,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               await chrome.scripting.registerContentScripts([{
                 id: scriptId,
                 matches: [originToMatchPattern(normOrigin)],
-                js: ['content.js'],
+                js: ['i18n-globals.js', 'content.js'],
                 runAt: 'document_start',
                 allFrames: false,
                 persistAcrossSessions: true
@@ -2337,7 +2877,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             try {
               await chrome.scripting.executeScript({
                 target: { tabId: message.tabId, frameIds: [0] },
-                files: ['content.js']
+                files: ['i18n-globals.js', 'content.js']
               });
             } catch {}
           }
@@ -2474,12 +3014,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           });
         }
 
-        // Inject content.js once (content self-guards window.__webMcpTranslatorInjected)
+        // Inject content scripts once (content self-guards window.__webMcpTranslatorInjected)
         if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.executeScript === 'function') {
           try {
             await chrome.scripting.executeScript({
               target: { tabId, frameIds: [0] },
-              files: ['content.js']
+              files: ['i18n-globals.js', 'content.js']
             });
           } catch (err) {
             return createTypedError('PERMISSION_REQUIRED', 'Failed to execute content script on tab', false, {
@@ -2742,6 +3282,45 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
 
+        if (storedSettings.cacheEnabled !== false && !l2MemoryOnly && !isClearingL2 && misses.length > 0) {
+          try {
+            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+              const readEpoch = l2Epoch;
+              const l2Res = await chrome.storage.local.get([L2_CACHE_KEY]);
+              if (!l2MemoryOnly && !isClearingL2 && l2Epoch === readEpoch) {
+                const trCache = l2Res?.[L2_CACHE_KEY];
+                if (trCache && typeof trCache === 'object') {
+                  const now = Date.now();
+                  const afterL2Misses = [];
+                  for (const m of misses) {
+                    const l2Key = /^[0-9a-f]{8}$/i.test(m.key) ? m.key : hashText(m.key);
+                    const entry = trCache[l2Key];
+                    const reqHash = hashText(m.key);
+                    const isValidShape = entry && typeof entry === 'object' && typeof entry.text === 'string' && typeof entry.keyHash === 'string' && !('key' in entry);
+                    const isMatch = isValidShape && entry.keyHash === reqHash;
+                    if (isMatch && (now - (entry.savedAt || 0) < L2_CACHE_TTL_MS)) {
+                      const normText = normalizeSourceText(m.item?.text);
+                      translationCache.set(m.key, entry.text, normText);
+                      hits.push({
+                        index: m.index,
+                        result: {
+                          id: m.item.id,
+                          revision: m.item.revision,
+                          text: entry.text
+                        }
+                      });
+                    } else {
+                      afterL2Misses.push(m);
+                    }
+                  }
+                  misses.length = 0;
+                  misses.push(...afterL2Misses);
+                }
+              }
+            }
+          } catch {}
+        }
+
         // Fast path: full cache hit bypasses rate admission & provider calls completely
         if (misses.length === 0) {
           if (batchConfigRevision !== configRevision) {
@@ -2878,6 +3457,28 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         const eff = resolveEffectiveSiteConfig(settings, gate.origin);
 
+        const primaryModel = settings.model || DEFAULT_MODEL;
+        const fallbackList = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
+        let widgetModels = [primaryModel];
+        for (const fb of fallbackList) {
+          const m = (fb && typeof fb.model === 'string') ? fb.model.trim() : '';
+          if (m && !widgetModels.includes(m) && widgetModels.length < 3) {
+            widgetModels.push(m);
+          }
+        }
+
+        let favoritesHint = null;
+        if (settings.showFavoritesOnly) {
+          const scopeKey = normalizeBaseURLKey(settings.baseURL || 'http://localhost:8080/v1');
+          const favMap = (settings.favoriteModelsByBaseURL && typeof settings.favoriteModelsByBaseURL === 'object') ? settings.favoriteModelsByBaseURL : {};
+          const scopedFavs = Array.isArray(favMap[scopeKey]) ? favMap[scopeKey].filter(Boolean) : [];
+          if (scopedFavs.length > 0) {
+            widgetModels = scopedFavs;
+          } else {
+            favoritesHint = 'no_favorites_show_all';
+          }
+        }
+
         return {
           effective,
           siteEnabled,
@@ -2887,7 +3488,14 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           sourceLanguage: eff.sourceLanguage,
           targetLanguage: eff.targetLanguage,
           model: eff.model,
+          availableModels: widgetModels,
+          showFavoritesOnly: Boolean(settings.showFavoritesOnly),
+          favoritesHint,
           widgetVisible: settings.widgetVisible ?? true,
+          uiLocale: settings.uiLocale || 'vi',
+          theme: settings.theme || 'dark',
+          uiFontScale: settings.uiFontScale || 'md',
+          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1,
           position,
           hasKey,
           autoStart,
@@ -2962,7 +3570,11 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           model: eff.model,
           widgetVisible: settings.widgetVisible ?? true,
           position: widgetPositions[gate.origin] || null,
-          hasKey
+          hasKey,
+          uiLocale: settings.uiLocale || 'vi',
+          theme: settings.theme || 'dark',
+          uiFontScale: settings.uiFontScale || 'md',
+          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1
         };
 
         pushWidgetStateChanged(gate.tabId, state);
@@ -2977,13 +3589,24 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         if (mode !== 'scroll-follow' && mode !== 'full') {
           return createTypedError('INVALID_SCHEMA', 'Invalid mode. Must be scroll-follow or full', false);
         }
+        const newModel = (typeof message.model === 'string' && message.model.trim())
+          ? message.model.trim()
+          : null;
 
         return await serializeSettingsWrite(async () => {
           await ensureStorageAccess();
           const oldSettings = await getStoredSettings({ persistMigration: false });
-          if (oldSettings.translationMode !== mode) {
+          const modeChanged = oldSettings.translationMode !== mode;
+          const modelChanged = Boolean(newModel && oldSettings.model !== newModel);
+
+          if (modeChanged || modelChanged) {
             configRevision++;
             translationCache.clear();
+            pendingL2Writes.clear();
+            if (l2WriteTimer) {
+              clearTimeout(l2WriteTimer);
+              l2WriteTimer = null;
+            }
             for (const [reqId, active] of activeBatchControllers.entries()) {
               try { active.controller.abort('config_changed'); } catch {}
             }
@@ -2993,20 +3616,24 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
                 if (entry.timer) clearTimeout(entry.timer);
                 entry.resolve(createTypedError(
                   'ABORTED',
-                  'Translation request aborted due to mode change',
+                  'Translation request aborted due to configuration change',
                   false,
-                  { reason: 'Mode changed' }
+                  { reason: 'Config changed' }
                 ));
               }
             }
             tabQueues.clear();
 
-            const merged = migrateSettings({ ...oldSettings, translationMode: mode });
+            const nextSettings = { ...oldSettings, translationMode: mode };
+            if (modelChanged) {
+              nextSettings.model = newModel;
+            }
+            const merged = migrateSettings(nextSettings);
             await chrome.storage.local.set({ settings: merged });
             notifyAllWidgetStateChanged();
           }
 
-          return { ok: true, mode };
+          return { ok: true, mode, ...(newModel ? { model: newModel } : {}) };
         });
       }
 
@@ -3024,6 +3651,52 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         await chrome.storage.local.set({ widgetPositions });
 
         return { ok: true, position: { x, y } };
+      }
+
+      case 'GET_ERROR_LOG': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'GET_ERROR_LOG is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        return { ok: true, entries: [...errorLog] };
+      }
+
+      case 'CLEAR_ERROR_LOG': {
+        if (!isPrivilegedSender(sender)) {
+          return createTypedError('PERMISSION_REQUIRED', 'CLEAR_ERROR_LOG is only permitted from extension UI', false, {
+            permissionType: 'host'
+          });
+        }
+        errorLog = [];
+        try {
+          if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
+            await chrome.storage.session.remove(['errorLog']);
+          }
+        } catch {}
+        return { ok: true };
+      }
+
+      case 'RECORD_ERROR_LOG': {
+        const err = message.error || { code: 'UNKNOWN', message: 'Unknown error' };
+        const entry = await recordErrorLog(err, {
+          model: message.model || '',
+          tabId: sender?.tab?.id || message.tabId || null,
+          isTerminal: Boolean(message.isTerminal)
+        });
+        return { ok: true, entry };
+      }
+
+      case 'WATCHDOG_RECONCILE': {
+        const result = reconcileWatchdog(message.payload || {});
+        if (result.logEntry) {
+          await recordErrorLog(result.logEntry, {
+            model: message.model || '',
+            tabId: sender?.tab?.id || message.tabId || null,
+            isTerminal: false
+          });
+        }
+        return { ok: true, ...result };
       }
 
       default:
@@ -3097,11 +3770,38 @@ globalScope.__translatorSw = {
   LIST_MODELS_TIMEOUT_MS,
   translationCache,
   providerSemaphore,
+  getProviderSemaphore,
+  updateProviderConcurrency,
+  resolveLimits,
   getConfigRevision: () => configRevision,
   SETTINGS_VERSION,
   migrateSettings,
   validateSettings,
   resolveFallbackPlan,
   computeKeyFingerprint,
-  activeBatchControllers
+  activeBatchControllers,
+  recordErrorLog,
+  getErrorLog: () => [...errorLog],
+  clearErrorLog: async () => {
+    errorLog = [];
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
+        await chrome.storage.session.remove(['errorLog']);
+      }
+    } catch {}
+  },
+  enqueueL2Cache,
+  flushL2Cache,
+  clearL2Cache,
+  getL2Epoch: () => l2Epoch,
+  isL2MemoryOnly: () => l2MemoryOnly,
+  _setL2MemoryOnlyForTest: (v) => { l2MemoryOnly = Boolean(v); },
+  isClearingL2: () => isClearingL2,
+  isL2Clearing: () => isClearingL2,
+  L2_CACHE_KEY,
+  L2_CACHE_TTL_MS,
+  L2_MAX_SIZE_BYTES,
+  reconcileWatchdog,
+  executeBatchTranslation,
+  _setTranslateBatchForTest
 };

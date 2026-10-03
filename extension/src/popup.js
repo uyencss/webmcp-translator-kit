@@ -2,7 +2,16 @@
 // Contract Version: webmcp-translator-contract/1
 
 import { normalizeOrigin } from './consent.mjs';
-import { normalizeBaseURLKey } from './settings.mjs';
+import {
+  normalizeBaseURLKey,
+  clampTabMaxBatches,
+  clampSiteMaxBatches,
+  clampProviderConcurrency,
+  clampFabSize,
+  buildExportConfig
+} from './settings.mjs';
+import { t, SUPPORTED_UI_LOCALES } from './i18n.mjs';
+import { LANGS, SOURCE_LANGS, TARGET_LANGS, getLanguageLabel } from './languages.mjs';
 
 export const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
 export const RECOMMENDED_MODELS = [
@@ -12,9 +21,47 @@ export const RECOMMENDED_MODELS = [
   'ag/gemini-3.8-flash'
 ];
 
+export function buildExportPayload({
+  settings,
+  fallbackKeyPresence = {},
+  hasStoredKey = false,
+  includeKeys = false,
+  apiKey = '',
+  fallbackApiKeys = {},
+  exportedAt
+} = {}) {
+  const baseConfig = buildExportConfig({
+    settings,
+    fallbackKeyPresence,
+    hasStoredKey,
+    exportedAt
+  });
+
+  if (!includeKeys) {
+    return {
+      filename: 'translator-config.json',
+      data: baseConfig
+    };
+  }
+
+  const withKeysData = {
+    ...baseConfig,
+    apiKey: typeof apiKey === 'string' ? apiKey : '',
+    fallbackApiKeys: (fallbackApiKeys && typeof fallbackApiKeys === 'object' && !Array.isArray(fallbackApiKeys))
+      ? { ...fallbackApiKeys }
+      : {}
+  };
+
+  return {
+    filename: 'translator-config.with-keys.json',
+    data: withKeysData
+  };
+}
+
 if (typeof window !== 'undefined') {
   window.DEFAULT_MODEL = DEFAULT_MODEL;
   window.RECOMMENDED_MODELS = RECOMMENDED_MODELS;
+  window.buildExportPayload = buildExportPayload;
 }
 
 // Inline Tabler SVG path helpers (MIT)
@@ -34,8 +81,12 @@ const SVG_ICONS = {
   power: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>'
 };
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // Common Top Elements
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', async () => {
+    if (document.body) {
+      document.body.classList.remove('modal-open');
+    }
+    // Common Top Elements
   const statusStrip = document.getElementById('status-strip');
   const statusIcon = document.getElementById('status-icon');
   const statusText = document.getElementById('status-text');
@@ -51,10 +102,38 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tabPanels = {
     'tab-translate': document.getElementById('tabpanel-translate'),
     'tab-auto': document.getElementById('tabpanel-auto'),
-    'tab-connect': document.getElementById('tabpanel-connect')
+    'tab-config': document.getElementById('tabpanel-config'),
+    'tab-log': document.getElementById('tabpanel-log')
   };
+  const logList = document.getElementById('log-list');
+  const btnClearLog = document.getElementById('btn-clear-log');
 
-  // Tab 1 Elements ("Dịch")
+  // Tab 4 Elements ("Config")
+  const selectUiLocale = document.getElementById('select-ui-locale');
+  const selectTheme = document.getElementById('select-theme');
+  const selectUiFontScale = document.getElementById('select-ui-font-scale');
+
+  // Header Menu Elements
+  const btnHeaderMenu = document.getElementById('btn-header-menu');
+  const menuOverlay = document.getElementById('menu-overlay');
+  const menuBackdrop = document.getElementById('menu-backdrop');
+  const menuItemConfig = document.getElementById('menu-item-config');
+  const menuItemLog = document.getElementById('menu-item-log');
+  const menuItemExport = document.getElementById('menu-item-export');
+
+  // Modal Dialog Elements
+  const modalOverlay = document.getElementById('modal-overlay');
+  const modalBackdrop = document.getElementById('modal-backdrop');
+  const modalTitle = document.getElementById('modal-title');
+  const modalCloseBtn = document.getElementById('modal-close-btn');
+
+  // Export JSON & Fab Size Elements
+  const btnExportConfigConnect = document.getElementById('btn-export-config-connect');
+  const checkboxExportKeys = document.getElementById('checkbox-export-keys');
+  const inputFabSize = document.getElementById('input-fab-size');
+  const fabSizeValue = document.getElementById('fab-size-value');
+
+  // Tab 1 Elements ("Translate")
   const selectSrcLang = document.getElementById('select-src-lang');
   const selectTgtLang = document.getElementById('select-tgt-lang');
   const siteOriginBadge = document.getElementById('site-origin-badge');
@@ -68,12 +147,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const saveStateEl = document.getElementById('save-state');
   const saveDotEl = document.getElementById('save-dot');
 
-  // Tab 2 Elements ("Tự động")
+  // Tab 2 Elements ("Auto")
   const btnAddCurrentSite = document.getElementById('btn-add-current-site');
   const autoSiteError = document.getElementById('auto-site-error');
   const autoSitesList = document.getElementById('auto-sites-list');
 
-  // Tab 3 Elements ("Kết nối")
+  // Tab 3 Elements ("Connect")
   const inputBaseUrl = document.getElementById('input-base-url');
   const btnBasePerm = document.getElementById('btn-base-perm');
   const inputApiKey = document.getElementById('input-api-key');
@@ -86,6 +165,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnAddFallback = document.getElementById('btn-add-fallback');
   const fallbackListEl = document.getElementById('fallback-list');
   const configMessageConnect = document.getElementById('config-message-connect');
+
+  // Rate Limits Elements (WI-28)
+  const inputRateTab = document.getElementById('input-rate-tab');
+  const inputRateSite = document.getElementById('input-rate-site');
+  const inputRateConcurrency = document.getElementById('input-rate-concurrency');
+  const rateLimitsHint = document.getElementById('rate-limits-hint');
+
+  // Tab 3 Sub-menu & Favorites Elements (WI-21)
+  const subtabNav = document.querySelector('.subtab-nav');
+  const subtabButtons = Array.from(document.querySelectorAll('.subtab-btn'));
+  const configSubpanels = {
+    connect: document.getElementById('config-section-connect'),
+    appearance: document.getElementById('config-section-appearance'),
+    favorites: document.getElementById('config-section-favorites')
+  };
+  const checkboxFavoritesOnly = document.getElementById('checkbox-favorites-only');
+  const favoritesSectionTitle = document.getElementById('favorites-section-title');
+  const favoritesCountBadge = document.getElementById('favorites-count-badge');
+  const selectAddFavorite = document.getElementById('select-add-favorite') || document.getElementById('input-add-favorite');
+  const inputAddFavorite = selectAddFavorite;
+  const btnAddFavorite = document.getElementById('btn-add-favorite');
+  const favoritesAddHint = document.getElementById('favorites-add-hint');
+  const favoritesEmptyHint = document.getElementById('favorites-empty-hint');
+  const favoritesList = document.getElementById('favorites-list');
+  const configMessageFavorites = document.getElementById('config-message-favorites');
 
   // Application State
   let activeTab = null;
@@ -111,6 +215,98 @@ document.addEventListener('DOMContentLoaded', async () => {
   let autoTranslateSites = [];
   let currentMode = 'scroll-follow';
   let activeTabNav = 'tab-translate';
+  let currentUiLocale = 'vi';
+  let currentTheme = 'dark';
+  let currentFontScale = 'md';
+
+  function applyTheme(theme) {
+    const th = (theme === 'light' || theme === 'dark') ? theme : 'dark';
+    currentTheme = th;
+    document.documentElement.setAttribute('data-theme', th);
+    if (selectTheme) selectTheme.value = th;
+  }
+
+  function applyFontScale(scale) {
+    const sc = (scale === 'sm' || scale === 'md' || scale === 'lg') ? scale : 'md';
+    currentFontScale = sc;
+    document.documentElement.dataset.fontscale = sc;
+    if (selectUiFontScale) selectUiFontScale.value = sc;
+  }
+
+  function applyUiLocale(locale) {
+    const loc = SUPPORTED_UI_LOCALES.includes(locale) ? locale : 'vi';
+    currentUiLocale = loc;
+    document.documentElement.lang = loc;
+    if (selectUiLocale) selectUiLocale.value = loc;
+    renderLocalizedStrings();
+    renderLanguageDropdowns();
+    renderAutoSites();
+    renderFallbackRows();
+    renderFavoritesSection();
+    renderAllModelDropdowns();
+    evaluateActionReadiness();
+  }
+
+  function renderLanguageDropdowns() {
+    if (selectSrcLang) {
+      const rawSrc = selectSrcLang.value || (savedSettings && savedSettings.sourceLanguage) || 'auto';
+      const curVal = SOURCE_LANGS.some(l => l.code === rawSrc) ? rawSrc : 'auto';
+      selectSrcLang.innerHTML = SOURCE_LANGS.map(l =>
+        `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`
+      ).join('');
+      selectSrcLang.value = curVal;
+    }
+    if (selectTgtLang) {
+      const rawTgt = selectTgtLang.value || (savedSettings && savedSettings.targetLanguage) || 'vi';
+      const curVal = TARGET_LANGS.some(l => l.code === rawTgt) ? rawTgt : 'vi';
+      selectTgtLang.innerHTML = TARGET_LANGS.map(l =>
+        `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`
+      ).join('');
+      selectTgtLang.value = curVal;
+    }
+  }
+
+  function renderLocalizedStrings() {
+    const loc = currentUiLocale;
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const k = el.getAttribute('data-i18n');
+      if (k) el.textContent = t(loc, k);
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+      const k = el.getAttribute('data-i18n-title');
+      if (k) el.title = t(loc, k);
+    });
+    document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+      const k = el.getAttribute('data-i18n-aria-label');
+      if (k) el.setAttribute('aria-label', t(loc, k));
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+      const k = el.getAttribute('data-i18n-placeholder');
+      if (k) {
+        el.placeholder = t(loc, k);
+        el.setAttribute('placeholder', t(loc, k));
+      }
+    });
+    document.querySelectorAll('[data-i18n-label]').forEach((el) => {
+      const k = el.getAttribute('data-i18n-label');
+      if (k) el.label = t(loc, k);
+    });
+
+    if (selectUiLocale) {
+      for (const opt of selectUiLocale.options) {
+        const k = `config_ui_locale_${opt.value}`;
+        opt.textContent = t(loc, k);
+      }
+    }
+
+    if (modalTitle) {
+      if (activeModal === 'config') {
+        modalTitle.textContent = t(loc, 'tab_config');
+      } else if (activeModal === 'log') {
+        modalTitle.textContent = t(loc, 'tab_log');
+      }
+    }
+  }
 
   function currentFavKey() {
     return normalizeBaseURLKey(inputBaseUrl ? inputBaseUrl.value : (savedSettings.baseURL || ''));
@@ -175,18 +371,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     switch (state) {
       case 'unconfigured':
         iconSvg = SVG_ICONS.lock;
-        shortText = 'Chưa có key';
-        fullDetail = detail || 'Vui lòng nhập API key tại tab Kết nối để bắt đầu dịch.';
+        shortText = t(currentUiLocale, 'status_no_key');
+        fullDetail = detail || t(currentUiLocale, 'status_no_key_detail');
         break;
       case 'ready':
         iconSvg = SVG_ICONS.check;
         shortText = '';
-        fullDetail = detail || 'Sẵn sàng dịch trang hiện tại.';
+        fullDetail = detail || t(currentUiLocale, 'status_ready_detail');
         break;
       case 'translating':
         iconSvg = detail.includes('quota') ? SVG_ICONS.clock : SVG_ICONS.spinner;
-        shortText = detail.includes('quota') ? detail : (detail || 'Đang dịch...');
-        fullDetail = detail || 'Đang gửi batch dịch nội dung trang.';
+        shortText = detail.includes('quota') ? detail : (detail || t(currentUiLocale, 'status_translating'));
+        fullDetail = detail || t(currentUiLocale, 'status_translating_detail');
         break;
       case 'watching': {
         iconSvg = SVG_ICONS.scroll;
@@ -196,47 +392,47 @@ document.addEventListener('DOMContentLoaded', async () => {
         const wCollected = data && typeof data.totalCollected === 'number' ? data.totalCollected : null;
         const wFailed = data && typeof data.totalFailed === 'number' ? data.totalFailed : 0;
         shortText = (wApplied !== null && wCollected !== null && wCollected > 0)
-          ? `Đang theo scroll ${wApplied}/${wCollected}`
-          : 'Đang theo scroll';
-        if (wFailed > 0) shortText += ` (${wFailed} lỗi)`;
-        fullDetail = detail || 'Đang theo dõi và dịch tự động khi cuộn trang.';
+          ? t(currentUiLocale, 'status_watching_count', { applied: wApplied, collected: wCollected })
+          : t(currentUiLocale, 'status_watching');
+        if (wFailed > 0) shortText += ' ' + t(currentUiLocale, 'status_failed_count', { count: wFailed });
+        fullDetail = detail || t(currentUiLocale, 'status_watching_detail');
         break;
       }
       case 'translated':
         iconSvg = SVG_ICONS.check;
-        shortText = 'Đã dịch';
-        fullDetail = detail || 'Toàn bộ nội dung đã được dịch thành công.';
+        shortText = t(currentUiLocale, 'status_translated');
+        fullDetail = detail || t(currentUiLocale, 'status_translated_detail');
         break;
       case 'restored':
         iconSvg = SVG_ICONS.restore;
-        shortText = 'Đã khôi phục';
-        fullDetail = detail || 'Đã khôi phục về văn bản gốc.';
+        shortText = t(currentUiLocale, 'status_restored');
+        fullDetail = detail || t(currentUiLocale, 'status_restored_detail');
         break;
       case 'unsupported':
         iconSvg = SVG_ICONS.alert;
-        shortText = 'Không hỗ trợ';
-        fullDetail = detail || 'Trang hệ thống Chrome hoặc URL không phải HTTP(S) không hỗ trợ dịch.';
+        shortText = t(currentUiLocale, 'status_unsupported');
+        fullDetail = detail || t(currentUiLocale, 'status_unsupported_detail');
         break;
       case 'error':
         iconSvg = SVG_ICONS.alert;
         if (detail.includes('RATE_LIMITED')) {
           iconSvg = SVG_ICONS.clock;
-          shortText = 'Chờ quota';
+          shortText = t(currentUiLocale, 'status_waiting_quota');
         } else if (detail.includes('PERMISSION_REQUIRED')) {
-          shortText = 'Thiếu quyền site';
+          shortText = t(currentUiLocale, 'status_missing_perm');
         } else if (detail.includes('OPT_IN_REQUIRED')) {
-          shortText = 'Chưa bật site';
+          shortText = t(currentUiLocale, 'status_site_disabled');
         } else if (detail.includes('DROPPED_ON_RESTART')) {
-          shortText = 'Dịch bị gián đoạn';
+          shortText = t(currentUiLocale, 'status_interrupted');
         } else if (detail.includes('HTTP_429')) {
-          shortText = 'Lỗi HTTP_429';
+          shortText = 'HTTP_429';
         } else if (detail.includes('HTTP_')) {
           const match = detail.match(/HTTP_\d+/);
-          shortText = match ? `Lỗi ${match[0]}` : 'Lỗi HTTP';
+          shortText = match ? t(currentUiLocale, 'status_error_http_code', { code: match[0] }) : t(currentUiLocale, 'status_error_http');
         } else {
-          shortText = 'Lỗi';
+          shortText = t(currentUiLocale, 'status_error');
         }
-        fullDetail = detail || 'Đã xảy ra lỗi trong quá trình xử lý.';
+        fullDetail = detail || t(currentUiLocale, 'status_error_detail');
         break;
       default:
         iconSvg = '<span class="status-dot"></span>';
@@ -246,8 +442,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (statusIcon) statusIcon.innerHTML = iconSvg;
     if (statusText) statusText.textContent = shortText;
-    if (statusDetail) statusDetail.textContent = fullDetail;
-    if (statusStrip) statusStrip.title = fullDetail;
+    if (statusStrip) {
+      statusStrip.title = fullDetail;
+      statusStrip.classList.toggle('has-error', state === 'error');
+    }
     // Footer slot mirrors live scroll progress (applied/collected + failed);
     // version string otherwise. Never shows a completed state while watching —
     // callers keep the watching branch ahead of the done branch.
@@ -257,7 +455,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         (state === 'error' && data && data.totalFailed > 0);
       if (showProgress && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
         const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
-        const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ` (${data.totalFailed} lỗi)` : '';
+        const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ' ' + t(currentUiLocale, 'status_failed_count', { count: data.totalFailed }) : '';
         footerStatusSummary.textContent = `v0.1.0 · ${fApplied}/${data.totalCollected}${fFailed}`;
       } else {
         footerStatusSummary.textContent = 'v0.1.0';
@@ -291,15 +489,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (saveStateEl) {
       saveStateEl.dataset.state = state;
       if (title) saveStateEl.title = title;
-      else if (state === 'saved') saveStateEl.title = 'Mọi thay đổi đã được lưu tự động';
-      else if (state === 'saving') saveStateEl.title = 'Đang lưu...';
-      else if (state === 'error') saveStateEl.title = 'Lưu thất bại — xem chi tiết lỗi bên dưới';
-      else saveStateEl.title = 'Mọi thay đổi được lưu tự động';
+      else if (state === 'saved') saveStateEl.title = t(currentUiLocale, 'save_saved');
+      else if (state === 'saving') saveStateEl.title = t(currentUiLocale, 'save_saving');
+      else if (state === 'error') saveStateEl.title = t(currentUiLocale, 'save_error');
+      else saveStateEl.title = t(currentUiLocale, 'save_default');
     }
   }
 
   // Collect fallback rows from UI (no permission requests here — autosave has
-  // no user gesture; host permissions are granted via explicit buttons/Dịch)
+  // no user gesture; host permissions are granted via explicit buttons/Translate)
   function collectCleanFallbacks() {
     const out = [];
     for (let i = 0; i < fallbacks.length; i++) {
@@ -309,7 +507,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
       const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
       if (fbUrl && !/^https?:\/\/.+/i.test(fbUrl)) {
-        return { fallbacks: null, error: `Fallback ${i + 1} Base URL phải là http:// hoặc https://` };
+        return { fallbacks: null, error: t(currentUiLocale, 'err_fallback_base_url_invalid', { index: i + 1 }) };
       }
       out.push({ id: fb.id || `fb${i + 1}`, model: fbModel, baseURL: fbUrl || undefined });
     }
@@ -319,7 +517,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function collectSettingsPatch() {
     const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : '';
     if (rawUrl && !/^https?:\/\/.+/i.test(rawUrl)) {
-      return { patch: null, error: 'Base URL phải bắt đầu bằng http:// hoặc https://' };
+      return { patch: null, error: t(currentUiLocale, 'err_base_url_protocol') };
     }
     const fbRes = collectCleanFallbacks();
     if (fbRes.error) return { patch: null, error: fbRes.error };
@@ -329,18 +527,44 @@ document.addEventListener('DOMContentLoaded', async () => {
       sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
       targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
       widgetVisible: checkboxWidgetVisible ? Boolean(checkboxWidgetVisible.checked) : true,
+      uiLocale: selectUiLocale ? selectUiLocale.value : (savedSettings.uiLocale || 'vi'),
+      theme: selectTheme ? selectTheme.value : (savedSettings.theme || 'dark'),
+      uiFontScale: selectUiFontScale ? selectUiFontScale.value : (savedSettings.uiFontScale || 'md'),
+      fabSize: inputFabSize ? clampFabSize(inputFabSize.value) : (savedSettings.fabSize ?? 1.0),
+      showFavoritesOnly: checkboxFavoritesOnly ? Boolean(checkboxFavoritesOnly.checked) : false,
+      exportIncludeKeys: checkboxExportKeys ? Boolean(checkboxExportKeys.checked) : (typeof savedSettings.exportIncludeKeys === 'boolean' ? savedSettings.exportIncludeKeys : true),
       model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
       fallbacks: fbRes.fallbacks,
       autoTranslateSites: JSON.parse(JSON.stringify(autoTranslateSites))
     };
     if (rawUrl) patch.baseURL = rawUrl;
+
+    if (inputRateTab || inputRateSite || inputRateConcurrency) {
+      const tabBatches = inputRateTab ? clampTabMaxBatches(inputRateTab.value) : (savedSettings.rateLimits?.tab?.maxBatches || 4);
+      const siteBatches = inputRateSite ? clampSiteMaxBatches(inputRateSite.value) : (savedSettings.rateLimits?.site?.maxBatches || 12);
+      const concurrency = inputRateConcurrency ? clampProviderConcurrency(inputRateConcurrency.value) : (savedSettings.providerConcurrency || 2);
+
+      patch.providerConcurrency = concurrency;
+      patch.rateLimits = {
+        windowSeconds: 60,
+        tab: {
+          maxBatches: tabBatches,
+          maxSourceCodePoints: savedSettings.rateLimits?.tab?.maxSourceCodePoints || 12000
+        },
+        site: {
+          maxBatches: siteBatches,
+          maxSourceCodePoints: savedSettings.rateLimits?.site?.maxSourceCodePoints || 36000
+        }
+      };
+    }
+
     return { patch, error: null };
   }
 
   // Autosave: persist every UI change to storage (debounced for typing).
   // Host permission requests NEVER happen here (no gesture) — they live in
-  // explicit buttons (site toggle, + Trang này, base shield, Dịch).
-  const SETTINGS_NOT_LOADED_MSG = 'Cấu hình chưa tải xong — đợi giây lát rồi thử lại (không ghi gì để tránh mất cấu hình cũ)';
+  // explicit buttons (site toggle, + Current page, base shield, Translate).
+  function getSettingsNotLoadedMsg() { return t(currentUiLocale, 'err_settings_not_loaded'); }
 
   function waitForAutosaveIdle() {
     if (!autosaveInFlight) return Promise.resolve();
@@ -354,8 +578,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function saveFavoriteToggle(scopeKey, model, favorite) {
     const operation = favoriteWriteQueue.then(async () => {
-      if (!settingsLoaded) throw new Error(SETTINGS_NOT_LOADED_MSG);
-      if (typeof favorite !== 'boolean') throw new Error('Trạng thái yêu thích không hợp lệ');
+      if (!settingsLoaded) throw new Error(getSettingsNotLoadedMsg());
+      if (typeof favorite !== 'boolean') throw new Error(t(currentUiLocale, 'err_favorite_invalid'));
 
       let saveFormAfter = Boolean(autosaveTimer);
       if (autosaveTimer) {
@@ -383,11 +607,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         });
         if (!response || response.error) {
-          throw new Error(response?.error?.message || 'Không thể lưu danh sách yêu thích');
+          throw new Error(response?.error?.message || t(currentUiLocale, 'err_favorite_save_failed'));
         }
         const favoriteToggle = response.favoriteToggle;
         if (favoriteToggle?.scopeKey !== scopeKey || !Array.isArray(favoriteToggle.favorites)) {
-          throw new Error('Phản hồi lưu yêu thích không hợp lệ');
+          throw new Error(t(currentUiLocale, 'err_favorite_response_invalid'));
         }
         favoriteModelsByBaseURL = {
           ...favoriteModelsByBaseURL,
@@ -435,7 +659,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const saveResp = await sendMsg({ action: 'SAVE_SETTINGS', settings: patch });
       if (chrome.runtime.lastError || !saveResp || saveResp.error) {
         const err = (saveResp && saveResp.error) || chrome.runtime.lastError || {};
-        throw new Error((err && err.message) || 'Không thể lưu cấu hình');
+        throw new Error((err && err.message) || t(currentUiLocale, 'err_save_settings_failed'));
       }
       savedSettings = { ...savedSettings, ...patch };
 
@@ -445,13 +669,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const keyResp = await sendMsg({ action: 'SET_KEY', key: keyVal });
         if (chrome.runtime.lastError || !keyResp || keyResp.error) {
           const err = (keyResp && keyResp.error) || chrome.runtime.lastError || {};
-          throw new Error('Lỗi lưu API key: ' + ((err && err.message) || 'Lỗi không xác định'));
+          throw new Error(t(currentUiLocale, 'err_save_key_failed', { error: (err && err.message) || t(currentUiLocale, 'err_unknown') }));
         }
         hasStoredKey = true;
-        if (keyStatusIndicator) keyStatusIndicator.textContent = 'Key: Đã lưu';
+        if (keyStatusIndicator) keyStatusIndicator.textContent = t(currentUiLocale, 'conn_key_stored');
         if (inputApiKey) {
           inputApiKey.value = '';
-          inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
+          inputApiKey.placeholder = t(currentUiLocale, 'conn_key_placeholder_saved');
         }
       }
 
@@ -464,12 +688,12 @@ document.addEventListener('DOMContentLoaded', async () => {
           const fbKeyResp = await sendMsg({ action: 'SET_FALLBACK_KEY', id: fb.id, key: fbKeyVal });
           if (chrome.runtime.lastError || !fbKeyResp || fbKeyResp.error) {
             const err = (fbKeyResp && fbKeyResp.error) || chrome.runtime.lastError || {};
-            throw new Error(`Lỗi lưu key Fallback ${i + 1}: ` + ((err && err.message) || 'Lỗi không xác định'));
+            throw new Error(t(currentUiLocale, 'err_save_fallback_key_failed', { index: i + 1, error: (err && err.message) || t(currentUiLocale, 'err_unknown') }));
           }
           fallbackKeyPresence[fb.id] = true;
           if (fbKeyInput) {
             fbKeyInput.value = '';
-            fbKeyInput.placeholder = '•••••••••••••••• (Đã lưu)';
+            fbKeyInput.placeholder = t(currentUiLocale, 'conn_key_placeholder_saved');
           }
         }
       }
@@ -478,7 +702,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       evaluateActionReadiness();
       if (inputBaseUrl) refreshBasePermState();
     } catch (err) {
-      const msg = (err && err.message) || 'Không thể lưu cấu hình';
+      const msg = (err && err.message) || t(currentUiLocale, 'err_save_settings_failed');
       setSaveState('error', msg);
       setConfigMsg(configMessageConnect, msg, true);
     } finally {
@@ -501,14 +725,343 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 600);
   }
 
+  // Settings Menu & Modal Controller
+  let activeModal = null; // 'config' | 'log' | null
+  let modalOpenerEl = null;
+
+  function isModalOpen() {
+    return Boolean(modalOverlay && modalOverlay.style.display !== 'none');
+  }
+
+  function setBackgroundInert(inert) {
+    const backgroundElements = [
+      document.querySelector('.header'),
+      document.getElementById('tabpanel-translate'),
+      document.getElementById('tabpanel-auto'),
+      document.querySelector('.footer')
+    ].filter(Boolean);
+
+    for (const el of backgroundElements) {
+      if (inert) {
+        el.setAttribute('inert', '');
+        if ('inert' in el) el.inert = true;
+      } else {
+        el.removeAttribute('inert');
+        if ('inert' in el) el.inert = false;
+      }
+    }
+  }
+
+  function isElementVisibleAndEnabled(el) {
+    if (!el || typeof el.focus !== 'function') return false;
+    if (typeof document !== 'undefined' && document.body && typeof document.body.contains === 'function' && !document.body.contains(el)) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+    if (typeof el.closest === 'function') {
+      if (el.closest('[aria-hidden="true"]')) return false;
+      if (el.closest('.hidden')) return false;
+    }
+    if (modalOverlay && (el === modalOverlay || (typeof modalOverlay.contains === 'function' && modalOverlay.contains(el)))) {
+      return false;
+    }
+    if (menuOverlay && (el === menuOverlay || (typeof menuOverlay.contains === 'function' && menuOverlay.contains(el)))) {
+      return false;
+    }
+
+    let cur = el;
+    while (cur && cur !== (typeof document !== 'undefined' ? document.body : null)) {
+      if (cur.style && cur.style.display === 'none') return false;
+      if (cur === modalOverlay || cur === menuOverlay) return false;
+      if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
+      if (cur.classList && cur.classList.contains && cur.classList.contains('hidden')) return false;
+      cur = cur.parentElement || cur.parentNode;
+    }
+
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const cs = window.getComputedStyle(el);
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return false;
+      } catch {}
+    }
+
+    return true;
+  }
+
+  function restoreFocusAfterModal() {
+    let focusSucceeded = false;
+    if (isElementVisibleAndEnabled(modalOpenerEl)) {
+      try {
+        modalOpenerEl.focus();
+        if (typeof document !== 'undefined' && document && 'activeElement' in document) {
+          if (document.activeElement === modalOpenerEl) {
+            focusSucceeded = true;
+          }
+        } else {
+          focusSucceeded = true;
+        }
+      } catch {
+        focusSucceeded = false;
+      }
+    }
+
+    if (!focusSucceeded) {
+      if (btnHeaderMenu && typeof btnHeaderMenu.focus === 'function') {
+        try {
+          btnHeaderMenu.focus();
+        } catch {}
+      }
+    }
+  }
+
+  function getModalFocusableElements() {
+    if (!isModalOpen()) return [];
+    const focusableSelectors = [
+      'button:not([disabled])',
+      '[href]',
+      'input:not([disabled]):not([type="hidden"])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(', ');
+
+    const nodes = Array.from(modalOverlay.querySelectorAll(focusableSelectors));
+    return nodes.filter((el) => {
+      if (el.disabled) return false;
+      if (el.getAttribute('aria-hidden') === 'true') return false;
+      if (el.closest('.hidden')) return false;
+      if (el.closest('[aria-hidden="true"]')) return false;
+      if (el.style.display === 'none') return false;
+      return true;
+    });
+  }
+
+  function handleModalFocusTrap(e) {
+    if (!isModalOpen()) return;
+    if (e.key !== 'Tab') return;
+
+    const focusables = getModalFocusableElements();
+    if (focusables.length === 0) {
+      e.preventDefault();
+      if (modalCloseBtn) modalCloseBtn.focus();
+      return;
+    }
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+
+    if (e.shiftKey) {
+      if (active === first || !modalOverlay.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !modalOverlay.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  function openMenu() {
+    if (!menuOverlay) return;
+    menuOverlay.style.display = 'flex';
+    menuOverlay.setAttribute('aria-hidden', 'false');
+    if (btnHeaderMenu) btnHeaderMenu.setAttribute('aria-expanded', 'true');
+    if (menuItemConfig) menuItemConfig.focus();
+  }
+
+  function closeMenu() {
+    if (!menuOverlay) return;
+    menuOverlay.style.display = 'none';
+    menuOverlay.setAttribute('aria-hidden', 'true');
+    if (btnHeaderMenu) {
+      btnHeaderMenu.setAttribute('aria-expanded', 'false');
+      btnHeaderMenu.focus();
+    }
+  }
+
+  function toggleMenu() {
+    if (menuOverlay && menuOverlay.style.display !== 'none') {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  }
+
+  function openModal(modalType, options = {}) {
+    const isAlreadyOpen = isModalOpen() || Boolean(activeModal);
+    if (!isAlreadyOpen || !modalOpenerEl) {
+      if (options && options.opener && (!modalOverlay || (options.opener !== modalOverlay && (typeof modalOverlay.contains !== 'function' || !modalOverlay.contains(options.opener))))) {
+        modalOpenerEl = options.opener;
+      } else if (document.activeElement && document.activeElement !== document.body && (!menuOverlay || (typeof menuOverlay.contains === 'function' ? !menuOverlay.contains(document.activeElement) : true)) && (!modalOverlay || (typeof modalOverlay.contains === 'function' ? !modalOverlay.contains(document.activeElement) : true))) {
+        modalOpenerEl = document.activeElement;
+      } else {
+        modalOpenerEl = btnHeaderMenu;
+      }
+    }
+
+    closeMenu();
+    if (!modalOverlay) return;
+    activeModal = modalType;
+    modalOverlay.style.display = 'flex';
+    modalOverlay.setAttribute('aria-hidden', 'false');
+    if (document.body) {
+      document.body.classList.add('modal-open');
+    }
+    setBackgroundInert(true);
+
+    if (modalType === 'config') {
+      if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_config');
+      if (tabPanels['tab-config']) tabPanels['tab-config'].classList.remove('hidden');
+      if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+    } else if (modalType === 'log') {
+      if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_log');
+      if (tabPanels['tab-log']) tabPanels['tab-log'].classList.remove('hidden');
+      if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+      loadErrorLog(options);
+    } else {
+      closeModal();
+      return;
+    }
+
+    if (modalCloseBtn) modalCloseBtn.focus();
+  }
+
+  function closeModal() {
+    if (document.body) {
+      document.body.classList.remove('modal-open');
+    }
+    if (!modalOverlay) return;
+    activeModal = null;
+    modalOverlay.style.display = 'none';
+    modalOverlay.setAttribute('aria-hidden', 'true');
+    setBackgroundInert(false);
+    if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+    if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+    if (activeTabNav === 'tab-config' || activeTabNav === 'tab-log') {
+      switchTab('tab-translate');
+    }
+    restoreFocusAfterModal();
+    modalOpenerEl = null;
+  }
+
+  async function triggerExportConfig() {
+    const options = arguments[0] || {};
+    let includeKeys = false;
+    if (options && typeof options.withKeys === 'boolean') {
+      includeKeys = options.withKeys;
+    } else if (checkboxExportKeys) {
+      includeKeys = Boolean(checkboxExportKeys.checked);
+    } else if (typeof savedSettings.exportIncludeKeys === 'boolean') {
+      includeKeys = savedSettings.exportIncludeKeys;
+    } else {
+      includeKeys = true;
+    }
+
+    let confirmedWithKeys = false;
+    if (includeKeys) {
+      const confirmFn = (typeof window !== 'undefined' && typeof window.confirm === 'function')
+        ? window.confirm
+        : (typeof globalThis !== 'undefined' && typeof globalThis.confirm === 'function' ? globalThis.confirm : null);
+      const warningMessage = t(currentUiLocale, 'export_keys_warning_confirm');
+      const userApproved = confirmFn ? Boolean(confirmFn(warningMessage)) : false;
+      if (userApproved) {
+        confirmedWithKeys = true;
+      }
+    }
+
+    let fallbackKeyPresence = {};
+    let storedFbKeys = {};
+    let storedApiKey = '';
+
+    try {
+      const res = await chrome.storage.local.get(['fallback_api_keys', 'api_key']);
+      storedFbKeys = (res && res.fallback_api_keys && typeof res.fallback_api_keys === 'object')
+        ? res.fallback_api_keys
+        : {};
+      storedApiKey = (res && typeof res.api_key === 'string') ? res.api_key : '';
+      for (const id of Object.keys(storedFbKeys)) {
+        if (typeof storedFbKeys[id] === 'string' && storedFbKeys[id].trim()) {
+          fallbackKeyPresence[id] = true;
+        }
+      }
+    } catch (err) {
+      console.warn('[popup] Failed to read keys for export:', err);
+    }
+
+    if (!storedApiKey && inputApiKey && inputApiKey.value && inputApiKey.value.trim()) {
+      storedApiKey = inputApiKey.value.trim();
+    }
+
+    const payload = buildExportPayload({
+      settings: savedSettings,
+      fallbackKeyPresence,
+      hasStoredKey: Boolean(hasStoredKey || storedApiKey),
+      includeKeys: confirmedWithKeys,
+      apiKey: storedApiKey,
+      fallbackApiKeys: storedFbKeys
+    });
+
+    try {
+      const jsonStr = JSON.stringify(payload.data, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payload.filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+
+      updateStatus(
+        'ready',
+        confirmedWithKeys ? t(currentUiLocale, 'export_json_with_keys_success') : t(currentUiLocale, 'export_json_success')
+      );
+    } catch (err) {
+      console.warn('[popup] Export JSON failed:', err);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.triggerExportConfig = triggerExportConfig;
+  }
+
+  function updateFabSizeDisplay(val) {
+    const clamped = clampFabSize(val);
+    if (inputFabSize) inputFabSize.value = String(clamped);
+    if (fabSizeValue) fabSizeValue.textContent = `${clamped.toFixed(2)}x`;
+  }
+
   // Tab Navigation Controller (with roving tabindex & sessionStorage memory)
-  function switchTab(targetTabId) {
+  function switchTab(targetTabId, subSection) {
+    if (targetTabId === 'tab-config') {
+      if (typeof openModal === 'function' && modalOverlay) {
+        openModal('config');
+        if (subSection) switchConfigSubtab(subSection);
+      }
+    } else if (targetTabId === 'tab-log') {
+      if (typeof openModal === 'function' && modalOverlay) {
+        openModal('log');
+      }
+    } else {
+      if (isModalOpen()) {
+        closeModal();
+      }
+    }
+
+    if (!tabPanels[targetTabId]) targetTabId = 'tab-translate';
     activeTabNav = targetTabId;
     try {
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.setItem('active_translator_tab', targetTabId);
       }
-    } catch {}
+    } catch (err) {
+      console.warn('[popup] Failed to persist active_translator_tab:', err);
+    }
 
     for (const btn of tabButtons) {
       const isSelected = btn.id === targetTabId;
@@ -522,12 +1075,115 @@ document.addEventListener('DOMContentLoaded', async () => {
         panelEl.classList.toggle('hidden', panelTabId !== targetTabId);
       }
     }
+
+    if (targetTabId === 'tab-config' && subSection) {
+      switchConfigSubtab(subSection);
+    }
+
+    if (targetTabId === 'tab-log') {
+      loadErrorLog();
+    }
+  }
+
+  async function loadErrorLog({ highlightFirst = false } = {}) {
+    if (!logList) return;
+    try {
+      const resp = await sendMsg({ action: 'GET_ERROR_LOG' });
+      const entries = (resp && resp.ok && Array.isArray(resp.entries)) ? resp.entries : [];
+      logList.innerHTML = '';
+      if (entries.length === 0) {
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'log-empty';
+        emptyDiv.textContent = t(currentUiLocale, 'log_empty');
+        logList.appendChild(emptyDiv);
+        return;
+      }
+      entries.forEach((entry, idx) => {
+        const item = document.createElement('div');
+        item.className = 'log-item' + (idx === 0 && highlightFirst ? ' highlight' : '');
+
+        const header = document.createElement('div');
+        header.className = 'log-item-header';
+
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'log-time';
+        try {
+          const d = new Date(entry.time);
+          timeSpan.textContent = isNaN(d.getTime()) ? String(entry.time || '') : d.toLocaleTimeString();
+        } catch {
+          timeSpan.textContent = String(entry.time || '');
+        }
+
+        const codeSpan = document.createElement('span');
+        codeSpan.className = 'log-code';
+        codeSpan.textContent = entry.code || 'ERROR';
+
+        header.appendChild(timeSpan);
+        header.appendChild(codeSpan);
+
+        if (entry.model) {
+          const modelSpan = document.createElement('span');
+          modelSpan.className = 'log-model';
+          modelSpan.textContent = entry.model;
+          header.appendChild(modelSpan);
+        }
+
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'btn btn-xs btn-outline log-retry-btn';
+        retryBtn.textContent = t(currentUiLocale, 'log_retry');
+        retryBtn.addEventListener('click', () => {
+          closeModal();
+          switchTab('tab-translate');
+          if (btnTranslate && !btnTranslate.disabled) {
+            btnTranslate.click();
+          }
+        });
+        header.appendChild(retryBtn);
+
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'log-message';
+        msgDiv.textContent = entry.message || '';
+
+        item.appendChild(header);
+        item.appendChild(msgDiv);
+        logList.appendChild(item);
+      });
+    } catch {}
+  }
+
+  if (btnClearLog) {
+    btnClearLog.addEventListener('click', async () => {
+      await sendMsg({ action: 'CLEAR_ERROR_LOG' });
+      if (logList) {
+        logList.innerHTML = '';
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'log-empty';
+        emptyDiv.textContent = t(currentUiLocale, 'log_empty');
+        logList.appendChild(emptyDiv);
+      }
+    });
+  }
+
+  if (statusStrip) {
+    statusStrip.addEventListener('click', () => {
+      if (statusStrip.classList.contains('has-error')) {
+        if (typeof openModal === 'function' && modalOverlay) {
+          openModal('log');
+        } else {
+          switchTab('tab-log');
+        }
+      }
+    });
   }
 
   if (tabList) {
     tabList.addEventListener('click', (e) => {
       const btn = e.target.closest('.tab-btn');
       if (btn && btn.id) {
+        if (isModalOpen()) {
+          closeModal();
+        }
         switchTab(btn.id);
       }
     });
@@ -550,19 +1206,347 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (nextIdx !== -1) {
         e.preventDefault();
         const nextBtn = tabButtons[nextIdx];
+        if (isModalOpen()) {
+          closeModal();
+        }
         switchTab(nextBtn.id);
         nextBtn.focus();
       }
     });
   }
 
-  // Restore remembered tab in current popup session
+  // Config Sub-menu Navigation & Favorites Management (WI-21)
+  let activeConfigSubtab = 'connect';
+
+  function switchConfigSubtab(targetSubtabId) {
+    activeConfigSubtab = targetSubtabId;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('active_config_subtab', targetSubtabId);
+      }
+    } catch (err) {
+      console.warn('[popup] Failed to persist active_config_subtab to sessionStorage:', err);
+    }
+
+    for (const btn of subtabButtons) {
+      const isSelected = btn.dataset.subtab === targetSubtabId || btn.id === `subtab-${targetSubtabId}`;
+      btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+      btn.tabIndex = isSelected ? 0 : -1;
+      btn.classList.toggle('active', isSelected);
+    }
+
+    for (const [subtabKey, panelEl] of Object.entries(configSubpanels)) {
+      if (panelEl) {
+        panelEl.classList.toggle('hidden', subtabKey !== targetSubtabId);
+      }
+    }
+
+    if (targetSubtabId === 'favorites') {
+      renderFavoritesSection();
+    }
+  }
+
+  // Restore remembered tab in current popup session (one-time compatibility migration for legacy tab-connect)
   try {
-    const rememberedTab = sessionStorage.getItem('active_translator_tab');
-    if (rememberedTab && tabPanels[rememberedTab]) {
+    let rememberedTab = sessionStorage.getItem('active_translator_tab');
+    if (rememberedTab === 'tab-connect') {
+      // One-time compatibility migration from legacy tab-connect to tab-config + connect subtab
+      rememberedTab = 'tab-config';
+      try {
+        sessionStorage.setItem('active_translator_tab', 'tab-config');
+        sessionStorage.setItem('active_config_subtab', 'connect');
+      } catch (err) {
+        console.warn('[popup] Failed to persist migrated tab state to sessionStorage:', err);
+      }
+      switchConfigSubtab('connect');
+    }
+    if (rememberedTab === 'tab-config') {
+      if (typeof openModal === 'function' && modalOverlay) {
+        openModal('config');
+      }
+      switchTab('tab-config');
+    } else if (rememberedTab === 'tab-log') {
+      if (typeof openModal === 'function' && modalOverlay) {
+        openModal('log');
+      }
+      switchTab('tab-log');
+    } else if (rememberedTab && tabPanels[rememberedTab]) {
       switchTab(rememberedTab);
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[popup] Failed to restore remembered tab:', err);
+  }
+
+  function getAvailableModelsToAdd(scopeKey) {
+    const currentFavs = new Set(getFavoritesForKey(scopeKey));
+    const seen = new Set();
+    const allModels = [];
+
+    // Recommended models first
+    for (const mId of RECOMMENDED_MODELS) {
+      if (mId && !seen.has(mId)) {
+        seen.add(mId);
+        allModels.push(mId);
+      }
+    }
+
+    // Discovered models from server / cache
+    for (const m of discoveredModels) {
+      const mId = typeof m === 'string' ? m : m?.id;
+      if (mId && !seen.has(mId)) {
+        seen.add(mId);
+        allModels.push(mId);
+      }
+    }
+
+    return allModels.filter(mId => !currentFavs.has(mId));
+  }
+
+  function renderFavoritesSection() {
+    if (!favoritesList) return;
+    const scopeKey = currentFavKey();
+    const bucket = getFavoritesForKey(scopeKey);
+    const count = bucket.length;
+
+    if (favoritesCountBadge) {
+      favoritesCountBadge.textContent = `${count}/50`;
+    }
+    if (favoritesSectionTitle) {
+      favoritesSectionTitle.textContent = t(currentUiLocale, 'fav_manage_title', { count: String(count) });
+    }
+
+    const availableModels = getAvailableModelsToAdd(scopeKey);
+    if (selectAddFavorite) {
+      selectAddFavorite.setAttribute('aria-label', t(currentUiLocale, 'fav_add_model_aria'));
+      selectAddFavorite.innerHTML = '';
+
+      if (availableModels.length === 0) {
+        selectAddFavorite.disabled = true;
+        if (btnAddFavorite) btnAddFavorite.disabled = true;
+        selectAddFavorite.title = t(currentUiLocale, 'fav_no_models_to_add');
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.disabled = true;
+        opt.selected = true;
+        opt.textContent = `(${t(currentUiLocale, 'fav_no_models_to_add')})`;
+        selectAddFavorite.appendChild(opt);
+        if (favoritesAddHint) {
+          favoritesAddHint.textContent = t(currentUiLocale, 'fav_no_models_to_add');
+          favoritesAddHint.classList.remove('hidden');
+        }
+      } else if (count >= 50) {
+        selectAddFavorite.disabled = true;
+        if (btnAddFavorite) btnAddFavorite.disabled = true;
+        selectAddFavorite.title = t(currentUiLocale, 'err_favorite_cap_reached');
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.disabled = true;
+        opt.selected = true;
+        opt.textContent = `(${t(currentUiLocale, 'err_favorite_cap_reached')})`;
+        selectAddFavorite.appendChild(opt);
+        if (favoritesAddHint) {
+          favoritesAddHint.textContent = t(currentUiLocale, 'err_favorite_cap_reached');
+          favoritesAddHint.classList.remove('hidden');
+        }
+      } else {
+        selectAddFavorite.disabled = false;
+        if (btnAddFavorite) btnAddFavorite.disabled = false;
+        selectAddFavorite.title = '';
+        if (favoritesAddHint) {
+          favoritesAddHint.textContent = '';
+          favoritesAddHint.classList.add('hidden');
+        }
+
+        const placeholderOpt = document.createElement('option');
+        placeholderOpt.value = '';
+        placeholderOpt.disabled = true;
+        placeholderOpt.selected = true;
+        placeholderOpt.textContent = t(currentUiLocale, 'fav_select_add_placeholder');
+        selectAddFavorite.appendChild(placeholderOpt);
+
+        const recs = availableModels.filter(m => RECOMMENDED_MODELS.includes(m));
+        const others = availableModels.filter(m => !RECOMMENDED_MODELS.includes(m));
+
+        if (recs.length > 0 && others.length > 0) {
+          const recGroup = document.createElement('optgroup');
+          recGroup.label = t(currentUiLocale, 'model_group_recommended');
+          for (const mId of recs) {
+            const opt = document.createElement('option');
+            opt.value = mId;
+            opt.textContent = mId;
+            recGroup.appendChild(opt);
+          }
+          selectAddFavorite.appendChild(recGroup);
+
+          const otherGroup = document.createElement('optgroup');
+          otherGroup.label = t(currentUiLocale, 'model_group_other');
+          for (const mId of others) {
+            const opt = document.createElement('option');
+            opt.value = mId;
+            opt.textContent = mId;
+            otherGroup.appendChild(opt);
+          }
+          selectAddFavorite.appendChild(otherGroup);
+        } else {
+          for (const mId of availableModels) {
+            const opt = document.createElement('option');
+            opt.value = mId;
+            opt.textContent = mId;
+            selectAddFavorite.appendChild(opt);
+          }
+        }
+      }
+    }
+
+    favoritesList.innerHTML = '';
+    if (count === 0) {
+      if (favoritesEmptyHint) favoritesEmptyHint.classList.remove('hidden');
+    } else {
+      if (favoritesEmptyHint) favoritesEmptyHint.classList.add('hidden');
+      for (const modelId of bucket) {
+        const itemRow = document.createElement('div');
+        itemRow.className = 'favorite-item-row';
+        itemRow.setAttribute('role', 'listitem');
+
+        const modelSpan = document.createElement('span');
+        modelSpan.className = 'favorite-model-name';
+        modelSpan.textContent = modelId;
+        itemRow.appendChild(modelSpan);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn-icon btn-danger-icon favorite-delete-btn';
+        deleteBtn.title = t(currentUiLocale, 'fav_btn_delete_title');
+        deleteBtn.setAttribute('aria-label', t(currentUiLocale, 'fav_btn_delete_title'));
+        deleteBtn.innerHTML = SVG_ICONS.trash;
+        deleteBtn.addEventListener('click', async () => {
+          deleteBtn.disabled = true;
+          try {
+            await saveFavoriteToggle(scopeKey, modelId, false);
+            renderFavoritesSection();
+            updateStarButton();
+            renderAllModelDropdowns();
+          } catch (err) {
+            deleteBtn.disabled = false;
+            setConfigMsg(configMessageFavorites, (err && err.message) || t(currentUiLocale, 'err_unknown'), true);
+          }
+        });
+        itemRow.appendChild(deleteBtn);
+
+        favoritesList.appendChild(itemRow);
+      }
+    }
+  }
+
+  async function handleAddFavorite() {
+    if (!selectAddFavorite) return;
+    const modelId = selectAddFavorite.value.trim();
+    if (!modelId) {
+      setConfigMsg(configMessageFavorites, t(currentUiLocale, 'err_favorite_model_empty'), true);
+      selectAddFavorite.focus();
+      return;
+    }
+    const scopeKey = currentFavKey();
+    if (!scopeKey) {
+      setConfigMsg(configMessageFavorites, t(currentUiLocale, 'fav_need_base_url'), true);
+      return;
+    }
+    const bucket = getFavoritesForKey(scopeKey);
+    if (bucket.length >= 50 && !bucket.includes(modelId)) {
+      setConfigMsg(configMessageFavorites, t(currentUiLocale, 'err_favorite_cap_reached'), true);
+      return;
+    }
+    if (btnAddFavorite) btnAddFavorite.disabled = true;
+    try {
+      await saveFavoriteToggle(scopeKey, modelId, true);
+      renderFavoritesSection();
+      updateStarButton();
+      renderAllModelDropdowns();
+      setConfigMsg(configMessageFavorites, t(currentUiLocale, 'fav_added_success'));
+    } catch (err) {
+      setConfigMsg(configMessageFavorites, (err && err.message) || t(currentUiLocale, 'err_unknown'), true);
+    } finally {
+      if (btnAddFavorite) {
+        const remaining = getAvailableModelsToAdd(scopeKey);
+        const updatedBucket = getFavoritesForKey(scopeKey);
+        btnAddFavorite.disabled = (remaining.length === 0 || updatedBucket.length >= 50);
+      }
+    }
+  }
+
+  if (btnAddFavorite) {
+    btnAddFavorite.addEventListener('click', handleAddFavorite);
+  }
+  if (selectAddFavorite) {
+    selectAddFavorite.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleAddFavorite();
+      }
+    });
+  }
+
+  if (checkboxFavoritesOnly) {
+    checkboxFavoritesOnly.addEventListener('change', () => {
+      savedSettings.showFavoritesOnly = Boolean(checkboxFavoritesOnly.checked);
+      renderAllModelDropdowns();
+      markDirty();
+    });
+  }
+
+  if (subtabNav) {
+    subtabNav.addEventListener('click', (e) => {
+      const btn = e.target.closest('.subtab-btn');
+      if (btn) {
+        const subtabId = btn.dataset.subtab || btn.id.replace('subtab-', '');
+        switchConfigSubtab(subtabId);
+      }
+    });
+
+    subtabNav.addEventListener('keydown', (e) => {
+      const currentIdx = subtabButtons.findIndex(b => (b.dataset.subtab === activeConfigSubtab || b.id === `subtab-${activeConfigSubtab}`));
+      if (currentIdx === -1) return;
+
+      let nextIdx = -1;
+      if (e.key === 'ArrowRight') {
+        nextIdx = (currentIdx + 1) % subtabButtons.length;
+      } else if (e.key === 'ArrowLeft') {
+        nextIdx = (currentIdx - 1 + subtabButtons.length) % subtabButtons.length;
+      } else if (e.key === 'Home') {
+        nextIdx = 0;
+      } else if (e.key === 'End') {
+        nextIdx = subtabButtons.length - 1;
+      }
+
+      if (nextIdx !== -1) {
+        e.preventDefault();
+        const nextBtn = subtabButtons[nextIdx];
+        const nextSubtabId = nextBtn.dataset.subtab || nextBtn.id.replace('subtab-', '');
+        switchConfigSubtab(nextSubtabId);
+        nextBtn.focus();
+      }
+    });
+  }
+
+  // Restore remembered config subtab
+  try {
+    const rememberedSubtab = sessionStorage.getItem('active_config_subtab');
+    if (rememberedSubtab && configSubpanels[rememberedSubtab]) {
+      switchConfigSubtab(rememberedSubtab);
+    } else {
+      switchConfigSubtab('connect');
+    }
+  } catch (err) {
+    console.warn('[popup] Failed to restore remembered config subtab:', err);
+    switchConfigSubtab('connect');
+  }
+
+  if (typeof window !== 'undefined') {
+    window.switchConfigSubtab = switchConfigSubtab;
+    window.renderFavoritesSection = renderFavoritesSection;
+    window.getAvailableModelsToAdd = getAvailableModelsToAdd;
+    window.handleAddFavorite = handleAddFavorite;
+  }
 
   // Active Tab Discovery
   async function resolveActiveTab() {
@@ -570,6 +1554,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (typeof window !== 'undefined' && window.__testActiveTab) {
         activeTab = window.__testActiveTab;
         return true;
+      }
+      if (typeof chrome === 'undefined' || !chrome?.tabs?.query) {
+        return false;
       }
       let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
@@ -583,7 +1570,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!tab || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
         if (btnTranslate) btnTranslate.disabled = true;
         if (btnRestore) btnRestore.disabled = true;
-        updateStatus('unsupported', 'Trang hệ thống Chrome hoặc URL không phải HTTP(S) không hỗ trợ dịch.');
+        updateStatus('unsupported', t(currentUiLocale, 'status_unsupported_detail'));
         if (toggleSiteConsent) toggleSiteConsent.disabled = true;
         if (btnOverrideInherit) btnOverrideInherit.disabled = true;
         if (btnOverrideOn) btnOverrideOn.disabled = true;
@@ -604,9 +1591,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       checkTabStatus();
       evaluateActionReadiness();
     };
+    window.__testPopup = {
+      renderLanguageDropdowns,
+      loadSettings,
+      collectSettingsPatch,
+      getSavedSettings: () => savedSettings,
+      setSavedSettings: (s) => { savedSettings = s; }
+    };
   }
 
-  // Dịch button busy state (spinner while a run is in flight; cleared
+  // Translate button busy state (spinner while a run is in flight; cleared
   // whenever the button becomes enabled again or an early return hits)
   function setTranslateBusy(busy) {
     if (!btnTranslate) return;
@@ -625,34 +1619,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!hasStoredKey) {
       if (btnTranslate) {
         btnTranslate.disabled = true;
-        btnTranslate.title = 'Vui lòng nhập API key để bắt đầu dịch';
+        btnTranslate.title = t(currentUiLocale, 'btn_translate_need_key');
       }
       setTranslateBusy(false);
-      updateStatus('unconfigured', 'Vui lòng nhập API key tại tab Kết nối.');
+      updateStatus('unconfigured', t(currentUiLocale, 'status_no_key_detail'));
       if (btnRestore) btnRestore.disabled = restorableCount === 0;
       return;
     }
 
     const curModel = selectModel?.value ? selectModel.value.trim() : '';
-    if (!curModel || curModel === '' || curModel.includes('Lỗi')) {
+    if (!curModel || curModel === '' || curModel.includes(t(currentUiLocale, 'status_error')) || curModel.toLowerCase().includes('error')) {
       if (btnTranslate) {
         btnTranslate.disabled = true;
-        btnTranslate.title = 'Chưa chọn model hợp lệ';
+        btnTranslate.title = t(currentUiLocale, 'btn_translate_invalid_model');
       }
       setTranslateBusy(false);
-      updateStatus('error', 'Chưa chọn model hợp lệ. Vui lòng chọn model hoặc làm mới danh sách.');
+      updateStatus('error', t(currentUiLocale, 'err_select_valid_model'));
       if (btnRestore) btnRestore.disabled = restorableCount === 0;
       return;
     }
 
     if (btnTranslate) {
       btnTranslate.disabled = false;
-      btnTranslate.title = 'Dịch trang này';
+      btnTranslate.title = t(currentUiLocale, 'btn_translate_title');
       setTranslateBusy(false);
     }
     if (btnRestore) btnRestore.disabled = restorableCount === 0;
-    if (statusText.textContent === 'Chưa có key' || statusText.textContent === 'Đang tải...') {
-      updateStatus('ready', 'Sẵn sàng dịch trang hiện tại.');
+    if (statusText.textContent === t(currentUiLocale, 'status_no_key') || statusText.textContent === t(currentUiLocale, 'status_loading')) {
+      updateStatus('ready', t(currentUiLocale, 'status_ready_detail'));
     }
   }
 
@@ -720,7 +1714,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (chrome.runtime.lastError || !resp || resp.error) {
       const err = resp?.error || chrome.runtime.lastError;
-      updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không thể lưu cài đặt tab override'}`);
+      updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || t(currentUiLocale, 'err_save_tab_override_failed')}`);
       return;
     }
 
@@ -751,7 +1745,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!granted) {
           toggleSiteConsent.checked = prevChecked;
           toggleSiteConsent.disabled = false;
-          updateStatus('error', '[PERMISSION_REQUIRED] Cần cấp quyền truy cập để bật dịch cho site này.');
+          updateStatus('error', t(currentUiLocale, 'status_missing_perm'));
           return;
         }
       }
@@ -769,7 +1763,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         toggleSiteConsent.checked = prevChecked;
         toggleSiteConsent.disabled = false;
         const err = resp?.error || chrome.runtime.lastError;
-        updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không thể lưu quyền site'}`);
+        updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || t(currentUiLocale, 'err_save_site_perm_failed')}`);
         return;
       }
 
@@ -790,10 +1784,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Model Dropdown Builder (favorites group is Base URL scoped via `favs`)
-  function populateSelect(selectEl, selectedVal, { allowEmpty = false, emptyLabel = '-- Không chọn --', exclude = [], favs = null } = {}) {
+  function populateSelect(selectEl, selectedVal, { allowEmpty = false, emptyLabel = t(currentUiLocale, 'model_empty_label'), exclude = [], favs = null } = {}) {
     if (!selectEl) return;
     selectEl.innerHTML = '';
     const scopeFavs = Array.isArray(favs) ? favs : primaryFavorites();
+    const showFavsOnly = Boolean(savedSettings && savedSettings.showFavoritesOnly);
 
     if (allowEmpty) {
       const emptyOpt = document.createElement('option');
@@ -802,13 +1797,49 @@ document.addEventListener('DOMContentLoaded', async () => {
       selectEl.appendChild(emptyOpt);
     }
 
+    if (showFavsOnly) {
+      if (scopeFavs.length > 0) {
+        const added = new Set(exclude.filter(id => id !== selectedVal));
+        const validFavs = scopeFavs.filter(id => !added.has(id));
+        for (const mId of validFavs) {
+          const opt = document.createElement('option');
+          opt.value = mId;
+          opt.textContent = mId;
+          selectEl.appendChild(opt);
+          added.add(mId);
+        }
+        if (selectedVal && !added.has(selectedVal) && !allowEmpty) {
+          const opt = document.createElement('option');
+          opt.value = selectedVal;
+          opt.textContent = selectedVal;
+          selectEl.appendChild(opt);
+          added.add(selectedVal);
+        }
+        if (selectedVal && Array.from(selectEl.options).some(o => o.value === selectedVal)) {
+          selectEl.value = selectedVal;
+        } else if (allowEmpty) {
+          selectEl.value = '';
+        } else if (validFavs.length > 0) {
+          selectEl.value = validFavs[0];
+        } else {
+          selectEl.value = DEFAULT_MODEL;
+        }
+        return;
+      } else {
+        const hintOpt = document.createElement('option');
+        hintOpt.disabled = true;
+        hintOpt.textContent = `(${t(currentUiLocale, 'fav_empty_hint_dropdown')})`;
+        selectEl.appendChild(hintOpt);
+      }
+    }
+
     const added = new Set(exclude.filter(id => id !== selectedVal));
 
     // Group 1: Favorites (Base URL scoped)
     const validFavs = scopeFavs.filter(id => !added.has(id));
     if (validFavs.length > 0) {
       const favGroup = document.createElement('optgroup');
-      favGroup.label = '⭐ Yêu thích';
+      favGroup.label = t(currentUiLocale, 'model_group_favorites');
       for (const mId of validFavs) {
         const opt = document.createElement('option');
         opt.value = mId;
@@ -822,7 +1853,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Group 2: Currently Selected
     if (selectedVal && !added.has(selectedVal)) {
       const curGroup = document.createElement('optgroup');
-      curGroup.label = 'Đã lưu ★';
+      curGroup.label = t(currentUiLocale, 'model_group_saved');
       const opt = document.createElement('option');
       opt.value = selectedVal;
       opt.textContent = selectedVal;
@@ -835,7 +1866,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const recs = RECOMMENDED_MODELS.filter(id => !added.has(id));
     if (recs.length > 0) {
       const recGroup = document.createElement('optgroup');
-      recGroup.label = 'Recommended';
+      recGroup.label = t(currentUiLocale, 'model_group_recommended');
       for (const mId of recs) {
         const opt = document.createElement('option');
         opt.value = mId;
@@ -853,7 +1884,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (serverModelIds.length > 0) {
       const otherGroup = document.createElement('optgroup');
-      otherGroup.label = 'Khác';
+      otherGroup.label = t(currentUiLocale, 'model_group_other');
       for (const mId of serverModelIds) {
         const opt = document.createElement('option');
         opt.value = mId;
@@ -883,8 +1914,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnToggleFavorite.classList.toggle('favorited', isFav);
     btnToggleFavorite.disabled = !liveKey;
     btnToggleFavorite.title = !liveKey
-      ? 'Nhập Base URL hợp lệ (http/https) để dùng yêu thích'
-      : (isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích');
+      ? t(currentUiLocale, 'fav_need_base_url')
+      : (isFav ? t(currentUiLocale, 'fav_remove') : t(currentUiLocale, 'fav_add'));
   }
 
   // Fallback row star reflects the row's own Base URL scope (own URL else primary)
@@ -898,8 +1929,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.classList.toggle('favorited', isFav);
     btn.disabled = !scopeKey;
     btn.title = !scopeKey
-      ? 'Nhập Base URL hợp lệ (http/https) để dùng yêu thích'
-      : (isFav ? 'Bỏ khỏi danh sách yêu thích' : 'Thêm vào danh sách yêu thích');
+      ? t(currentUiLocale, 'fav_need_base_url')
+      : (isFav ? t(currentUiLocale, 'fav_remove') : t(currentUiLocale, 'fav_add'));
   }
 
   // Favorite Star Toggle Action (Sends partial SAVE_SETTINGS)
@@ -908,7 +1939,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const curVal = selectModel?.value;
       if (!curVal) return;
       if (!settingsLoaded) {
-        setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+        setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
         return;
       }
 
@@ -926,10 +1957,12 @@ document.addEventListener('DOMContentLoaded', async () => {
           savedSettings.favoriteModels = getFavoritesForKey(lastFavKey);
         }
         renderAllModelDropdowns();
-        setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
+        if (typeof renderFavoritesSection === 'function') renderFavoritesSection();
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'fav_saved'));
       } catch (err) {
         renderAllModelDropdowns();
-        setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Lỗi không xác định'), true);
+        if (typeof renderFavoritesSection === 'function') renderFavoritesSection();
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'fav_update_error', { error: (err && err.message) || t(currentUiLocale, 'err_unknown') }), true);
       } finally {
         btnToggleFavorite.disabled = !currentFavKey();
       }
@@ -952,7 +1985,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!Array.isArray(fallbacks) || fallbacks.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'auto-sites-empty';
-      emptyEl.textContent = 'Chưa có dự phòng nào.';
+      emptyEl.textContent = t(currentUiLocale, 'conn_fallback_empty');
       fallbackListEl.appendChild(emptyEl);
       if (btnAddFallback) btnAddFallback.disabled = false;
       return;
@@ -968,14 +2001,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const rowTitle = document.createElement('span');
       rowTitle.className = 'fallback-row-title';
-      rowTitle.textContent = `Fallback ${idx + 1} (${fb.id})`;
+      rowTitle.textContent = t(currentUiLocale, 'conn_fallback_row_title', { index: idx + 1, id: fb.id });
 
       const btnRemove = document.createElement('button');
       btnRemove.type = 'button';
       btnRemove.id = `btn-remove-fallback-${idx}`;
       btnRemove.className = 'btn-icon btn-danger-icon btn-sm';
-      btnRemove.title = `Xoá Fallback ${idx + 1}`;
-      btnRemove.setAttribute('aria-label', `Xoá Fallback ${idx + 1}`);
+      btnRemove.title = t(currentUiLocale, 'conn_fallback_remove_title', { index: idx + 1 });
+      btnRemove.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_remove_title', { index: idx + 1 }));
       btnRemove.innerHTML = SVG_ICONS.trash;
 
       btnRemove.addEventListener('click', async () => {
@@ -989,7 +2022,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           } catch {}
         }
         if (!settingsLoaded) {
-          setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+          setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
           return;
         }
         fallbacks.splice(idx, 1);
@@ -1011,8 +2044,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       const urlInput = document.createElement('input');
       urlInput.type = 'text';
       urlInput.id = `input-fallback-url-${idx}`;
-      urlInput.placeholder = 'Dùng chung primary Base URL';
-      urlInput.title = 'Để trống = dùng chung Base URL của Primary';
+      urlInput.placeholder = t(currentUiLocale, 'conn_fallback_url_placeholder');
+      urlInput.title = t(currentUiLocale, 'conn_fallback_url_title');
       urlInput.autocomplete = 'off';
       urlInput.value = fb.baseURL || '';
       urlInput.addEventListener('input', () => {
@@ -1040,7 +2073,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       keyInput.type = 'password';
       keyInput.id = `input-fallback-key-${idx}`;
       const hasKey = Boolean(fallbackKeyPresence[fb.id]);
-      keyInput.placeholder = hasKey ? '•••••••••••••••• (Đã lưu)' : 'Dùng chung primary key (hoặc nhập key riêng)';
+      keyInput.placeholder = hasKey ? t(currentUiLocale, 'conn_key_placeholder_saved') : t(currentUiLocale, 'conn_fallback_key_placeholder');
       keyInput.autocomplete = 'off';
       keyInput.addEventListener('change', () => {
         markDirty();
@@ -1050,7 +2083,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnToggleRowKey.type = 'button';
       btnToggleRowKey.id = `btn-toggle-fallback-key-${idx}`;
       btnToggleRowKey.className = 'btn-icon';
-      btnToggleRowKey.title = 'Hiện/ẩn key';
+      btnToggleRowKey.title = t(currentUiLocale, 'conn_btn_toggle_key_title');
       btnToggleRowKey.innerHTML = SVG_ICONS.eye;
       btnToggleRowKey.addEventListener('click', () => {
         if (keyInput.type === 'password') {
@@ -1077,7 +2110,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       modelSelect.id = `select-fallback-${idx}`;
       // Also provide alias id select-fallback-1 / select-fallback-2 for backward compat
       modelSelect.setAttribute('data-index', String(idx));
-      modelSelect.setAttribute('aria-label', `Model dự phòng ${idx + 1}`);
+      modelSelect.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_model_aria', { index: idx + 1 }));
       modelSelect.addEventListener('change', () => {
         fb.model = modelSelect.value;
         updateFallbackStar(btnFallbackFav, fb, modelSelect);
@@ -1088,12 +2121,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnFallbackFav.type = 'button';
       btnFallbackFav.id = `btn-fallback-fav-${idx}`;
       btnFallbackFav.className = 'btn-icon btn-star';
-      btnFallbackFav.title = 'Thêm/bỏ yêu thích model dự phòng này';
-      btnFallbackFav.setAttribute('aria-label', `Thêm hoặc bỏ model dự phòng ${idx + 1} khỏi danh sách yêu thích`);
+      btnFallbackFav.title = t(currentUiLocale, 'conn_fallback_fav_title');
+      btnFallbackFav.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_fav_aria', { index: idx + 1 }));
       btnFallbackFav.innerHTML = SVG_ICONS.star;
       btnFallbackFav.addEventListener('click', async () => {
         if (!settingsLoaded) {
-          setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+          setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
           return;
         }
         const curModel = modelSelect.value || fb.model;
@@ -1106,10 +2139,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           const desiredFavorite = !displayedBucket.includes(curModel);
           await saveFavoriteToggle(scopeKey, curModel, desiredFavorite);
           renderAllModelDropdowns();
-          setConfigMsg(configMessageConnect, 'Đã lưu danh sách yêu thích.');
+          setConfigMsg(configMessageConnect, t(currentUiLocale, 'fav_saved'));
         } catch (err) {
           renderAllModelDropdowns();
-          setConfigMsg(configMessageConnect, 'Lỗi cập nhật yêu thích: ' + ((err && err.message) || 'Không thể lưu'), true);
+          setConfigMsg(configMessageConnect, t(currentUiLocale, 'fav_update_error', { error: (err && err.message) || t(currentUiLocale, 'err_cannot_save') }), true);
         } finally {
           btnFallbackFav.disabled = !favKeyForFallback({ baseURL: (document.getElementById(`input-fallback-url-${idx}`)?.value || fb.baseURL || '') });
         }
@@ -1134,7 +2167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnAddFallback.addEventListener('click', () => {
       if (fallbacks.length >= 2) return;
       if (!settingsLoaded) {
-        setConfigMsg(configMessageConnect, SETTINGS_NOT_LOADED_MSG, true);
+        setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
         return;
       }
       const usedIds = new Set(fallbacks.map(f => f.id));
@@ -1174,7 +2207,28 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
 
+    // Populate per-site model dropdowns with current discovered models and primary favorites
+    autoTranslateSites.forEach((site, idx) => {
+      const siteModelSelect = document.getElementById(`select-site-model-${idx}`);
+      if (siteModelSelect) {
+        const curSiteModel = site.model || siteModelSelect.value || '';
+        populateSelect(siteModelSelect, curSiteModel, {
+          allowEmpty: true,
+          emptyLabel: t(currentUiLocale, 'site_model_inherit'),
+          favs: primaryFavorites()
+        });
+        if (curSiteModel && siteModelSelect.value !== curSiteModel) {
+          const opt = document.createElement('option');
+          opt.value = curSiteModel;
+          opt.textContent = curSiteModel;
+          siteModelSelect.appendChild(opt);
+          siteModelSelect.value = curSiteModel;
+        }
+      }
+    });
+
     updateStarButton();
+    renderFavoritesSection();
   }
 
   // Model Loading via LIST_MODELS (Cache-First)
@@ -1193,7 +2247,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             showKeyAccessBanner();
           }
           if (forceRefresh) {
-            setConfigMsg(configMessageConnect, 'Lỗi tải model: ' + (err?.message || 'Không thể kết nối'), true);
+            setConfigMsg(configMessageConnect, t(currentUiLocale, 'err_load_models', { error: err?.message || t(currentUiLocale, 'err_cannot_connect') }), true);
           }
           renderAllModelDropdowns();
           evaluateActionReadiness();
@@ -1209,7 +2263,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         evaluateActionReadiness();
 
         if (forceRefresh) {
-          setConfigMsg(configMessageConnect, 'Đã làm mới danh sách model!');
+          setConfigMsg(configMessageConnect, t(currentUiLocale, 'msg_models_refreshed'));
         }
         resolve();
       });
@@ -1221,42 +2275,68 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Host permission needs a user gesture — ensure it here before fetch.
       const perm = await ensureBaseUrlPermission();
       if (!perm.ok) {
-        setConfigMsg(configMessageConnect, perm.reason === 'invalid' ? 'Base URL không hợp lệ' : 'Cần cấp quyền host permission để kết nối Base URL', true);
-        updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
+        setConfigMsg(configMessageConnect, perm.reason === 'invalid' ? t(currentUiLocale, 'err_base_url_invalid') : t(currentUiLocale, 'err_base_url_perm_needed'), true);
+        updateStatus('error', t(currentUiLocale, 'err_perm_required_base'));
         return;
       }
       await loadModels({ forceRefresh: true });
     });
   }
 
-  // Background Push Listener: MODELS_UPDATED
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.action === 'MODELS_UPDATED' && Array.isArray(msg.models)) {
-      discoveredModels = msg.models;
-      renderAllModelDropdowns();
-      evaluateActionReadiness();
-    }
-  });
+  // Background Push Listener: MODELS_UPDATED & TRANSLATE_TERMINAL_ERROR
+  if (typeof chrome !== 'undefined' && chrome?.runtime?.onMessage?.addListener) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.action === 'MODELS_UPDATED' && Array.isArray(msg.models)) {
+        discoveredModels = msg.models;
+        renderAllModelDropdowns();
+        evaluateActionReadiness();
+      }
+      if (msg && msg.action === 'TRANSLATE_TERMINAL_ERROR') {
+        if (typeof openModal === 'function' && modalOverlay) {
+          openModal('log', { highlightFirst: true });
+        } else {
+          switchTab('tab-log');
+          loadErrorLog({ highlightFirst: true });
+        }
+      }
+    });
+  }
 
   // Settings Loading via GET_SETTINGS
   async function loadSettings() {
     return new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) {
+        resolve(false);
+        return;
+      }
       chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (resp) => {
         if (chrome.runtime.lastError || !resp || resp.error) {
           const err = (resp && resp.error) || chrome.runtime.lastError || {};
           if (err.code === 'KEY_ACCESS_UNAVAILABLE') {
             showKeyAccessBanner();
           }
-          updateStatus('error', `[${err.code || 'ERROR'}] ${err.message || 'Không tải được cấu hình'}`);
+          updateStatus('error', t(currentUiLocale, 'err_load_settings_failed', { code: err.code || 'ERROR', msg: err.message || t(currentUiLocale, 'err_unknown') }));
           resolve(false);
           return;
         }
         if (resp && resp.settings) {
           savedSettings = { ...resp.settings };
+          if (savedSettings.sourceLanguage && !SOURCE_LANGS.some(l => l.code === savedSettings.sourceLanguage)) {
+            savedSettings.sourceLanguage = 'auto';
+          }
+          if (savedSettings.targetLanguage && !TARGET_LANGS.some(l => l.code === savedSettings.targetLanguage)) {
+            savedSettings.targetLanguage = 'vi';
+          }
           if (inputBaseUrl) inputBaseUrl.value = resp.settings.baseURL || 'http://localhost:8080/v1';
 
-          if (selectSrcLang && resp.settings.sourceLanguage) selectSrcLang.value = resp.settings.sourceLanguage;
-          if (selectTgtLang && resp.settings.targetLanguage) selectTgtLang.value = resp.settings.targetLanguage;
+          if (selectSrcLang && resp.settings.sourceLanguage) {
+            const rawSrc = resp.settings.sourceLanguage;
+            selectSrcLang.value = SOURCE_LANGS.some(l => l.code === rawSrc) ? rawSrc : 'auto';
+          }
+          if (selectTgtLang && resp.settings.targetLanguage) {
+            const rawTgt = resp.settings.targetLanguage;
+            selectTgtLang.value = TARGET_LANGS.some(l => l.code === rawTgt) ? rawTgt : 'vi';
+          }
 
           if (resp.settings.translationMode) {
             currentMode = resp.settings.translationMode;
@@ -1264,6 +2344,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           if (checkboxWidgetVisible && typeof resp.settings.widgetVisible === 'boolean') {
             checkboxWidgetVisible.checked = resp.settings.widgetVisible;
+          }
+          if (checkboxFavoritesOnly && typeof resp.settings.showFavoritesOnly === 'boolean') {
+            checkboxFavoritesOnly.checked = resp.settings.showFavoritesOnly;
+          }
+          if (checkboxExportKeys) {
+            checkboxExportKeys.checked = typeof resp.settings.exportIncludeKeys === 'boolean'
+              ? resp.settings.exportIncludeKeys
+              : true;
+          }
+
+          if (resp.settings.uiLocale) {
+            applyUiLocale(resp.settings.uiLocale);
+          } else {
+            applyUiLocale('vi');
+          }
+          if (resp.settings.theme) {
+            applyTheme(resp.settings.theme);
+          } else {
+            applyTheme('dark');
+          }
+          if (resp.settings.uiFontScale) {
+            applyFontScale(resp.settings.uiFontScale);
+          } else {
+            applyFontScale('md');
+          }
+          if (typeof resp.settings.fabSize === 'number') {
+            updateFabSizeDisplay(resp.settings.fabSize);
+          } else {
+            updateFabSizeDisplay(1.0);
           }
 
           favoriteModelsByBaseURL = (resp.settings.favoriteModelsByBaseURL && typeof resp.settings.favoriteModelsByBaseURL === 'object' && !Array.isArray(resp.settings.favoriteModelsByBaseURL))
@@ -1277,19 +2386,33 @@ document.addEventListener('DOMContentLoaded', async () => {
           fallbackKeyPresence = resp.fallbackKeyPresence || {};
 
           if (keyStatusIndicator) {
-            keyStatusIndicator.textContent = hasStoredKey ? 'Key: Đã lưu' : 'Chưa lưu key';
+            keyStatusIndicator.textContent = hasStoredKey ? t(currentUiLocale, 'conn_key_stored') : t(currentUiLocale, 'conn_key_not_stored');
           }
           if (hasStoredKey && inputApiKey && !inputApiKey.value) {
-            inputApiKey.placeholder = '•••••••••••••••• (Đã lưu)';
+            inputApiKey.placeholder = t(currentUiLocale, 'conn_key_placeholder_saved');
+          }
+
+          if (inputRateTab) {
+            const tabVal = resp.settings.rateLimits?.tab?.maxBatches;
+            inputRateTab.value = (typeof tabVal === 'number') ? tabVal : 4;
+          }
+          if (inputRateSite) {
+            const siteVal = resp.settings.rateLimits?.site?.maxBatches;
+            inputRateSite.value = (typeof siteVal === 'number') ? siteVal : 12;
+          }
+          if (inputRateConcurrency) {
+            const concVal = resp.settings.providerConcurrency;
+            inputRateConcurrency.value = (typeof concVal === 'number') ? concVal : 2;
           }
 
           try { renderFallbackRows(); } catch (e) { try { console.error('[popup] renderFallbackRows failed:', e && e.message); } catch {} }
+          try { renderFavoritesSection(); } catch (e) { try { console.error('[popup] renderFavoritesSection failed:', e && e.message); } catch {} }
           try { renderAllModelDropdowns(); } catch (e) { try { console.error('[popup] renderAllModelDropdowns failed:', e && e.message); } catch {} }
           try { renderAutoSites(); } catch (e) { try { console.error('[popup] renderAutoSites failed:', e && e.message); } catch {} }
           resolve(true);
           return;
         }
-        updateStatus('error', '[ERROR] Không tải được cấu hình đã lưu');
+        updateStatus('error', t(currentUiLocale, 'err_load_saved_settings_failed'));
         resolve(false);
       });
     });
@@ -1324,9 +2447,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? `${effApplied}/${data.totalCollected}`
         : `${effApplied}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : 0;
-      const failStr = failed > 0 ? ` (${failed} lỗi)` : '';
-      const errSuffix = data.lastError && data.lastError.code ? ` — lỗi gần nhất: [${data.lastError.code}] đang thử lại` : '';
-      return `Đang theo dõi cuộn trang (${countStr} nodes đã dịch${failStr})${metaStr}.${errSuffix}`;
+      const failStr = failed > 0 ? ' ' + t(currentUiLocale, 'status_failed_count', { count: failed }) : '';
+      const errSuffix = data.lastError && data.lastError.code ? t(currentUiLocale, 'detail_last_error_retry', { code: data.lastError.code }) : '';
+      return t(currentUiLocale, 'detail_watching_progress', { count: countStr, fail: failStr, meta: metaStr, errSuffix });
     }
 
     if (state === 'translated') {
@@ -1338,9 +2461,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         : `${effTranslated}`;
       const failed = typeof data.totalFailed === 'number' ? data.totalFailed : (data.failed || 0);
       if (failed > 0) {
-        return `Đã dịch ${countStr} nodes (${failed} lỗi — bấm "Dịch trang" lần nữa để dịch nốt phần còn lại)`;
+        return t(currentUiLocale, 'detail_translated_with_errors', { count: countStr, failed });
       }
-      return `Đã dịch ${countStr} nodes${metaStr}.`;
+      return t(currentUiLocale, 'detail_translated_success', { count: countStr, meta: metaStr });
     }
 
     if (state === 'error') {
@@ -1348,52 +2471,52 @@ document.addEventListener('DOMContentLoaded', async () => {
       const code = err.code || 'ERROR';
       const msg = err.message || '';
       if (code === 'DROPPED_ON_RESTART') {
-        return `[DROPPED_ON_RESTART] Yêu cầu bị mất khi service worker khởi động lại — bấm "Dịch trang" để chạy lại`;
+        return t(currentUiLocale, 'err_dropped_on_restart');
       }
       if (code === 'TIMEOUT') {
-        return `[TIMEOUT] ${msg || 'Quá thời gian chờ'}${metaStr}. Gợi ý: chọn model nhanh hơn hoặc giảm số node.`;
+        return t(currentUiLocale, 'err_timeout', { msg: msg || t(currentUiLocale, 'status_timeout_default'), meta: metaStr });
       }
       if (code === 'OPT_IN_REQUIRED') {
-        return `[OPT_IN_REQUIRED] Chưa bật quyền dịch cho site này. Vui lòng bật "Bật dịch cho site này" ở trên.`;
+        return t(currentUiLocale, 'err_opt_in_required');
       }
       if (code === 'SITE_NOT_ALLOWED') {
-        return `[SITE_NOT_ALLOWED] Trang web này không hỗ trợ dịch hoặc URL không hợp lệ.`;
+        return t(currentUiLocale, 'err_site_not_allowed');
       }
       if (code === 'KEY_ACCESS_UNAVAILABLE') {
         showKeyAccessBanner();
-        return `[KEY_ACCESS_UNAVAILABLE] Lỗi bảo mật bộ nhớ extension. Vui lòng thử lại.`;
+        return t(currentUiLocale, 'err_key_access_unavailable');
       }
       if (code === 'CONSENT_STATE_UNAVAILABLE') {
-        return `[CONSENT_STATE_UNAVAILABLE] Không thể đọc trạng thái consent.`;
+        return t(currentUiLocale, 'err_consent_state_unavailable');
       }
       if (code === 'PERMISSION_REQUIRED') {
-        return `[PERMISSION_REQUIRED] Cần cấp quyền để thực hiện thao tác này.`;
+        return t(currentUiLocale, 'err_permission_required');
       }
       if (code === 'RATE_LIMITED') {
         const scope = err.details?.scope || 'tab';
         const retrySec = Math.ceil((err.details?.retryAfterMs || 0) / 1000);
-        return `[RATE_LIMITED] ${scope} · thử lại sau ${retrySec}s`;
+        return t(currentUiLocale, 'err_rate_limited', { scope, sec: retrySec });
       }
       if (code === 'CAP_EXCEEDED') {
-        const capType = err.details?.capType || 'kích thước';
+        const capType = err.details?.capType || t(currentUiLocale, 'cap_type_size');
         const limit = err.details?.limit;
         const actual = err.details?.actual;
         const limitStr = (limit !== undefined && actual !== undefined) ? ` (${actual} > ${limit})` : '';
-        return `[CAP_EXCEEDED] Batch bị loại do vượt cap ${capType}${limitStr}`;
+        return t(currentUiLocale, 'err_cap_exceeded', { type: capType, limit: limitStr });
       }
       if (code === 'INVALID_SCHEMA') {
         const schemaErrors = (err.details?.schemaErrors || []).join(', ');
-        return `[INVALID_SCHEMA] Dữ liệu không đúng schema${schemaErrors ? ': ' + schemaErrors : ''}`;
+        return t(currentUiLocale, 'err_invalid_schema', { errors: schemaErrors ? ': ' + schemaErrors : '' });
       }
       if (code === 'NETWORK') {
-        return `[NETWORK] Mất kết nối mạng hoặc không thể kết nối tới Base URL.`;
+        return t(currentUiLocale, 'err_network');
       }
       if (code.startsWith('HTTP_')) {
         const statusText = err.details?.statusText || msg || '';
-        return `[${code}] Lỗi phản hồi từ máy chủ: ${statusText}`;
+        return t(currentUiLocale, 'err_server_response', { code, statusText });
       }
       if (code === 'RATE_STATE_UNAVAILABLE') {
-        return `[RATE_STATE_UNAVAILABLE] Không thể đọc hoặc ghi bộ đếm giới hạn tốc độ.`;
+        return t(currentUiLocale, 'err_rate_state_unavailable');
       }
       return `[${code}] ${msg}${metaStr}`;
     }
@@ -1447,22 +2570,22 @@ document.addEventListener('DOMContentLoaded', async () => {
           evaluateActionReadiness(resp.restorableCount || 0);
         } else if (st.state === 'restored') {
           stopPolling();
-          updateStatus('restored', `Đã khôi phục ${st.totalRestored} nodes.`);
+          updateStatus('restored', t(currentUiLocale, 'detail_restored_nodes', { count: st.totalRestored }));
           evaluateActionReadiness(0);
         } else if (st.state === 'translating') {
           startPolling();
           chrome.runtime.sendMessage({ action: 'GET_QUEUE_STATUS', tabId: activeTab.id }, (qResp) => {
             if (qResp && qResp.queued) {
               const remSec = Math.max(1, Math.ceil((qResp.retryAfterMs || 0) / 1000));
-              updateStatus('translating', `Đang chờ quota… sẽ chạy lại sau ~${remSec}s`);
+              updateStatus('translating', t(currentUiLocale, 'detail_waiting_quota', { sec: remSec }));
             } else {
               const tApplied = (typeof st.totalCollected === 'number' && (st.totalApplied || 0) > st.totalCollected)
                 ? st.totalCollected
                 : (st.totalApplied || 0);
               const progressDetail = (typeof st.totalCollected === 'number' && st.totalCollected > 0)
-                ? `Đang dịch ${tApplied}/${st.totalCollected} nodes...`
-                : 'Đang dịch...';
-              const retrySuffix = st.lastError && st.lastError.code ? ` (lỗi gần nhất: [${st.lastError.code}] đang thử lại)` : '';
+                ? t(currentUiLocale, 'detail_translating_nodes', { applied: tApplied, collected: st.totalCollected })
+                : t(currentUiLocale, 'status_translating');
+              const retrySuffix = st.lastError && st.lastError.code ? t(currentUiLocale, 'detail_last_error_retry_paren', { code: st.lastError.code }) : '';
               updateStatus('translating', progressDetail + retrySuffix);
             }
           });
@@ -1503,9 +2626,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Connect tab: autosave (no save button). Typing/changing any field persists
   // to storage automatically. Host permission needs a user gesture, so it is
-  // granted via the shield button or at Dịch time — never inside autosave.
+  // granted via the shield button or at Translate time — never inside autosave.
   if (inputBaseUrl) {
     inputBaseUrl.addEventListener('input', () => {
+      if (typeof renderFavoritesSection === 'function') renderFavoritesSection();
       markDirty();
     });
     inputBaseUrl.addEventListener('change', () => {
@@ -1516,6 +2640,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           lastFavKey = nextKey;
           savedSettings.favoriteModels = primaryFavorites();
           renderAllModelDropdowns();
+          if (typeof renderFavoritesSection === 'function') renderFavoritesSection();
           evaluateActionReadiness();
         }
       } catch {}
@@ -1529,6 +2654,58 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Rate Limits Inputs (WI-28)
+  let rateLimitsHintTimer = null;
+  function showRateLimitsHint(msg) {
+    if (!rateLimitsHint) return;
+    rateLimitsHint.textContent = msg;
+    rateLimitsHint.style.display = 'block';
+    if (rateLimitsHintTimer) clearTimeout(rateLimitsHintTimer);
+    rateLimitsHintTimer = setTimeout(() => {
+      if (rateLimitsHint) rateLimitsHint.style.display = 'none';
+      rateLimitsHintTimer = null;
+    }, 4000);
+  }
+
+  function setupRateLimitInput(inputEl, min, max, defaultVal) {
+    if (!inputEl) return;
+    const validateAndClamp = (triggerAutosave = false) => {
+      const raw = inputEl.value.trim();
+      const num = parseInt(raw, 10);
+      if (raw === '' || isNaN(num)) {
+        inputEl.value = defaultVal;
+        showRateLimitsHint(t(currentUiLocale, 'conn_rate_clamp_hint', { min, max }));
+        if (triggerAutosave) markDirty();
+        return;
+      }
+      if (num < min || num > max) {
+        const clamped = Math.max(min, Math.min(max, num));
+        inputEl.value = clamped;
+        showRateLimitsHint(t(currentUiLocale, 'conn_rate_clamp_hint', { min, max }));
+        if (triggerAutosave) markDirty();
+      } else {
+        if (num !== Number(raw)) {
+          inputEl.value = num;
+        }
+        if (triggerAutosave) markDirty();
+      }
+    };
+
+    inputEl.addEventListener('input', () => {
+      validateAndClamp(true);
+    });
+    inputEl.addEventListener('change', () => {
+      validateAndClamp(true);
+    });
+    inputEl.addEventListener('blur', () => {
+      validateAndClamp(true);
+    });
+  }
+
+  setupRateLimitInput(inputRateTab, 1, 20, 4);
+  setupRateLimitInput(inputRateSite, 1, 60, 12);
+  setupRateLimitInput(inputRateConcurrency, 1, 4, 2);
+
   async function getBaseOrigin() {
     const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
     if (!rawUrl) return null;
@@ -1540,7 +2717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // SW fetch to Base URL needs its host permission; request it inside a user
-  // gesture (autosave/refresh-without-gesture cannot). Shared by Dịch,
+  // gesture (autosave/refresh-without-gesture cannot). Shared by Translate,
   // refresh-models and the shield button.
   async function ensureBaseUrlPermission() {
     const origin = await getBaseOrigin();
@@ -1565,15 +2742,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!btnBasePerm) return;
     const origin = await getBaseOrigin();
     let granted = false;
-    if (origin && chrome.permissions && typeof chrome.permissions.contains === 'function') {
+    if (origin && typeof chrome !== 'undefined' && chrome.permissions && typeof chrome.permissions.contains === 'function') {
       try {
         granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
       } catch {}
     }
     btnBasePerm.classList.toggle('granted', granted);
     btnBasePerm.title = granted
-      ? `Đã cấp quyền kết nối (${origin})`
-      : `Cấp quyền kết nối Base URL (${origin || 'URL chưa hợp lệ'})`;
+      ? t(currentUiLocale, 'perm_granted_origin', { origin })
+      : t(currentUiLocale, 'perm_request_origin', { origin: origin || t(currentUiLocale, 'err_url_invalid') });
     btnBasePerm.setAttribute('aria-label', btnBasePerm.title);
   }
 
@@ -1581,7 +2758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnBasePerm.addEventListener('click', async () => {
       const origin = await getBaseOrigin();
       if (!origin) {
-        setConfigMsg(configMessageConnect, 'Base URL không hợp lệ', true);
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'err_base_url_invalid'), true);
         return;
       }
       let granted = false;
@@ -1595,8 +2772,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         granted = false;
       }
       if (!granted) {
-        setConfigMsg(configMessageConnect, 'Cần cấp quyền host permission để kết nối Base URL', true);
-        updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'err_base_url_perm_needed'), true);
+        updateStatus('error', t(currentUiLocale, 'err_perm_required_base'));
       }
       await refreshBasePermState();
       await checkTabStatus();
@@ -1615,19 +2792,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (chrome.runtime.lastError || !resp || resp.error) {
         const err = resp?.error || chrome.runtime.lastError;
-        setConfigMsg(configMessageConnect, 'Lỗi xoá API key: ' + (err.message || ''), true);
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'err_delete_key_failed', { error: err.message || '' }), true);
         return;
       }
 
       hasStoredKey = false;
       fallbackKeyPresence = {};
-      if (keyStatusIndicator) keyStatusIndicator.textContent = 'Chưa lưu key';
+      if (keyStatusIndicator) keyStatusIndicator.textContent = t(currentUiLocale, 'conn_key_not_stored');
       if (inputApiKey) {
         inputApiKey.value = '';
-        inputApiKey.placeholder = 'Nhập API key';
+        inputApiKey.placeholder = t(currentUiLocale, 'conn_api_key_placeholder');
       }
       renderFallbackRows();
-      setConfigMsg(configMessageConnect, 'Đã xoá API key.');
+      setConfigMsg(configMessageConnect, t(currentUiLocale, 'msg_key_deleted'));
       evaluateActionReadiness();
       await checkTabStatus();
     });
@@ -1650,6 +2827,83 @@ document.addEventListener('DOMContentLoaded', async () => {
       markDirty();
     });
   }
+  if (checkboxExportKeys) {
+    checkboxExportKeys.addEventListener('change', () => {
+      savedSettings.exportIncludeKeys = Boolean(checkboxExportKeys.checked);
+      markDirty();
+    });
+  }
+  if (selectUiLocale) {
+    selectUiLocale.addEventListener('change', () => {
+      applyUiLocale(selectUiLocale.value);
+      markDirty();
+    });
+  }
+  if (selectTheme) {
+    selectTheme.addEventListener('change', () => {
+      applyTheme(selectTheme.value);
+      markDirty();
+    });
+  }
+  if (selectUiFontScale) {
+    selectUiFontScale.addEventListener('change', () => {
+      applyFontScale(selectUiFontScale.value);
+      markDirty();
+    });
+  }
+  if (inputFabSize) {
+    inputFabSize.addEventListener('input', () => {
+      updateFabSizeDisplay(inputFabSize.value);
+      markDirty();
+    });
+  }
+
+  // Header Settings Menu & Modal Triggers
+  if (btnHeaderMenu) {
+    btnHeaderMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMenu();
+    });
+  }
+  if (menuBackdrop) {
+    menuBackdrop.addEventListener('click', closeMenu);
+  }
+  if (menuItemConfig) {
+    menuItemConfig.addEventListener('click', () => {
+      openModal('config', { opener: btnHeaderMenu });
+    });
+  }
+  if (menuItemLog) {
+    menuItemLog.addEventListener('click', () => {
+      openModal('log', { opener: btnHeaderMenu });
+    });
+  }
+  if (menuItemExport) {
+    menuItemExport.addEventListener('click', () => {
+      closeMenu();
+      triggerExportConfig();
+    });
+  }
+  if (modalBackdrop) {
+    modalBackdrop.addEventListener('click', closeModal);
+  }
+  if (modalCloseBtn) {
+    modalCloseBtn.addEventListener('click', closeModal);
+  }
+  if (btnExportConfigConnect) {
+    btnExportConfigConnect.addEventListener('click', triggerExportConfig);
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (isModalOpen()) {
+        closeModal();
+      } else if (menuOverlay && menuOverlay.style.display !== 'none') {
+        closeMenu();
+      }
+    } else if (e.key === 'Tab') {
+      handleModalFocusTrap(e);
+    }
+  });
 
 
   // Tab 2 Auto-Translate Sites Management
@@ -1713,13 +2967,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const state = !autoOn ? 'off' : (granted ? 'on' : 'standby');
       dot.dataset.state = state;
       dot.title = state === 'on'
-        ? `${origin}: sẽ tự dịch khi mở trang`
+        ? t(currentUiLocale, 'site_state_on', { origin })
         : state === 'standby'
-          ? `${origin}: chưa cấp quyền/bật dịch — bấm nút nguồn để bật`
-          : `${origin}: đã tắt tự dịch`;
+          ? t(currentUiLocale, 'site_state_standby', { origin })
+          : t(currentUiLocale, 'site_state_off', { origin });
       if (powerBtn) {
         powerBtn.classList.toggle('enabled', granted);
-        powerBtn.title = granted ? `Đã bật dịch cho ${origin}` : `Bật dịch cho ${origin}`;
+        powerBtn.title = granted ? t(currentUiLocale, 'site_btn_enabled', { origin }) : t(currentUiLocale, 'site_btn_enable', { origin });
       }
     }
   }
@@ -1731,7 +2985,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!autoTranslateSites || autoTranslateSites.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'auto-sites-empty';
-      emptyEl.textContent = 'Chưa có trang nào trong danh sách.';
+      emptyEl.textContent = t(currentUiLocale, 'auto_site_empty');
       autoSitesList.appendChild(emptyEl);
       return;
     }
@@ -1753,7 +3007,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const statusDot = document.createElement('span');
       statusDot.className = 'site-dot';
       statusDot.dataset.state = 'off';
-      statusDot.title = 'Đang kiểm tra quyền...';
+      statusDot.title = t(currentUiLocale, 'site_checking_perm');
       statusDot.setAttribute('aria-hidden', 'true');
 
       const originSpan = document.createElement('span');
@@ -1770,8 +3024,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       enableBtn.type = 'button';
       enableBtn.className = 'btn-icon btn-sm btn-site-enable';
       enableBtn.id = `btn-enable-site-${idx}`;
-      enableBtn.title = `Bật dịch cho ${site.origin}`;
-      enableBtn.setAttribute('aria-label', `Bật dịch cho ${site.origin}`);
+      enableBtn.title = t(currentUiLocale, 'site_btn_enable', { origin: site.origin });
+      enableBtn.setAttribute('aria-label', t(currentUiLocale, 'site_btn_enable', { origin: site.origin }));
       enableBtn.innerHTML = SVG_ICONS.power;
       enableBtn.addEventListener('click', async () => {
         hideAutoSiteError();
@@ -1780,8 +3034,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         enableBtn.disabled = false;
         if (!res.ok) {
           showAutoSiteError(res.reason === 'permission'
-            ? `Cần cấp quyền truy cập cho ${site.origin} để tự động dịch.`
-            : `Lỗi bật dịch cho ${site.origin}: ` + ((res.error && res.error.message) || 'Không thể lưu'));
+            ? t(currentUiLocale, 'err_perm_site_needed', { origin: site.origin })
+            : t(currentUiLocale, 'err_enable_site_failed', { origin: site.origin, error: (res.error && res.error.message) || t(currentUiLocale, 'err_cannot_save') }));
         }
         if (site.origin === currentConsent.siteOrigin) {
           await loadConsent();
@@ -1793,12 +3047,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       const modeSelect = document.createElement('select');
       modeSelect.className = 'select-mini auto-site-mode';
       modeSelect.id = `select-site-mode-${idx}`;
-      modeSelect.setAttribute('aria-label', `Chế độ dịch cho ${site.origin}`);
-      modeSelect.title = 'Chế độ dịch';
+      modeSelect.setAttribute('aria-label', t(currentUiLocale, 'site_mode_aria', { origin: site.origin }));
+      modeSelect.title = t(currentUiLocale, 'site_mode_title');
       modeSelect.innerHTML = `
-        <option value="inherit">Theo chung</option>
-        <option value="scroll-follow">Đuổi scroll</option>
-        <option value="full">Toàn trang</option>
+        <option value="inherit">${t(currentUiLocale, 'auto_site_inherit')}</option>
+        <option value="scroll-follow">${t(currentUiLocale, 'mode_scroll')}</option>
+        <option value="full">${t(currentUiLocale, 'mode_full')}</option>
       `;
       modeSelect.value = site.mode || 'inherit';
       modeSelect.addEventListener('change', () => {
@@ -1809,8 +3063,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       // AutoStart Toggle
       const toggleLabel = document.createElement('label');
       toggleLabel.className = 'mini-toggle';
-      toggleLabel.title = 'Tự động dịch khi mở trang';
-      toggleLabel.setAttribute('aria-label', `Tự động dịch khi mở ${site.origin}`);
+      toggleLabel.title = t(currentUiLocale, 'site_autostart_title');
+      toggleLabel.setAttribute('aria-label', t(currentUiLocale, 'site_autostart_aria', { origin: site.origin }));
 
       const toggleInput = document.createElement('input');
       toggleInput.type = 'checkbox';
@@ -1832,14 +3086,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       deleteBtn.type = 'button';
       deleteBtn.className = 'btn-site-delete';
       deleteBtn.id = `btn-delete-site-${idx}`;
-      deleteBtn.title = `Xoá ${site.origin}`;
-      deleteBtn.setAttribute('aria-label', `Xoá ${site.origin}`);
+      deleteBtn.title = t(currentUiLocale, 'site_delete_title', { origin: site.origin });
+      deleteBtn.setAttribute('aria-label', t(currentUiLocale, 'site_delete_aria', { origin: site.origin }));
       deleteBtn.innerHTML = SVG_ICONS.trash;
 
       deleteBtn.addEventListener('click', async () => {
         hideAutoSiteError();
         if (!settingsLoaded) {
-          showAutoSiteError(SETTINGS_NOT_LOADED_MSG);
+          showAutoSiteError(getSettingsNotLoadedMsg());
           return;
         }
         const updatedList = autoTranslateSites.filter((s) => (s.origin || s) !== site.origin);
@@ -1854,7 +3108,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (chrome.runtime.lastError || !saveResp || saveResp.error) {
           const err = saveResp?.error || chrome.runtime.lastError;
-          showAutoSiteError('Lỗi xoá trang: ' + (err?.message || 'Không thể lưu'));
+          showAutoSiteError(t(currentUiLocale, 'err_delete_site_failed', { error: err?.message || t(currentUiLocale, 'err_cannot_save') }));
           deleteBtn.disabled = false;
           return;
         }
@@ -1879,23 +3133,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const langIcon = document.createElement('span');
       langIcon.className = 'field-icon field-icon-xs';
-      langIcon.title = 'Ngôn ngữ riêng cho trang này (mặc định: theo chung)';
+      langIcon.title = t(currentUiLocale, 'site_lang_icon_title');
       langIcon.setAttribute('aria-hidden', 'true');
       langIcon.innerHTML = '<svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/><path d="M5 9c0 2.144 2.952 3.908 6.7 4"/><path d="M12 20l4 -9l4 9"/><path d="M19.1 18h-6.2"/></svg>';
 
       const srcSelect = document.createElement('select');
       srcSelect.className = 'select-mini auto-site-lang-src';
       srcSelect.id = `select-site-src-${idx}`;
-      srcSelect.setAttribute('aria-label', `Ngôn ngữ nguồn cho ${site.origin}`);
-      srcSelect.title = 'Ngôn ngữ nguồn';
-      srcSelect.innerHTML = `
-        <option value="">Theo chung</option>
-        <option value="auto">Tự động (auto)</option>
-        <option value="zh">Tiếng Trung (zh)</option>
-        <option value="en">Tiếng Anh (en)</option>
-        <option value="ja">Tiếng Nhật (ja)</option>
-        <option value="ko">Tiếng Hàn (ko)</option>
-      `;
+      srcSelect.setAttribute('aria-label', t(currentUiLocale, 'site_src_aria', { origin: site.origin }));
+      const inheritText = t(currentUiLocale, 'auto_site_inherit');
+      srcSelect.innerHTML = `<option value="">${inheritText}</option>` +
+        SOURCE_LANGS.map(l => `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`).join('');
       srcSelect.value = site.sourceLanguage || '';
       srcSelect.addEventListener('change', () => {
         site.sourceLanguage = srcSelect.value || null;
@@ -1908,14 +3156,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       const tgtSelect = document.createElement('select');
       tgtSelect.className = 'select-mini auto-site-lang-tgt';
       tgtSelect.id = `select-site-tgt-${idx}`;
-      tgtSelect.setAttribute('aria-label', `Ngôn ngữ đích cho ${site.origin}`);
-      tgtSelect.title = 'Ngôn ngữ đích';
-      tgtSelect.innerHTML = `
-        <option value="">Theo chung</option>
-        <option value="vi">Tiếng Việt (vi)</option>
-        <option value="en">Tiếng Anh (en)</option>
-        <option value="zh">Tiếng Trung (zh)</option>
-      `;
+      tgtSelect.setAttribute('aria-label', t(currentUiLocale, 'site_tgt_aria', { origin: site.origin }));
+      tgtSelect.title = t(currentUiLocale, 'tgt_lang_label');
+      tgtSelect.innerHTML = `<option value="">${inheritText}</option>` +
+        TARGET_LANGS.map(l => `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`).join('');
       tgtSelect.value = site.targetLanguage || '';
       tgtSelect.addEventListener('change', () => {
         site.targetLanguage = tgtSelect.value || null;
@@ -1925,27 +3169,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const modelSelect = document.createElement('select');
       modelSelect.className = 'select-mini auto-site-model';
       modelSelect.id = `select-site-model-${idx}`;
-      modelSelect.setAttribute('aria-label', `Model dịch riêng cho ${site.origin}`);
-      modelSelect.title = 'Model dịch riêng (mặc định: theo chung)';
-      {
-        const seen = new Set();
-        const opts = [{ value: '', label: 'Model: theo chung' }];
-        const pushOpt = (v) => {
-          const val = (v || '').trim();
-          if (val && !seen.has(val)) { seen.add(val); opts.push({ value: val, label: val }); }
-        };
-        pushOpt(savedSettings.model || DEFAULT_MODEL);
-        primaryFavorites().forEach(pushOpt);
-        (typeof RECOMMENDED_MODELS !== 'undefined' ? RECOMMENDED_MODELS : []).forEach(pushOpt);
-        (discoveredModels || []).map((m) => (typeof m === 'string' ? m : m && m.id)).forEach(pushOpt);
-        for (const o of opts) {
-          const opt = document.createElement('option');
-          opt.value = o.value;
-          opt.textContent = o.label;
-          modelSelect.appendChild(opt);
-        }
-      }
-      modelSelect.value = site.model || '';
+      modelSelect.setAttribute('aria-label', t(currentUiLocale, 'site_model_aria', { origin: site.origin }));
+      modelSelect.title = t(currentUiLocale, 'site_model_title');
+      populateSelect(modelSelect, site.model || '', {
+        allowEmpty: true,
+        emptyLabel: t(currentUiLocale, 'site_model_inherit'),
+        favs: primaryFavorites()
+      });
       // Unknown stored model (renamed upstream): keep visible, don't silently drop
       if (site.model && modelSelect.value !== site.model) {
         const opt = document.createElement('option');
@@ -1982,15 +3212,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // same gesture (the auto-start gate needs both, otherwise silent no-op).
   async function commitAutoSite(norm) {
     if (!settingsLoaded) {
-      showAutoSiteError(SETTINGS_NOT_LOADED_MSG);
+      showAutoSiteError(getSettingsNotLoadedMsg());
       return false;
     }
     if (autoTranslateSites.some((s) => (s.origin || s) === norm)) {
-      showAutoSiteError(`Trang ${norm} đã có trong danh sách.`);
+      showAutoSiteError(t(currentUiLocale, 'err_site_exists', { origin: norm }));
       return false;
     }
     if (autoTranslateSites.length >= 200) {
-      showAutoSiteError('Danh sách đã đạt tối đa 200 trang.');
+      showAutoSiteError(t(currentUiLocale, 'err_site_max_reached'));
       return false;
     }
     const newEntry = { origin: norm, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
@@ -1998,7 +3228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const saveResp = await sendMsg({ action: 'SAVE_SETTINGS', settings: { autoTranslateSites: updatedList } });
     if (chrome.runtime.lastError || !saveResp || saveResp.error) {
       const err = (saveResp && saveResp.error) || chrome.runtime.lastError || {};
-      showAutoSiteError('Lỗi thêm trang: ' + ((err && err.message) || 'Không thể lưu'));
+      showAutoSiteError(t(currentUiLocale, 'err_add_site_failed', { error: (err && err.message) || t(currentUiLocale, 'err_cannot_save') }));
       return false;
     }
     autoTranslateSites = updatedList;
@@ -2007,8 +3237,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const enableRes = await enableSiteForOrigin(norm);
     if (!enableRes.ok) {
       showAutoSiteError(enableRes.reason === 'permission'
-        ? `Đã thêm ${norm}, nhưng chưa cấp quyền truy cập — bấm nút nguồn trên dòng đó để bật.`
-        : `Đã thêm ${norm}, nhưng bật dịch thất bại — bấm nút nguồn trên dòng đó để thử lại.`);
+        ? t(currentUiLocale, 'msg_site_added_need_perm', { origin: norm })
+        : t(currentUiLocale, 'msg_site_added_enable_failed', { origin: norm }));
     }
     if (norm === currentConsent.siteOrigin) {
       await loadConsent();
@@ -2047,32 +3277,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     input.id = 'input-auto-site-draft';
     input.placeholder = 'https://example.com';
     input.autocomplete = 'off';
-    input.setAttribute('aria-label', 'Nhập origin trang web để tự động dịch');
+    input.setAttribute('aria-label', t(currentUiLocale, 'site_draft_input_aria'));
     input.value = prefill;
 
     const confirmBtn = document.createElement('button');
     confirmBtn.type = 'button';
     confirmBtn.className = 'btn-icon btn-sm';
-    confirmBtn.title = 'Thêm trang này';
-    confirmBtn.setAttribute('aria-label', 'Thêm trang này');
+    confirmBtn.title = t(currentUiLocale, 'btn_add_site_confirm_title');
+    confirmBtn.setAttribute('aria-label', t(currentUiLocale, 'btn_add_site_confirm_title'));
     confirmBtn.innerHTML = SVG_ICONS.check;
 
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'btn-icon btn-sm';
-    cancelBtn.title = 'Huỷ';
-    cancelBtn.setAttribute('aria-label', 'Huỷ thêm trang');
+    cancelBtn.title = t(currentUiLocale, 'btn_cancel_title');
+    cancelBtn.setAttribute('aria-label', t(currentUiLocale, 'btn_cancel_title'));
     cancelBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>';
 
     const doConfirm = async () => {
       const val = input.value.trim();
       if (!val) {
-        showAutoSiteError('Vui lòng nhập origin (ví dụ: https://example.com)');
+        showAutoSiteError(t(currentUiLocale, 'err_origin_required'));
         return;
       }
       const norm = normalizeOrigin(val);
       if (!norm) {
-        showAutoSiteError('Origin không hợp lệ (yêu cầu định dạng https://example.com)');
+        showAutoSiteError(t(currentUiLocale, 'err_origin_invalid'));
         return;
       }
       confirmBtn.disabled = true;
@@ -2112,14 +3342,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnTranslate.addEventListener('click', async () => {
       if (!activeTab || !activeTab.id) return;
       if (!settingsLoaded) {
-        updateStatus('error', '[ERROR] ' + SETTINGS_NOT_LOADED_MSG);
+        updateStatus('error', '[ERROR] ' + getSettingsNotLoadedMsg());
         evaluateActionReadiness();
         return;
       }
 
       btnTranslate.disabled = true;
       setTranslateBusy(true);
-      updateStatus('translating', 'Đang chuẩn bị dịch...');
+      updateStatus('translating', t(currentUiLocale, 'status_translating_prep'));
       startPolling();
 
       try {
@@ -2132,23 +3362,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         const basePerm = await ensureBaseUrlPermission();
         if (!basePerm.ok) {
           stopPolling();
-          updateStatus('error', '[PERMISSION_REQUIRED] Chưa cấp quyền kết nối Base URL');
-          setConfigMsg(configMessageConnect, basePerm.reason === 'invalid' ? 'Base URL không hợp lệ' : 'Cần cấp quyền host permission để kết nối Base URL', true);
+          updateStatus('error', t(currentUiLocale, 'err_perm_required_base'));
+          setConfigMsg(configMessageConnect, basePerm.reason === 'invalid' ? t(currentUiLocale, 'err_base_url_invalid') : t(currentUiLocale, 'err_base_url_perm_needed'), true);
           evaluateActionReadiness();
           return;
         }
 
         // Site consent: Tab 1 has no toggle — enable automatically in this
-        // click gesture so one Dịch press does everything.
+        // click gesture so one Translate press does everything.
         const pageOrigin = activeTab?.url ? normalizeOrigin(activeTab.url) : null;
         if (pageOrigin && !currentConsent.siteEnabled) {
-          updateStatus('translating', 'Đang bật dịch cho trang này...');
+          updateStatus('translating', t(currentUiLocale, 'status_enabling_site'));
           const enRes = await enableSiteForOrigin(pageOrigin);
           if (!enRes.ok) {
             stopPolling();
             updateStatus('error', enRes.reason === 'permission'
-              ? '[PERMISSION_REQUIRED] Cần cấp quyền truy cập cho trang này'
-              : '[ERROR] Không thể bật dịch cho trang này');
+              ? t(currentUiLocale, 'err_perm_required_site')
+              : t(currentUiLocale, 'err_enable_site_failed_short'));
             evaluateActionReadiness();
             return;
           }
@@ -2193,7 +3423,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           (resp) => {
             stopPolling();
             if (chrome.runtime.lastError) {
-              updateStatus('error', chrome.runtime.lastError.message || 'Không thể kết nối với content script');
+              updateStatus('error', chrome.runtime.lastError.message || t(currentUiLocale, 'err_cannot_connect_content'));
               evaluateActionReadiness();
               return;
             }
@@ -2238,7 +3468,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         );
       } catch (err) {
         stopPolling();
-        updateStatus('error', err?.message || 'Không thể inject content script');
+        updateStatus('error', err?.message || t(currentUiLocale, 'err_cannot_inject_content'));
         evaluateActionReadiness();
       }
     });
@@ -2258,12 +3488,29 @@ document.addEventListener('DOMContentLoaded', async () => {
           return;
         }
         const restored = resp?.restored || 0;
-        updateStatus('restored', `Đã khôi phục ${restored} nodes về bản gốc.`);
+        updateStatus('restored', t(currentUiLocale, 'detail_restored_nodes_original', { count: restored }));
         btnRestore.disabled = true;
         evaluateActionReadiness(0);
       });
     });
   }
+
+  if (typeof window !== 'undefined') {
+    window.openModal = openModal;
+    window.closeModal = closeModal;
+    window.isModalOpen = isModalOpen;
+    window.getModalFocusableElements = getModalFocusableElements;
+    window.handleModalFocusTrap = handleModalFocusTrap;
+    window.setBackgroundInert = setBackgroundInert;
+    window.restoreFocusAfterModal = restoreFocusAfterModal;
+    window.isElementVisibleAndEnabled = isElementVisibleAndEnabled;
+  }
+
+  // Initial UI render
+  applyUiLocale('vi');
+  applyTheme('dark');
+  applyFontScale('md');
+  updateFabSizeDisplay(1.0);
 
   // Initial Sequence (writes stay blocked until settings load succeeds)
   settingsLoaded = await loadSettings();
@@ -2279,3 +3526,4 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkTabStatus();
   }
 });
+}

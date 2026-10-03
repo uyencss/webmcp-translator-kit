@@ -4653,15 +4653,15 @@ async function runSingleAttempt() {
       assert.ok(hasTablist, 'Popup must render [role="tablist"]');
 
       const tabs = await cdp.evaluate('Array.from(document.querySelectorAll(".tab-btn[role=\\"tab\\"]")).map(el => el.id)', pSession1);
-      assert.deepEqual(tabs, ['tab-translate', 'tab-auto', 'tab-connect'], 'Popup must have 3 tabs: tab-translate, tab-auto, tab-connect');
+      assert.deepEqual(tabs, ['tab-translate', 'tab-auto', 'tab-config', 'tab-log'], 'Popup must have tabs: tab-translate, tab-auto, tab-config, tab-log');
 
-      // Check initial panel visibility (translate visible, auto & connect hidden)
+      // Check initial panel visibility (translate visible, auto & config hidden)
       const isTranslateHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-translate")?.classList.contains("hidden")', pSession1);
       const isAutoHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-auto")?.classList.contains("hidden")', pSession1);
-      const isConnectHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
+      const isConfigHiddenInit = await cdp.evaluate('document.getElementById("tabpanel-config")?.classList.contains("hidden")', pSession1);
       assert.ok(!isTranslateHiddenInit, 'tabpanel-translate must be visible initially');
       assert.ok(isAutoHiddenInit, 'tabpanel-auto must be hidden initially');
-      assert.ok(isConnectHiddenInit, 'tabpanel-connect must be hidden initially');
+      assert.ok(isConfigHiddenInit, 'tabpanel-config must be hidden initially');
 
       // Click tab-auto -> tabpanel-auto visible, others hidden
       await cdp.evaluate('document.getElementById("tab-auto")?.click()', pSession1);
@@ -4671,11 +4671,15 @@ async function runSingleAttempt() {
       assert.ok(!isAutoHiddenAfter, 'tabpanel-auto must be visible after click');
       assert.ok(isTranslateHiddenAfter, 'tabpanel-translate must be hidden after switching');
 
-      // Click tab-connect -> tabpanel-connect visible, others hidden
-      await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession1);
+      // Click tab-config -> tabpanel-config visible, others hidden
+      await cdp.evaluate('document.getElementById("tab-config")?.click()', pSession1);
       await sleep(100);
-      const isConnectHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-connect")?.classList.contains("hidden")', pSession1);
-      assert.ok(!isConnectHiddenAfter, 'tabpanel-connect must be visible after click');
+      const isConfigHiddenAfter = await cdp.evaluate('document.getElementById("tabpanel-config")?.classList.contains("hidden")', pSession1);
+      assert.ok(!isConfigHiddenAfter, 'tabpanel-config must be visible after click');
+
+      // Verify config subtabs: connect, appearance, favorites
+      const subtabs = await cdp.evaluate('Array.from(document.querySelectorAll(".subtab-btn[role=\\"tab\\"]")).map(el => el.id)', pSession1);
+      assert.deepEqual(subtabs, ['subtab-connect', 'subtab-appearance', 'subtab-favorites'], 'Config panel must have 3 subtabs: subtab-connect, subtab-appearance, subtab-favorites');
 
       // Switch back to tab-translate
       await cdp.evaluate('document.getElementById("tab-translate")?.click()', pSession1);
@@ -4792,9 +4796,11 @@ async function runSingleAttempt() {
       const modelsCountAfter = fakeServer.getModelsFetchCount();
       assert.equal(modelsCountAfter, modelsCountBefore, 'Re-opening popup must use L2 cache and NOT send /models request');
 
-      // Switch to tab-connect for model and fallback operations
-      await cdp.evaluate('document.getElementById("tab-connect")?.click()', pSession2);
+      // Switch to tab-config (subtab-connect) for model and fallback operations
+      await cdp.evaluate('document.getElementById("tab-config")?.click()', pSession2);
       await sleep(200);
+      await cdp.evaluate('document.getElementById("subtab-connect")?.click()', pSession2);
+      await sleep(100);
 
       // (d) Favorite: click star button for selected model -> sends SAVE_SETTINGS partial -> favoriteModels updated -> UI selection not reset
       const curSelectedModel = await cdp.evaluate('document.getElementById("select-model")?.value', pSession2);
@@ -5159,9 +5165,9 @@ async function runSingleAttempt() {
       assert.ok(testSiteEntry, `autoTranslateSites must contain ${testSiteOrigin}`);
       assert.equal(testSiteEntry.mode, 'full', `per-site mode for ${testSiteOrigin} must be saved as 'full'`);
 
-      record('T47', 'Popup e2e (autosave: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', true, `3 tabs rendered & toggled, Dịch applied>0 on fixture, cache hit, favorite preserved, fallback key autosaved, per-site mode autosaved to full, no save buttons`);
+      record('T47', 'Popup e2e (autosave: config tabs & subtabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', true, `tabs and subtabs rendered & toggled, Dịch applied>0 on fixture, cache hit, favorite preserved, fallback key autosaved, per-site mode autosaved to full, no save buttons`);
     } catch (e) {
-      record('T47', 'Popup e2e (autosave: 3 tabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', false, e.message);
+      record('T47', 'Popup e2e (autosave: config tabs & subtabs, actions in tab-translate, cache, favorite, fallback v2 + key, per-site mode)', false, e.message);
     } finally {
       if (t47Tab) {
         try { await t47Tab.close(); } catch {}

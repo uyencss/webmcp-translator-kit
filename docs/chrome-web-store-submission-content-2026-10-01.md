@@ -68,15 +68,33 @@ Không dán bản này nếu chưa có endpoint/key dùng được từ máy rev
 
 ## 4. Ảnh Store tạm và gate cho bản nộp
 
-Theo yêu cầu mới nhất của owner, đã tạo lại **hai mockup tạm bằng ImageGen** từ bộ v2: chữ của bài đọc phía sau được làm mờ, còn phần extension giữ sắc nét để trở thành điểm nhìn chính.
+**Bộ v5 — UI tiếng Việt:** đã quan sát trực tiếp UI đang chạy trong Chrome và dựng bốn ảnh, vẫn giữ hai section Trung–Việt cao bằng nhau bên trái:
 
-- **Ảnh 1 — popup nổi bật:** [JPEG 1280×800](./store-assets/translator-store-popup-v3-blurred-1280x800.jpg), chỉ có UI popup extension, không có floating widget/icon. SHA-256 `aa7b986ee89c277f391b9b6957d0e50d50da6ddd073fb56fba6b88975fdce0b4`.
-- **Ảnh 2 — floating icon nổi bật:** [JPEG 1280×800](./store-assets/translator-store-floating-v3-blurred-1280x800.jpg), có icon tròn xanh ở góc phải dưới và panel nổi, không có popup extension. SHA-256 `ded41f90c3ded204dc6b428347cebac1d046d51901746a5e5b0060bc658731f7`.
-- [Prompt chỉnh ảnh v3](./store-assets/translator-store-v3-prompts.md). [Bộ v2 chữ rõ](./store-assets/translator-store-v2-prompts.md) và [v1 gộp popup với widget](./store-assets/translator-store-mockup-v1-1280x800.jpg) được giữ làm tham khảo.
+1. [Dịch](./store-assets/translator-store-v5-01-translate-1280x800.jpg).
+2. [Tự động theo site](./store-assets/translator-store-v5-02-auto-site-1280x800.jpg).
+3. [Cấu hình → Giao diện](./store-assets/translator-store-v5-03-appearance-1280x800.jpg).
+4. [Floating widget có chọn model và icon chấm xanh](./store-assets/translator-store-v5-04-floating-model-1280x800.jpg).
 
-![Mockup 1: popup WebMCP Translator, nền chữ mờ](./store-assets/translator-store-popup-v3-blurred-1280x800.jpg)
+Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và ghi chú UI hiện tại](./store-assets/translator-store-v5-prompts.md). Bộ v5 thay bộ v4 làm bản nháp hiện hành; các phiên bản cũ dưới đây được giữ làm lịch sử. Đây vẫn là ảnh dựng cần đối chiếu bản release trước nộp.
 
-![Mockup 2: floating icon và widget WebMCP Translator, nền chữ mờ](./store-assets/translator-store-floating-v3-blurred-1280x800.jpg)
+**Bộ v6 hiện hành — English UI, Chinese → English:** bốn ảnh dùng bố cục so sánh hai phần bằng nhau; toàn bộ UI extension bằng tiếng Anh, gồm target `English (en)`:
+
+1. [Translate](./store-assets/translator-store-v6-en-zh-01-translate-1280x800.jpg).
+2. [Auto-translate site](./store-assets/translator-store-v6-en-zh-02-auto-site-1280x800.jpg).
+3. [Config → Appearance](./store-assets/translator-store-v6-en-zh-03-config-appearance-1280x800.jpg).
+4. [Floating widget with model selector](./store-assets/translator-store-v6-en-zh-04-floating-model-1280x800.jpg).
+
+Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và nội dung tiếng Anh đầy đủ](./store-assets/translator-store-v6-en-zh-prompts.md). Bộ v5 tiếng Việt vẫn được giữ để dùng cùng bốn ảnh English này; tổng cộng tám ảnh như owner yêu cầu. Đây là mockup dựng, cần đối chiếu với bản release cuối trước khi nộp.
+
+Theo yêu cầu mới nhất của owner, đã tạo lại **hai mockup tạm bằng ImageGen** với bố cục mới: bên trái chia hai section cao bằng nhau, trên là tiếng Trung và dưới là bản dịch tiếng Việt tương ứng; chữ rõ và placeholder nhỏ đơn giản. Bên phải là popup hoặc floating widget/icon, giữ vai trò chủ thể cùng văn bản dịch.
+
+- **Ảnh 1 — popup nổi bật:** [JPEG 1280×800](./store-assets/translator-store-popup-v4-comparison-1280x800.jpg), chỉ có UI popup extension, không có floating widget/icon. SHA-256 `3b7673e978f6ed18b01f01d8af36669191d39ea5c4d6ac1c3780cec01dcab91d`.
+- **Ảnh 2 — floating icon nổi bật:** [JPEG 1280×800](./store-assets/translator-store-floating-v4-comparison-1280x800.jpg), có icon tròn xanh ở góc phải dưới và panel nổi, không có popup extension. SHA-256 `b42d6195166f80878209765a82ce78b48d3c4750d70c68c85e7d861172879fa2`.
+- [Brief tạo ảnh v4](./store-assets/translator-store-v4-brief.md). [Bộ v2 chữ rõ](./store-assets/translator-store-v2-prompts.md) và [v1 gộp popup với widget](./store-assets/translator-store-mockup-v1-1280x800.jpg) được giữ làm tham khảo.
+
+![Mockup 1: popup WebMCP Translator, so sánh Trung–Việt](./store-assets/translator-store-popup-v4-comparison-1280x800.jpg)
+
+![Mockup 2: floating icon và widget WebMCP Translator, so sánh Trung–Việt](./store-assets/translator-store-floating-v4-comparison-1280x800.jpg)
 
 **Trạng thái: mockup để duyệt nội bộ.** Hai ảnh là ảnh dựng, không phải capture từ ZIP release; trang mẫu có ảnh và câu chữ do ImageGen tạo. Popup/widget/icon được mô phỏng theo ảnh người dùng cung cấp và phản ánh chức năng dịch dần hiện có, nhưng một số chi tiết hiển thị có thể khác bản extension cuối. Trước khi upload/Submit for Review, so từng thành phần với bản chạy thật, sửa hoặc thay ảnh nếu khác đáng kể; [Listing Requirements](https://developer.chrome.com/docs/webstore/program-policies/listing-requirements) đòi listing chính xác, không gây hiểu lầm.
 

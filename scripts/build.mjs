@@ -64,10 +64,15 @@ assert.deepStrictEqual(
   ['activeTab', 'scripting', 'storage'],
   'manifest permissions must be exactly ["activeTab","scripting","storage"]'
 );
-assert.strictEqual(
+assert.deepStrictEqual(
+  distManifest.host_permissions,
+  ['http://*/*', 'https://*/*'],
+  'manifest host_permissions must be exactly ["http://*/*","https://*/*"]'
+);
+assert.deepStrictEqual(
   distManifest.content_scripts,
-  undefined,
-  'manifest must not have static content_scripts'
+  [{ matches: ['http://*/*', 'https://*/*'], js: ['i18n-globals.js', 'content.js'], run_at: 'document_idle', all_frames: false }],
+  'manifest must declare static content_scripts for content.js on http(s)'
 );
 assert.strictEqual(
   distManifest.background?.type,

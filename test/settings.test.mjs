@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import {
   SETTINGS_VERSION,
   DEFAULT_SETTINGS,
+  FAB_SIZE_BOUNDS,
+  clampFabSize,
+  buildExportConfig,
   migrateSettings,
   validateSettings
 } from '../extension/src/settings.mjs';
+import { SUPPORTED_UI_LOCALES } from '../extension/src/i18n.mjs';
 
-test('settings: SETTINGS_VERSION is defined as 5', () => {
+test('settings: SETTINGS_VERSION is defined as 9', () => {
   assert.equal(typeof SETTINGS_VERSION, 'number');
-  assert.equal(SETTINGS_VERSION, 5);
+  assert.equal(SETTINGS_VERSION, 9);
 });
 
 test('settings: migrateSettings converts v0 (unversioned) to canonical version with defaults', () => {
@@ -31,6 +35,11 @@ test('settings: migrateSettings converts v0 (unversioned) to canonical version w
   assert.equal(migrated.customProperty, 'hello-world');
   assert.equal(migrated.translationMode, 'scroll-follow');
   assert.equal(migrated.widgetVisible, true);
+  assert.equal(migrated.uiLocale, 'vi');
+  assert.equal(migrated.theme, 'dark');
+  assert.equal(migrated.uiFontScale, 'md');
+  assert.equal(migrated.fabSize, 1.0);
+  assert.equal(migrated.showFavoritesOnly, false);
   assert.deepEqual(migrated.fallbacks, []);
   assert.equal(migrated.fallbackModels, undefined);
   assert.deepEqual(migrated.favoriteModels, []);
@@ -40,7 +49,7 @@ test('settings: migrateSettings converts v0 (unversioned) to canonical version w
   assert.deepEqual(migrated.rateLimits, DEFAULT_SETTINGS.rateLimits);
 });
 
-test('settings: migrateSettings converts v1 to canonical v5 with default new fields', () => {
+test('settings: migrateSettings converts v1 to canonical v9 with default new fields', () => {
   const v1Raw = {
     version: 1,
     baseURL: 'http://localhost:8080/v1',
@@ -52,18 +61,23 @@ test('settings: migrateSettings converts v1 to canonical v5 with default new fie
 
   const migrated = migrateSettings(v1Raw);
 
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, 9);
   assert.equal(migrated.baseURL, v1Raw.baseURL);
   assert.equal(migrated.model, v1Raw.model);
   assert.equal(migrated.translationMode, 'scroll-follow');
   assert.equal(migrated.widgetVisible, true);
+  assert.equal(migrated.uiLocale, 'vi');
+  assert.equal(migrated.theme, 'dark');
+  assert.equal(migrated.uiFontScale, 'md');
+  assert.equal(migrated.fabSize, 1.0);
+  assert.equal(migrated.showFavoritesOnly, false);
   assert.deepEqual(migrated.fallbacks, []);
   assert.equal(migrated.fallbackModels, undefined);
   assert.deepEqual(migrated.favoriteModels, []);
   assert.deepEqual(migrated.autoTranslateSites, []);
 });
 
-test('settings: migrateSettings converts v2 fallbackModels to v5 fallbacks with inherit', () => {
+test('settings: migrateSettings converts v2 fallbackModels to v7 fallbacks with inherit', () => {
   const raw = {
     version: 2,
     baseURL: 'http://localhost:8080/v1',
@@ -73,7 +87,7 @@ test('settings: migrateSettings converts v2 fallbackModels to v5 fallbacks with 
 
   const migrated = migrateSettings(raw);
 
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, 9);
   assert.deepEqual(migrated.fallbacks, [
     { id: 'fb1', model: 'fb-1' },
     { id: 'fb2', model: 'fb-2' }
@@ -578,3 +592,392 @@ test('settings: merge-patch preserves autoTranslateSites when partial payload wi
     { origin: 'https://auto3.com', mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
   ]);
 });
+
+test('settings: migrateSettings converts v5 to canonical v6 with uiLocale and theme defaults', () => {
+  const v5Settings = {
+    version: 5,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    translationMode: 'scroll-follow',
+    widgetVisible: true,
+    fallbacks: [],
+    favoriteModels: [],
+    favoriteModelsByBaseURL: {},
+    autoTranslateSites: [],
+    rateLimits: DEFAULT_SETTINGS.rateLimits
+  };
+
+  const migrated = migrateSettings(v5Settings);
+
+  assert.equal(migrated.version, 9);
+  assert.equal(migrated.uiLocale, 'vi');
+  assert.equal(migrated.theme, 'dark');
+  assert.equal(migrated.uiFontScale, 'md');
+
+  // Custom valid values are preserved
+  const custom = migrateSettings({
+    ...v5Settings,
+    uiLocale: 'en',
+    theme: 'light'
+  });
+  assert.equal(custom.uiLocale, 'en');
+  assert.equal(custom.theme, 'light');
+
+  // Corrupt values fall back to defaults
+  const corrupt = migrateSettings({
+    ...v5Settings,
+    uiLocale: 'invalid-locale',
+    theme: 'blue'
+  });
+  assert.equal(corrupt.uiLocale, 'vi');
+  assert.equal(corrupt.theme, 'dark');
+});
+
+test('settings: validateSettings accepts valid v6 settings and rejects invalid uiLocale or theme', () => {
+  const baseValid = {
+    version: 6,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    uiLocale: 'vi',
+    theme: 'dark'
+  };
+
+  assert.equal(validateSettings(baseValid).valid, true);
+
+  const validEnLight = {
+    ...baseValid,
+    uiLocale: 'en',
+    theme: 'light'
+  };
+  assert.equal(validateSettings(validEnLight).valid, true);
+
+  const invalidLocale = validateSettings({
+    ...baseValid,
+    uiLocale: 'fr'
+  });
+  assert.equal(invalidLocale.valid, false);
+  assert.ok(invalidLocale.errors.some((e) => e.includes('uiLocale')));
+
+  const invalidTheme = validateSettings({
+    ...baseValid,
+    theme: 'solarized'
+  });
+  assert.equal(invalidTheme.valid, false);
+  assert.ok(invalidTheme.errors.some((e) => e.includes('theme')));
+});
+
+test('settings: migrateSettings converts v6 to canonical v7 with uiFontScale defaults', () => {
+  const v6Settings = {
+    version: 6,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    translationMode: 'scroll-follow',
+    widgetVisible: true,
+    uiLocale: 'vi',
+    theme: 'dark',
+    fallbacks: [],
+    favoriteModels: [],
+    favoriteModelsByBaseURL: {},
+    autoTranslateSites: [],
+    rateLimits: DEFAULT_SETTINGS.rateLimits
+  };
+
+  const migrated = migrateSettings(v6Settings);
+
+  assert.equal(migrated.version, 9);
+  assert.equal(migrated.uiFontScale, 'md');
+
+  // Custom valid values are preserved
+  for (const scale of ['sm', 'md', 'lg']) {
+    const custom = migrateSettings({
+      ...v6Settings,
+      uiFontScale: scale
+    });
+    assert.equal(custom.uiFontScale, scale);
+  }
+
+  // Corrupt values fall back to defaults
+  const corrupt = migrateSettings({
+    ...v6Settings,
+    uiFontScale: 'extra-large'
+  });
+  assert.equal(corrupt.uiFontScale, 'md');
+});
+
+test('settings: migrateSettings converts v7 to canonical v8 with showFavoritesOnly defaults', () => {
+  const v7Settings = {
+    version: 7,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    translationMode: 'scroll-follow',
+    widgetVisible: true,
+    uiLocale: 'vi',
+    theme: 'dark',
+    uiFontScale: 'md',
+    fallbacks: [],
+    favoriteModels: [],
+    favoriteModelsByBaseURL: {},
+    autoTranslateSites: [],
+    rateLimits: DEFAULT_SETTINGS.rateLimits
+  };
+
+  const migrated = migrateSettings(v7Settings);
+
+  assert.equal(migrated.version, 9);
+  assert.equal(migrated.showFavoritesOnly, false);
+
+  // Custom valid boolean is preserved
+  assert.equal(migrateSettings({ ...v7Settings, showFavoritesOnly: true }).showFavoritesOnly, true);
+  assert.equal(migrateSettings({ ...v7Settings, showFavoritesOnly: false }).showFavoritesOnly, false);
+
+  // Corrupt values fall back to false
+  assert.equal(migrateSettings({ ...v7Settings, showFavoritesOnly: 'yes' }).showFavoritesOnly, false);
+  assert.equal(migrateSettings({ ...v7Settings, showFavoritesOnly: 1 }).showFavoritesOnly, false);
+});
+
+test('settings: migrateSettings converts v8 to canonical v9 with fabSize defaults', () => {
+  const v8Settings = {
+    version: 8,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    translationMode: 'scroll-follow',
+    widgetVisible: true,
+    uiLocale: 'vi',
+    theme: 'dark',
+    uiFontScale: 'md',
+    showFavoritesOnly: false,
+    fallbacks: [],
+    favoriteModels: [],
+    favoriteModelsByBaseURL: {},
+    autoTranslateSites: [],
+    rateLimits: DEFAULT_SETTINGS.rateLimits
+  };
+
+  const migrated = migrateSettings(v8Settings);
+
+  assert.equal(migrated.version, 9);
+  assert.equal(migrated.fabSize, 1.0);
+
+  // Valid values preserved within bounds
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 0.75 }).fabSize, 0.75);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 1.25 }).fabSize, 1.25);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 1.5 }).fabSize, 1.5);
+
+  // Out of bounds clamped
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 0.2 }).fabSize, 0.75);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 2.5 }).fabSize, 1.5);
+
+  // Invalid types fall back to default
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 'large' }).fabSize, 1.0);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: null }).fabSize, 1.0);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: NaN }).fabSize, 1.0);
+});
+
+test('settings: clampFabSize handles bounds, strings, NaN, and defaults correctly', () => {
+  assert.equal(clampFabSize(1.0), 1.0);
+  assert.equal(clampFabSize('1.2'), 1.2);
+  assert.equal(clampFabSize(0.5), FAB_SIZE_BOUNDS.min);
+  assert.equal(clampFabSize(3.0), FAB_SIZE_BOUNDS.max);
+  assert.equal(clampFabSize('invalid'), FAB_SIZE_BOUNDS.default);
+  assert.equal(clampFabSize(null), FAB_SIZE_BOUNDS.default);
+  assert.equal(clampFabSize(undefined), FAB_SIZE_BOUNDS.default);
+});
+
+test('settings: validateSettings accepts valid v9 settings and rejects invalid fabSize', () => {
+  const baseValid = {
+    version: 9,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    fabSize: 1.0
+  };
+
+  assert.equal(validateSettings(baseValid).valid, true);
+  assert.equal(validateSettings({ ...baseValid, fabSize: 0.75 }).valid, true);
+  assert.equal(validateSettings({ ...baseValid, fabSize: 1.5 }).valid, true);
+
+  // Below min
+  const tooLow = validateSettings({ ...baseValid, fabSize: 0.5 });
+  assert.equal(tooLow.valid, false);
+  assert.ok(tooLow.errors.some((e) => e.includes('fabSize')));
+
+  // Above max
+  const tooHigh = validateSettings({ ...baseValid, fabSize: 1.8 });
+  assert.equal(tooHigh.valid, false);
+  assert.ok(tooHigh.errors.some((e) => e.includes('fabSize')));
+
+  // Non-number
+  const stringVal = validateSettings({ ...baseValid, fabSize: '1.0' });
+  assert.equal(stringVal.valid, false);
+  assert.ok(stringVal.errors.some((e) => e.includes('fabSize')));
+});
+
+test('settings: buildExportConfig sanitizes credentials and includes all metadata', () => {
+  const settings = {
+    version: 9,
+    baseURL: 'https://api.openai.com/v1',
+    model: 'gpt-4o',
+    fallbacks: [
+      { id: 'fb1', model: 'claude-3-5', baseURL: 'https://api.anthropic.com' },
+      { id: 'fb2', model: 'gemini-1.5' }
+    ],
+    autoTranslateSites: [{ origin: 'https://example.com', autoStart: true, mode: 'inherit' }],
+    translationMode: 'scroll-follow',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    uiLocale: 'en',
+    theme: 'dark',
+    uiFontScale: 'lg',
+    fabSize: 1.25,
+    widgetVisible: true,
+    showFavoritesOnly: true,
+    rateLimits: { tab: { maxBatches: 5 } },
+    favoriteModelsByBaseURL: { 'api.openai.com': ['gpt-4o'] },
+    // Secrets that must NEVER be in export:
+    api_key: 'sk-secret-12345',
+    apiKey: 'sk-secret-67890',
+    fallback_api_keys: { fb1: 'fb-secret-key-1' }
+  };
+
+  const exported = buildExportConfig({
+    settings,
+    fallbackKeyPresence: { fb1: true, fb2: false },
+    hasStoredKey: true,
+    exportedAt: '2026-10-03T12:00:00.000Z'
+  });
+
+  assert.equal(exported.version, 9);
+  assert.equal(exported.exportedAt, '2026-10-03T12:00:00.000Z');
+  assert.equal(exported.baseURL, 'https://api.openai.com/v1');
+  assert.equal(exported.model, 'gpt-4o');
+  assert.equal(exported.hasKey, true);
+  assert.equal(exported.uiLocale, 'en');
+  assert.equal(exported.theme, 'dark');
+  assert.equal(exported.uiFontScale, 'lg');
+  assert.equal(exported.fabSize, 1.25);
+  assert.equal(exported.widgetVisible, true);
+  assert.equal(exported.showFavoritesOnly, true);
+  assert.deepEqual(exported.fallbacks, [
+    { id: 'fb1', model: 'claude-3-5', hasKey: true, baseURL: 'https://api.anthropic.com' },
+    { id: 'fb2', model: 'gemini-1.5', hasKey: false }
+  ]);
+
+  // Strict recursive secret scanner
+  function scanForSecrets(obj, path = '') {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [k, v] of Object.entries(obj)) {
+      const lower = k.toLowerCase();
+      // Only allowed key field is 'hasKey'
+      if (lower.includes('key') && k !== 'hasKey') {
+        assert.fail(`Secret key detected in exported config: ${path ? path + '.' : ''}${k}`);
+      }
+      if (lower.includes('secret') || lower.includes('token') || lower.includes('password')) {
+        assert.fail(`Secret field detected in exported config: ${path ? path + '.' : ''}${k}`);
+      }
+      if (typeof v === 'string') {
+        assert.ok(!v.includes('sk-secret') && !v.includes('fb-secret'), `Secret value detected in: ${k}`);
+      }
+      if (typeof v === 'object' && v !== null) {
+        scanForSecrets(v, path ? `${path}.${k}` : k);
+      }
+    }
+  }
+
+  scanForSecrets(exported);
+});
+
+test('settings: validateSettings accepts valid v8 settings and rejects invalid showFavoritesOnly', () => {
+  const baseValid = {
+    version: 8,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    showFavoritesOnly: false
+  };
+
+  assert.equal(validateSettings(baseValid).valid, true);
+  assert.equal(validateSettings({ ...baseValid, showFavoritesOnly: true }).valid, true);
+
+  const invalid = validateSettings({
+    ...baseValid,
+    showFavoritesOnly: 'true'
+  });
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.errors.some((e) => e.includes('showFavoritesOnly')));
+});
+
+test('settings: validateSettings accepts valid v7 settings and rejects invalid uiFontScale', () => {
+  const baseValid = {
+    version: 7,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    uiLocale: 'vi',
+    theme: 'dark',
+    uiFontScale: 'md'
+  };
+
+  assert.equal(validateSettings(baseValid).valid, true);
+
+  for (const scale of ['sm', 'md', 'lg']) {
+    assert.equal(validateSettings({ ...baseValid, uiFontScale: scale }).valid, true);
+  }
+
+  const invalidFontScale = validateSettings({
+    ...baseValid,
+    uiFontScale: 'xl'
+  });
+  assert.equal(invalidFontScale.valid, false);
+  assert.ok(invalidFontScale.errors.some((e) => e.includes('uiFontScale')));
+});
+
+test('settings: migrateSettings and validateSettings accept all 7 supported UI locales and reject unknown locales', () => {
+  assert.deepEqual([...SUPPORTED_UI_LOCALES], ['vi', 'en', 'ja', 'ko', 'zh', 'es', 'ru']);
+
+  const baseValid = {
+    version: SETTINGS_VERSION,
+    baseURL: 'http://localhost:8080/v1',
+    model: 'ag/gemini-3.1-pro-low',
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    theme: 'dark',
+    uiFontScale: 'md'
+  };
+
+  // 1. All 7 locales must be accepted by migrateSettings and validateSettings
+  for (const loc of SUPPORTED_UI_LOCALES) {
+    const migrated = migrateSettings({ uiLocale: loc });
+    assert.equal(migrated.uiLocale, loc, `migrateSettings must preserve valid locale "${loc}"`);
+
+    const validated = validateSettings({ ...baseValid, uiLocale: loc });
+    assert.equal(validated.valid, true, `validateSettings must accept valid locale "${loc}"`);
+  }
+
+  // 2. Unknown or corrupt locales must fall back to 'vi' in migrateSettings and be rejected by validateSettings
+  const badLocales = ['fr', 'de', 'pt', 'ar', 'unknown', '', '   ', null, 123, false];
+  for (const bad of badLocales) {
+    const migrated = migrateSettings({ uiLocale: bad });
+    assert.equal(migrated.uiLocale, 'vi', `migrateSettings must fall back to 'vi' for corrupt locale "${bad}"`);
+
+    const validated = validateSettings({ ...baseValid, uiLocale: bad });
+    assert.equal(validated.valid, false, `validateSettings must reject corrupt locale "${bad}"`);
+    assert.ok(
+      validated.errors && validated.errors.some((e) => e.includes('uiLocale')),
+      `validateSettings errors must mention uiLocale for "${bad}"`
+    );
+  }
+});
+

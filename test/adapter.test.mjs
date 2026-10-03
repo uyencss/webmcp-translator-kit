@@ -291,15 +291,27 @@ test('Case 6: Schema and bijection edge cases', async () => {
     const errBadInner = await router.translateBatch({ items });
     assert.equal(errBadInner.error?.code, 'INVALID_SCHEMA');
 
-    // Length mismatch
+    // Length mismatch (WI-20: partial match returns success with partial: true, missingIds: ['i2'])
     fake.setMode('wrong_length');
-    const errLen = await router.translateBatch({ items });
-    assert.equal(errLen.error?.code, 'INVALID_SCHEMA');
+    const resLen = await router.translateBatch({ items });
+    assert.equal(resLen.partial, true);
+    assert.deepEqual(resLen.missingIds, ['i2']);
+    assert.equal(resLen.results?.length, 1);
+    assert.equal(resLen.results?.[0]?.id, 'i1');
 
-    // Missing ID
+    // Missing ID (WI-20: partial match returns success with partial: true, missingIds: ['i1'])
     fake.setMode('missing_id');
-    const errMissingId = await router.translateBatch({ items });
-    assert.equal(errMissingId.error?.code, 'INVALID_SCHEMA');
+    const resMissingId = await router.translateBatch({ items });
+    assert.equal(resMissingId.partial, true);
+    assert.deepEqual(resMissingId.missingIds, ['i1']);
+    assert.equal(resMissingId.results?.length, 1);
+    assert.equal(resMissingId.results?.[0]?.id, 'i2');
+
+    // Zero-match: when 0 items match input -> INVALID_SCHEMA
+    const resZeroMatch = await router.translateBatch({
+      items: [{ id: 'zero-only', revision: 0, text: 'hello' }]
+    });
+    assert.equal(resZeroMatch.error?.code, 'INVALID_SCHEMA');
 
     // Extra ID
     fake.setMode('extra_id');
@@ -630,4 +642,283 @@ test('N5: router.listModels accepts per-call baseURL and apiKey parameters', asy
   } finally {
     await fake.stop();
   }
+});
+
+test('WI-10 (b): retry-bỏ-temperature 1 lần khi gặp HTTP 400', async () => {
+  const requests = [];
+  const mockFetch = async (url, options) => {
+    const bodyStr = options.body;
+    const bodyJson = JSON.parse(bodyStr);
+    requests.push({ url, options, bodyJson });
+
+    if (requests.length === 1) {
+      // First request: verify temperature was sent, respond with HTTP 400
+      assert.equal(bodyJson.temperature, 0.1, 'First request must include temperature');
+      return new Response(JSON.stringify({
+        error: { message: 'temperature is not supported for this model' }
+      }), {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Second request: retry should NOT include temperature
+    assert.equal('temperature' in bodyJson, false, 'Retry request must omit temperature');
+    assert.equal(bodyJson.model, 'do/glm-5.3-flash');
+    assert.ok(Array.isArray(bodyJson.messages));
+
+    const responseContent = JSON.stringify({
+      results: [
+        { id: 'item-1', revision: 1, text: 'Bản dịch thử nghiệm' }
+      ]
+    });
+
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-test',
+      model: 'do/glm-5.3-flash',
+      choices: [{ message: { role: 'assistant', content: responseContent } }]
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  };
+
+  const router = createDirect9Router({
+    baseURL: 'http://router.example.com/v1',
+    apiKey: 'test-key',
+    model: 'do/glm-5.3-flash',
+    fetchImpl: mockFetch,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [{ id: 'item-1', revision: 1, text: 'Test text' }]
+  });
+
+  assert.equal(requests.length, 2, 'Must retry exactly once');
+  assert.ok(res.results, 'Translation should succeed after retry without temperature');
+  assert.equal(res.results[0].text, 'Bản dịch thử nghiệm');
+});
+
+test('WI-10 (b): retry-bỏ-temperature chỉ retry ĐÚNG 1 lần khi vẫn gặp HTTP 400', async () => {
+  let callCount = 0;
+  const bodies = [];
+  const mockFetch = async (url, options) => {
+    callCount++;
+    bodies.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      error: { message: 'Still invalid request' }
+    }), {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  };
+
+  const router = createDirect9Router({
+    baseURL: 'http://router.example.com/v1',
+    apiKey: 'test-key',
+    model: 'do/glm-5.3-flash',
+    fetchImpl: mockFetch,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [{ id: 'item-1', revision: 1, text: 'Test' }]
+  });
+
+  assert.equal(callCount, 2, 'Must retry at most once (total 2 attempts)');
+  assert.equal('temperature' in bodies[0], true, 'Attempt 1 had temperature');
+  assert.equal('temperature' in bodies[1], false, 'Attempt 2 omitted temperature');
+  assert.ok(res.error, 'Must return error after retry fails');
+  assert.equal(res.error.code, 'INVALID_SCHEMA');
+});
+
+test('WI-10 (a): body lỗi provider xuất hiện trong details và schemaErrors khi HTTP 4xx', async () => {
+  const providerErrorJson = JSON.stringify({
+    error: {
+      message: 'Model glm-5.3-flash does not exist or quota exhausted',
+      type: 'invalid_request_error',
+      code: 'model_not_found'
+    }
+  });
+
+  // Test with JSON error body (after single retry when 400)
+  const mockFetchJson = async () => new Response(providerErrorJson, {
+    status: 400,
+    statusText: 'Bad Request',
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const router = createDirect9Router({
+    baseURL: 'http://router.example.com/v1',
+    apiKey: 'test-key',
+    model: 'do/glm-5.3-flash',
+    fetchImpl: mockFetchJson,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [{ id: 'item-1', revision: 1, text: 'Test' }]
+  });
+
+  assert.ok(res.error, 'Expected error response');
+  assert.equal(res.error.code, 'INVALID_SCHEMA');
+  assert.ok(res.error.details, 'Error must contain details');
+  assert.ok(
+    res.error.details.body?.includes('Model glm-5.3-flash does not exist') ||
+    res.error.details.providerBody?.includes('Model glm-5.3-flash does not exist'),
+    'Provider body must appear in details'
+  );
+  assert.ok(
+    res.error.details.schemaErrors.some(e => e.includes('Model glm-5.3-flash does not exist')),
+    'Provider message must appear in schemaErrors'
+  );
+
+  // Test with plain text error body
+  const plainTextError = 'Custom raw error message from 9router gateway';
+  const mockFetchPlain = async () => new Response(plainTextError, {
+    status: 422,
+    statusText: 'Unprocessable Entity',
+    headers: { 'Content-Type': 'text/plain' }
+  });
+
+  const routerPlain = createDirect9Router({
+    baseURL: 'http://router.example.com/v1',
+    apiKey: 'test-key',
+    model: 'do/glm-5.3-flash',
+    fetchImpl: mockFetchPlain,
+    ...fastOptions
+  });
+
+  const resPlain = await routerPlain.translateBatch({
+    items: [{ id: 'item-1', revision: 1, text: 'Test' }]
+  });
+
+  assert.ok(resPlain.error, 'Expected error response');
+  assert.equal(resPlain.error.code, 'INVALID_SCHEMA');
+  assert.ok(resPlain.error.details, 'Error must contain details');
+  assert.equal(resPlain.error.details.body, plainTextError, 'Plain text body must appear in details.body');
+  assert.ok(
+    resPlain.error.details.schemaErrors.some(e => e.includes(plainTextError)),
+    'Plain text error must appear in schemaErrors'
+  );
+});
+
+test('WI-20: merge sau retry khi thiếu item ở lượt đầu', async () => {
+  let callCount = 0;
+  const mockFetch = async (url, opts) => {
+    callCount++;
+    const body = JSON.parse(opts.body);
+    const userMsg = body.messages.find(m => m.role === 'user');
+    const inputItems = JSON.parse(userMsg.content);
+
+    if (callCount === 1) {
+      // First attempt: returns only first item
+      const results = [{ id: inputItems[0].id, revision: inputItems[0].revision, text: `[trans] ${inputItems[0].text}` }];
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ results }) } }],
+        model: 'test-model'
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Retry attempt: inputItems contains only the missing items
+    assert.equal(inputItems.length, 1);
+    assert.equal(inputItems[0].id, 'item-2');
+    const results = [{ id: inputItems[0].id, revision: inputItems[0].revision, text: `[trans] ${inputItems[0].text}` }];
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ results }) } }],
+      model: 'test-model'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const router = createDirect9Router({
+    baseURL: 'http://test.router/v1',
+    apiKey: 'test-key',
+    model: 'ag/gemini-3.1-pro-low',
+    fetchImpl: mockFetch,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [
+      { id: 'item-1', revision: 0, text: 'First' },
+      { id: 'item-2', revision: 0, text: 'Second' }
+    ]
+  });
+
+  assert.equal(callCount, 2, 'Must have made 2 calls (initial + 1 retry)');
+  assert.equal(res.partial, false, 'partial should be false after all items matched in retry');
+  assert.deepEqual(res.missingIds, [], 'missingIds should be empty');
+  assert.equal(res.results.length, 2, 'Should merge results from both passes');
+  assert.equal(res.results[0].id, 'item-1');
+  assert.equal(res.results[1].id, 'item-2');
+  assert.equal(res.results[0].text, '[trans] First');
+  assert.equal(res.results[1].text, '[trans] Second');
+});
+
+test('WI-20: zero-match vẫn trả về lỗi INVALID_SCHEMA', async () => {
+  const mockFetch = async () => {
+    // Return empty results array or non-matching IDs
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ results: [] }) } }],
+      model: 'test-model'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const router = createDirect9Router({
+    baseURL: 'http://test.router/v1',
+    apiKey: 'test-key',
+    model: 'ag/gemini-3.1-pro-low',
+    fetchImpl: mockFetch,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [{ id: 'item-1', revision: 0, text: 'First' }]
+  });
+
+  assert.ok(res.error, 'Must return error object');
+  assert.equal(res.error.code, 'INVALID_SCHEMA');
+});
+
+test('WI-20: abort giữa retry trả về lỗi ABORTED', async () => {
+  let callCount = 0;
+  const ac = new AbortController();
+
+  const mockFetch = async () => {
+    callCount++;
+    if (callCount === 1) {
+      // First attempt: returns partial
+      const results = [{ id: 'item-1', revision: 0, text: 'First translated' }];
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ results }) } }],
+        model: 'test-model'
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Before or during second call, trigger abort
+    ac.abort('aborted_during_retry');
+    throw new DOMException('The operation was aborted', 'AbortError');
+  };
+
+  const router = createDirect9Router({
+    baseURL: 'http://test.router/v1',
+    apiKey: 'test-key',
+    model: 'ag/gemini-3.1-pro-low',
+    fetchImpl: mockFetch,
+    ...fastOptions
+  });
+
+  const res = await router.translateBatch({
+    items: [
+      { id: 'item-1', revision: 0, text: 'First' },
+      { id: 'item-2', revision: 0, text: 'Second' }
+    ],
+    signal: ac.signal
+  });
+
+  assert.ok(res.error, 'Must return error on abort');
+  assert.equal(res.error.code, 'ABORTED');
 });

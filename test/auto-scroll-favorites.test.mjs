@@ -679,7 +679,7 @@ test('popup: stars send the displayed desired state (favorite true|false)', () =
     'primary star must compute desired state from the live bucket');
   assert.ok(primaryBlock.includes('saveFavoriteToggle(scopeKey, curVal, desiredFavorite)'),
     'primary star must send the displayed desired state');
-  assert.ok(primaryBlock.includes('Lỗi cập nhật yêu thích:'), 'primary star must surface the limit error message');
+  assert.ok(primaryBlock.includes('fav_update_error') || primaryBlock.includes('Lỗi cập nhật yêu thích:'), 'primary star must surface the limit error message');
   const fbIdx = popupSrc.indexOf('btnFallbackFav.addEventListener');
   assert.ok(fbIdx > 0, 'missing fallback star control');
   assert.ok(swSrc.includes("return createTypedError('CAP_EXCEEDED', 'Danh sách yêu thích đã đạt tối đa 50 model cho provider này'"),
@@ -715,10 +715,10 @@ test('sw: v4 favorites migration is serialized with a concurrent settings save',
       sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender),
       sw.dispatchMessage({ action: 'SAVE_SETTINGS', settings: { widgetVisible: false } }, popupSender)
     ]);
-    assert.equal(first.settings.version, 5);
+    assert.equal(first.settings.version, 9);
     assert.ok(save?.ok, 'concurrent settings save must succeed');
     const current = await sw.dispatchMessage({ action: 'GET_SETTINGS' }, popupSender);
-    assert.equal(current.settings.version, 5);
+    assert.equal(current.settings.version, 9);
     assert.deepEqual(current.settings.favoriteModelsByBaseURL[PROVIDER_A], ['legacy-favorite']);
     assert.equal(current.settings.widgetVisible, false, 'concurrent partial settings change must survive migration write');
     const writesAfterConcurrentRead = settingsWriteCount;
@@ -1203,8 +1203,8 @@ test('content: auto-start fails closed for missing key/permission and still star
 // ============================================================================
 
 test('popup: footer shows live applied/collected (+failed), keeps polling, never false-completes', () => {
-  assert.ok(popupSrc.includes('Đang theo scroll ${'), 'watching text must embed live applied/collected counts');
-  assert.ok(popupSrc.includes('(lỗi)') || popupSrc.includes('lỗi)'), 'watching text must surface failed count');
+  assert.ok(popupSrc.includes('status_watching_count') || popupSrc.includes('Đang theo scroll ${'), 'watching text must embed live applied/collected counts');
+  assert.ok(popupSrc.includes('status_failed_count') || popupSrc.includes('(lỗi)') || popupSrc.includes('lỗi)'), 'watching text must surface failed count');
   assert.ok(popupSrc.includes("state === 'translated' && data && typeof data.totalCollected === 'number' && data.totalCollected > 0"),
     'completed scroll batches must retain final progress counts');
   assert.ok(popupSrc.includes("state === 'error' && data && data.totalFailed > 0"),
@@ -1267,7 +1267,7 @@ test('popup: fallback star sends an atomic toggle and reports failures', () => {
   assert.ok(handlerBlock.includes('saveFavoriteToggle(scopeKey, curModel, desiredFavorite)'), 'fallback star must use the shared serialized favorite path with displayed desired state');
   assert.ok(handlerBlock.includes('!displayedBucket.includes(curModel)') || handlerBlock.includes('!getFavoritesForKey(scopeKey).includes'),
     'fallback star must compute desired state from the displayed bucket');
-  assert.ok(handlerBlock.includes('Lỗi cập nhật yêu thích:'), 'fallback star must report save failures');
+  assert.ok(handlerBlock.includes('fav_update_error') || handlerBlock.includes('Lỗi cập nhật yêu thích:'), 'fallback star must report save failures');
 
   const toggleIdx = popupSrc.indexOf('function saveFavoriteToggle');
   const toggleEnd = popupSrc.indexOf('\n  async function flushAutosave', toggleIdx);
@@ -1660,7 +1660,9 @@ test('popup: late primary favorite save preserves live URL and inherited fallbac
       return new Promise(resolve => { resolveSave = resolve; });
     },
     renderAllModelDropdowns() {}, setConfigMsg() {}, evaluateActionReadiness() {}, refreshBasePermState() {},
-    configMessageConnect: {}
+    configMessageConnect: {},
+    t: (_loc, key) => key,
+    currentUiLocale: 'vi'
   });
   vm.runInContext(helpers + primary + change + fallback, context);
   const pending = primaryClick();
@@ -1674,4 +1676,154 @@ test('popup: late primary favorite save preserves live URL and inherited fallbac
   assert.equal(writes[0].scope, 'https://provider-a.example/v1', 'original save must target A');
   assert.equal(context.lastFavKey, input.value, 'late A save must not restore displayed scope A');
   assert.equal(writes[1].scope, input.value, 'inherited fallback favorite must target current provider B');
+});
+
+test('content: floating icon animates busy immediately upon auto-start and clears on exit paths', async () => {
+  assert.ok(contentSrc.includes('autoStarting = true'), 'auto-start must set autoStarting when timer is scheduled');
+  assert.ok(contentSrc.includes('setFabBusy(autoStarting || isTranslating || scrollSession.inFlight > 0)'),
+    'updateFabBusy must incorporate autoStarting flag');
+
+  const saved = {};
+  for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+    if (k in globalThis) saved[k] = globalThis[k];
+  }
+
+  try {
+    function makeFakeEl() {
+      const classes = new Set();
+      const el = {
+        style: {}, dataset: {},
+        setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
+        classList: {
+          toggle(cls, force) {
+            if (force === undefined) {
+              if (classes.has(cls)) { classes.delete(cls); return false; }
+              classes.add(cls); return true;
+            }
+            if (force) { classes.add(cls); return true; }
+            classes.delete(cls); return false;
+          },
+          add(cls) { classes.add(cls); },
+          remove(cls) { classes.delete(cls); },
+          contains: (cls) => classes.has(cls)
+        },
+        addEventListener() {}, removeEventListener() {}, appendChild() {},
+        querySelector: (sel) => {
+          if (sel === '#wmt-fab') return fabEl;
+          if (sel === '#wmt-badge') return badgeEl;
+          return makeFakeEl();
+        },
+        querySelectorAll: () => [],
+        setPointerCapture() {}, releasePointerCapture() {}, attachShadow: () => makeFakeEl(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }),
+        textContent: '', innerHTML: '', value: '', checked: false, disabled: false, title: '',
+        focus() {}, click() {}
+      };
+      return el;
+    }
+
+    let fabEl = makeFakeEl();
+    let badgeEl = makeFakeEl();
+    const runtimeHandlers = [];
+    const enabledState = {
+      effective: 'on', siteEnabled: true, tabOverride: null, mode: 'scroll-follow',
+      sourceLanguage: 'auto', targetLanguage: 'vi', model: 'ag/m', widgetVisible: true,
+      position: null, autoStart: true, permission: true, hasKey: true,
+      siteConfig: { origin: 'http://127.0.0.1:8091', mode: 'scroll-follow', autoStart: true, sourceLanguage: null, targetLanguage: null, model: null }
+    };
+    let curState = { ...enabledState };
+
+    globalThis.chrome = {
+      runtime: {
+        id: 'test-ext-id', lastError: null,
+        sendMessage: (msg, cb) => {
+          if (msg?.action === 'WIDGET_GET_STATE') {
+            if (typeof cb === 'function') cb({ ...curState });
+          } else if (typeof cb === 'function') cb({ ok: true });
+        },
+        onMessage: { addListener: (h) => runtimeHandlers.push(h) }
+      }
+    };
+    const win = {
+      innerHeight: 800, innerWidth: 1200, top: null,
+      addEventListener() {}, removeEventListener() {},
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', overflowY: 'visible' }),
+      scrollTo() {}
+    };
+    win.top = win;
+    globalThis.window = win;
+    globalThis.document = {
+      documentElement: makeFakeEl(), body: null,
+      getElementById: () => null, createElement: () => makeFakeEl(),
+      createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [],
+      addEventListener() {}, removeEventListener() {}
+    };
+    globalThis.location = { protocol: 'http:' };
+    globalThis.NodeFilter = { SHOW_TEXT: 4 };
+    globalThis.requestAnimationFrame = () => 0;
+    globalThis.cancelAnimationFrame = () => {};
+    globalThis.setInterval = () => 0;
+    class FakeObserver { constructor() {} observe() {} unobserve() {} disconnect() {} }
+    globalThis.IntersectionObserver = FakeObserver;
+    globalThis.MutationObserver = FakeObserver;
+
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom = win.__translatorDom;
+    assert.ok(dom, 'content must expose __translatorDom');
+
+    // 1. Immediately during the settle window (before timer fires), floating icon must animate busy
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(dom.isAutoStarting(), true, 'autoStarting must be true during settle window');
+    assert.equal(dom.isFabBusy(), true, 'fab busy must be true during auto-start schedule');
+    assert.equal(fabEl.classList.contains('busy'), true, '#wmt-fab must have busy class during auto-start schedule');
+    assert.equal(badgeEl.classList.contains('busy'), true, '#wmt-badge must have busy class during auto-start schedule');
+
+    // 2. Cancellation via restore() must immediately clear autoStarting and busy
+    dom.restore();
+    assert.equal(dom.isAutoStarting(), false, 'autoStarting must clear on restore()');
+    assert.equal(dom.isFabBusy(), false, 'fab busy must clear on restore()');
+    assert.equal(fabEl.classList.contains('busy'), false, '#wmt-fab must remove busy class on restore()');
+    assert.equal(badgeEl.classList.contains('busy'), false, '#wmt-badge must remove busy class on restore()');
+
+    // 3. Reset and test WIDGET_STATE_CHANGED cancellation
+    fabEl = makeFakeEl();
+    badgeEl = makeFakeEl();
+    curState = { ...enabledState };
+    win.__webMcpTranslatorInjected = false;
+    delete globalThis.window.__webMcpTranslatorInjected;
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom2 = win.__translatorDom;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(dom2.isAutoStarting(), true, 'second instance must set autoStarting');
+    assert.equal(dom2.isFabBusy(), true, 'second instance must set fab busy');
+
+    // Push WIDGET_STATE_CHANGED disabling auto-start
+    curState = { ...enabledState, effective: 'off', autoStart: false };
+    for (const handler of [...runtimeHandlers]) {
+      try { handler({ action: 'WIDGET_STATE_CHANGED', ...curState }, {}, () => {}); } catch {}
+    }
+    assert.equal(dom2.isAutoStarting(), false, 'autoStarting must clear on WIDGET_STATE_CHANGED');
+    assert.equal(dom2.isFabBusy(), false, 'fab busy must clear on WIDGET_STATE_CHANGED');
+    assert.equal(fabEl.classList.contains('busy'), false, '#wmt-fab must remove busy on WIDGET_STATE_CHANGED');
+    assert.equal(badgeEl.classList.contains('busy'), false, '#wmt-badge must remove busy on WIDGET_STATE_CHANGED');
+
+    // 4. Reset and test natural timer fire handover
+    runtimeHandlers.length = 0;
+    fabEl = makeFakeEl();
+    badgeEl = makeFakeEl();
+    curState = { ...enabledState };
+    win.__webMcpTranslatorInjected = false;
+    delete globalThis.window.__webMcpTranslatorInjected;
+    vm.runInThisContext(contentSrc, { filename: 'content.js' });
+    const dom3 = win.__translatorDom;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(dom3.isAutoStarting(), true, 'third instance must set autoStarting');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(dom3.isAutoStarting(), false, 'autoStarting must clear when timer fires and logic hands over');
+  } finally {
+    for (const k of Object.keys(saved)) globalThis[k] = saved[k];
+    for (const k of ['window', 'document', 'location', 'chrome', 'NodeFilter', 'requestAnimationFrame', 'cancelAnimationFrame', 'setInterval', 'IntersectionObserver', 'MutationObserver']) {
+      if (!(k in saved)) delete globalThis[k];
+    }
+  }
 });
