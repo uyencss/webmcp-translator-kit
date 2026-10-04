@@ -77,17 +77,7 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Data usage:** chắc chắn cần đánh giá `Website content`; API key người dùng nhập cần đánh giá `Authentication information`, kể cả khi chỉ lưu cục bộ. Vì extension có thể đọc văn bản trang bất kỳ được cấp quyền, trang đó có thể chứa PII, liên lạc cá nhân, sức khỏe hoặc tài chính. Chốt chính xác checkbox với phạm vi tính năng/data map và hướng dẫn của Dashboard; **không** tích mặc định “không thu thập dữ liệu”. Chỉ chứng nhận ba mục Limited Use khi hành vi, policy và bên nhận đã được xác minh. Privacy policy URL công khai là gate bắt buộc.
 
-**Test instructions cho Reviewer (Cập nhật WI-51 — Dùng Loopback 9router & Test Key):**
-Form Dashboard cung cấp các trường `Username`, `Password` và `Additional instructions` (tối đa 500 ký tự). Nhằm tạo điều kiện cho reviewer kiểm tra toàn diện chức năng mà không bắt buộc phải có API key thương mại trả phí thật, quy trình kiểm thử hỗ trợ trực tiếp local loopback fixture hoặc proxy 9router:
-
-- Điền vào Dashboard:
-  - `Username`: `http://127.0.0.1:8080/v1` (hoặc HTTPS review proxy nếu có)
-  - `Password`: `test-key` (khóa kiểm thử, không yêu cầu thanh toán hay key thật)
-- Nội dung `Additional instructions` (dưới 500 ký tự):
-  > 1. Launch local test proxy (e.g. 9router at http://127.0.0.1:8080/v1) or use provided HTTPS test endpoint.
-  > 2. Open extension popup. An onboarding modal appears explaining data collection (page text sent to configured endpoint only for translation). Click "Đồng ý" (Agree).
-  > 3. Go to Cấu hình (Menu > Cấu hình). Base URL accepts http://127.0.0.1:* (loopback) or any https:// URL. Remote insecure http:// is blocked. Enter API key 'test-key'.
-  > 4. Open any article, click 'Dịch trang' to translate, and 'Khôi phục' to restore. Auto-translate can be toggled per site.
+**Test instructions đã lưu trong Dashboard (477/500 ký tự):** Username và Password để trống vì chưa provision test endpoint/key công khai. Additional instructions: “Accept the first-run data-use notice. Configure an OpenAI-compatible endpoint, model, and API key in Settings > Connection; no credentials ship with the extension. To test, use a test HTTPS endpoint/key, open a non-sensitive page, choose Translate page, then Restore. The floating widget supports Follow scroll and Translate entire page; Auto enables per-site translation. SSE endpoints show completed passages progressively; JSON also works. HTTP is allowed only for loopback.”
 
 ## 4. Ảnh Store tạm và gate cho bản nộp
 
