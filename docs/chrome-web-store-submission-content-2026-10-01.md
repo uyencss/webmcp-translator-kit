@@ -79,70 +79,20 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Test instructions đã lưu trong Dashboard (477/500 ký tự):** Username và Password để trống vì chưa provision test endpoint/key công khai. Additional instructions: “Accept the first-run data-use notice. Configure an OpenAI-compatible endpoint, model, and API key in Settings > Connection; no credentials ship with the extension. To test, use a test HTTPS endpoint/key, open a non-sensitive page, choose Translate page, then Restore. The floating widget supports Follow scroll and Translate entire page; Auto enables per-site translation. SSE endpoints show completed passages progressively; JSON also works. HTTP is allowed only for loopback.”
 
-## 4. Ảnh Store tạm và gate cho bản nộp
+## 4. Store assets đang sử dụng
 
-**Bộ v5 — UI tiếng Việt:** đã quan sát trực tiếp UI đang chạy trong Chrome và dựng bốn ảnh, vẫn giữ hai section Trung–Việt cao bằng nhau bên trái:
+**Bộ v7 — English UI, Chinese → English, package v0.1.1:** bốn mockup 1280×800 JPEG RGB đã tải lên item và hiển thị trong listing Pending Review. Dashboard hiện có bốn ảnh, dưới giới hạn năm ảnh.
 
-1. [Dịch](./store-assets/translator-store-v5-01-translate-1280x800.jpg).
-2. [Tự động theo site](./store-assets/translator-store-v5-02-auto-site-1280x800.jpg).
-3. [Cấu hình → Giao diện](./store-assets/translator-store-v5-03-appearance-1280x800.jpg).
-4. [Floating widget có chọn model và icon chấm xanh](./store-assets/translator-store-v5-04-floating-model-1280x800.jpg).
+1. [Translate popup](./store-assets/translator-store-v7-en-zh-01-translate-1280x800.jpg)
+2. [Auto-translate site](./store-assets/translator-store-v7-en-zh-02-auto-site-1280x800.jpg)
+3. [Settings → Appearance](./store-assets/translator-store-v7-en-zh-03-appearance-1280x800.jpg)
+4. [Floating widget](./store-assets/translator-store-v7-en-zh-04-floating-widget-1280x800.jpg)
 
-Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và ghi chú UI hiện tại](./store-assets/translator-store-v5-prompts.md). Bộ v5 thay bộ v4 làm bản nháp hiện hành; các phiên bản cũ dưới đây được giữ làm lịch sử. Đây vẫn là ảnh dựng cần đối chiếu bản release trước nộp.
+Đây là mockup tạo bằng ImageGen, không phải capture. Các label và controls được đối chiếu với source v0.1.1; không có API key hoặc lỗi giả. [Prompt set và ghi chú](./store-assets/translator-store-v7-en-zh-prompts.md). Các phiên bản ảnh v1–v6 đã bị loại bỏ để tránh nhầm với bản nộp.
 
-**Bộ v6 — English UI, Chinese → English (lịch sử):** bốn ảnh dùng bố cục so sánh hai phần bằng nhau; bộ này vẫn hiển thị v0.1.0 và trạng thái `32 errors`, không dùng cho listing hiện tại.
+**Fixture kiểm thử SSE cục bộ:** source đã chuyển ra khỏi thư mục media thành [`demo-page.html`](./fixtures/translator-store-demo/demo-page.html) và [`demo-server.mjs`](./fixtures/translator-store-demo/demo-server.mjs). Chạy `node docs/fixtures/translator-store-demo/demo-server.mjs`, mở `http://127.0.0.1:8097/`, rồi cấu hình Base URL `http://127.0.0.1:8097/v1` với key giả `demo-only`. Fixture chỉ kiểm tra UI/progressive flow, không phải reviewer endpoint và không được đưa vào extension ZIP.
 
-1. [Translate](./store-assets/translator-store-v6-en-zh-01-translate-1280x800.jpg).
-2. [Auto-translate site](./store-assets/translator-store-v6-en-zh-02-auto-site-1280x800.jpg).
-3. [Config → Appearance](./store-assets/translator-store-v6-en-zh-03-config-appearance-1280x800.jpg).
-4. [Floating widget with model selector](./store-assets/translator-store-v6-en-zh-04-floating-model-1280x800.jpg).
-
-Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và nội dung tiếng Anh](./store-assets/translator-store-v6-en-zh-prompts.md). Bộ này được giữ làm lịch sử.
-
-**Bộ v7 dùng cho draft v0.1.1 — English UI, Chinese → English:** bốn mockup tiếng Anh mới được tạo theo popup hiện tại (chỉ hai tab Translate/Auto; Config mở trong Settings modal) và floating widget. Tất cả là JPEG RGB 1280×800 không alpha, không chứa API key hay lỗi dịch.
-
-1. [Translate](./store-assets/translator-store-v7-en-zh-01-translate-1280x800.jpg).
-2. [Auto-translate site](./store-assets/translator-store-v7-en-zh-02-auto-site-1280x800.jpg).
-3. [Settings → Appearance](./store-assets/translator-store-v7-en-zh-03-appearance-1280x800.jpg).
-4. [Floating widget](./store-assets/translator-store-v7-en-zh-04-floating-widget-1280x800.jpg).
-
-Dashboard cho phép tối đa 5 screenshots; dùng bốn ảnh v7 cho listing English. Đây là mockup tạo bằng ImageGen, không phải capture. Các label/tab/progress được đối chiếu với source v0.1.1; trước khi submit, preview lại sau upload và giữ nội dung/label hiện trên màn hình đúng với tính năng thực.
-
-Theo yêu cầu mới nhất của owner, đã tạo lại **hai mockup tạm bằng ImageGen** với bố cục mới: bên trái chia hai section cao bằng nhau, trên là tiếng Trung và dưới là bản dịch tiếng Việt tương ứng; chữ rõ và placeholder nhỏ đơn giản. Bên phải là popup hoặc floating widget/icon, giữ vai trò chủ thể cùng văn bản dịch.
-
-- **Ảnh 1 — popup nổi bật:** [JPEG 1280×800](./store-assets/translator-store-popup-v4-comparison-1280x800.jpg), chỉ có UI popup extension, không có floating widget/icon. SHA-256 `3b7673e978f6ed18b01f01d8af36669191d39ea5c4d6ac1c3780cec01dcab91d`.
-- **Ảnh 2 — floating icon nổi bật:** [JPEG 1280×800](./store-assets/translator-store-floating-v4-comparison-1280x800.jpg), có icon tròn xanh ở góc phải dưới và panel nổi, không có popup extension. SHA-256 `b42d6195166f80878209765a82ce78b48d3c4750d70c68c85e7d861172879fa2`.
-- [Brief tạo ảnh v4](./store-assets/translator-store-v4-brief.md). [Bộ v2 chữ rõ](./store-assets/translator-store-v2-prompts.md) và [v1 gộp popup với widget](./store-assets/translator-store-mockup-v1-1280x800.jpg) được giữ làm tham khảo.
-
-![Mockup 1: popup WebMCP Translator, so sánh Trung–Việt](./store-assets/translator-store-popup-v4-comparison-1280x800.jpg)
-
-![Mockup 2: floating icon và widget WebMCP Translator, so sánh Trung–Việt](./store-assets/translator-store-floating-v4-comparison-1280x800.jpg)
-
-**Trạng thái: mockup để duyệt nội bộ.** Hai ảnh là ảnh dựng, không phải capture từ ZIP release; trang mẫu có ảnh và câu chữ do ImageGen tạo. Popup/widget/icon được mô phỏng theo ảnh người dùng cung cấp và phản ánh chức năng dịch dần hiện có, nhưng một số chi tiết hiển thị có thể khác bản extension cuối. Trước khi upload/Submit for Review, so từng thành phần với bản chạy thật, sửa hoặc thay ảnh nếu khác đáng kể; [Listing Requirements](https://developer.chrome.com/docs/webstore/program-policies/listing-requirements) đòi listing chính xác, không gây hiểu lầm.
-
-**Ảnh tham chiếu SSE:** người dùng cung cấp [`sse-progress-reference-2026-10-01.png`](./store-assets/sse-progress-reference-2026-10-01.png), SHA-256 `f8d6774350a0c6aeb3774e240d2816aebfe24931af2d4ded9b8dfe39b0834067`. Ảnh gốc là PNG 2916×1714 RGBA, 894.386 byte. Popup và widget hiện rõ; widget báo `Đang dịch 16/110 nodes`, vài đoạn đầu đã là tiếng Việt trong khi các đoạn sau vẫn là tiếng Trung. Ảnh chứng minh **trạng thái hiển thị dần**, còn việc transport đúng SSE được xác nhận riêng bằng mã nguồn và test. Không thấy API key trong ảnh.
-
-Ảnh tham chiếu **không upload trực tiếp**: sai kích thước, có kênh alpha, đang chụp nội dung tiểu thuyết bên thứ ba và chưa gắn được với ZIP hash của release candidate. Source có `icon128.png` nhưng đó là **Store icon**, không thay thế screenshot. Form Dashboard bắt buộc ít nhất một ảnh 1280×800 hoặc 640×400, JPEG hoặc PNG 24-bit không alpha. Công cụ trình duyệt từ chối thao tác xuất ảnh capture thử qua URL `data:` theo browser security policy; ảnh mockup trên được tạo bằng công cụ ImageGen riêng theo yêu cầu của owner, không dùng đường vòng để trích xuất capture đó.
-
-Đã thử giao diện thật với `extension/dist` và trang minh họa [`demo-page.html`](./store-assets/demo-page.html) qua local SSE fixture [`demo-server.mjs`](./store-assets/demo-server.mjs): trang đã hiển thị các đoạn tiếng Việt, widget bật/tắt và khôi phục xuất hiện. Fixture dùng **bản dịch định sẵn** để kiểm tra UI, không đánh giá chất lượng model thương mại. Bản unpacked đã được gỡ khỏi Chrome profile `hieu2906090` sau khi thử.
-
-Để tái hiện trong môi trường thử nghiệm cục bộ: chạy `node docs/store-assets/demo-server.mjs`, mở `http://127.0.0.1:8097/`, đặt Base URL `http://127.0.0.1:8097/v1` và key giả `demo-only`. Đây là HTTP loopback dành riêng cho fixture, **không phải** endpoint công khai cho Chrome reviewer hoặc cấu hình khuyến nghị cho dữ liệu thật. Không đưa `demo-server.mjs` vào ZIP extension.
-
-Kịch bản tối thiểu cho **Screenshot 1**:
-
-1. Chốt ZIP candidate và cài đúng bản đó vào Chrome profile kiểm thử. Dùng trang minh họa ở trên hoặc một trang công khai được phép sử dụng, không có thông tin cá nhân, giao diện rõ ràng ở kích thước 1280×800.
-2. Dịch trang bằng SSE-capable test provider; chụp lúc có kết quả dịch thật và trạng thái extension dễ nhận ra (popup hoặc widget). Không chụp API key, URL nội bộ, tab Dashboard, DevTools hay lỗi.
-3. Kiểm tra screenshot phản ánh đúng UI bản nộp, văn bản đọc được, không chứa claim chưa xác minh; xuất JPEG hoặc PNG RGB không alpha ở đúng 1280×800 (hoặc 640×400), lưu vào `docs/store-assets/` và ghi ZIP hash cùng ngày chụp.
-
-Nếu cần **ảnh 3**, có thể cho thấy thiết lập `Tự động` theo site và lựa chọn bật/tắt; **ảnh 4** có thể cho thấy `Khôi phục` sau dịch. Các ảnh bổ sung chỉ cần nếu rõ chức năng hơn hai ảnh trên. Nếu dựng tiếp bằng AI, chỉ dùng chi tiết UI/tính năng đã kiểm chứng và đánh dấu mockup trong docs cho đến khi được đối chiếu với release candidate.
-
-### Gate cho ảnh và copy
-
-- [x] Đã có hai mockup tạm 1280×800 JPG không alpha: popup riêng và floating icon/widget riêng.
-- [ ] Preview bốn mockup v7 trong Dashboard sau upload; xác nhận không có chi tiết sai, claim quá mức hoặc hình ảnh không đúng trải nghiệm người dùng trước submit.
-- [ ] Ảnh không chứa credentials, tên cá nhân, dữ liệu nhạy cảm hoặc nội dung có bản quyền chưa được phép dùng quảng bá.
-- [ ] Dòng “xuất hiện dần” đã được quan sát trên UI với SSE provider thực và test SSE ở cùng tree xanh; nếu không, bỏ claim streaming khỏi Description và dùng screenshot chỉ thể hiện bản dịch hoàn tất.
-- [ ] Description, manifest, Privacy fields, privacy policy và Test instructions cùng nói đúng về endpoint, key, fallback và auto mode.
+Screenshot reference cũ đã loại khỏi package; hành vi SSE được kiểm tra bằng test suite và source contract thay vì giữ ảnh có nội dung trang bên thứ ba.
 
 ## 5. Nguồn
 
