@@ -38,7 +38,7 @@
           <a class="button button-dark" href="#data">See what is processed <span aria-hidden="true">↓</span></a>
           <a class="text-link" href="#choices">Review your controls <span aria-hidden="true">↘</span></a>
         </div>
-        <p class="policy-meta">Applies to version 0.1.0 <span aria-hidden="true">·</span> Last updated October 4, 2026</p>
+        <p class="policy-meta">Applies to version 0.1.1 <span aria-hidden="true">·</span> Last updated October 4, 2026</p>
       </div>
       <div class="hero-visual" aria-hidden="true">
         <div class="visual-orbit"></div>
@@ -164,7 +164,15 @@
           <summary>What the extension processes</summary>
           <div class="details-copy">
             <p>The extension reads eligible text nodes from a webpage when you request translation or have enabled translation for that site. It avoids form inputs, password fields, editable content, hidden elements, and the extension's own widget. Page text may still include personal, financial, health, or private information.</p>
+            <p>To support translation across websites, the manifest declares host access for HTTP and HTTPS pages and the packaged content script is injected on those pages. Chrome may show this broad host access during installation. Injection alone does not send page text: eligible text is read only when you start a translation or have enabled auto-translation for that site.</p>
             <p>Translation requests include the selected text, source and target language instructions, the model name, and request identifiers used to match results to page passages. Model discovery requests go to the Base URL you configure and use its API key.</p>
+          </div>
+        </details>
+        <details open>
+          <summary>Consent before translation</summary>
+          <div class="details-copy">
+            <p>Before the first model lookup or translation, the extension asks you to review its data-use disclosure and choose Agree or Decline. Agree is stored in the extension settings for this browser profile. If you decline, or later revoke consent in the extension, new model and translation requests are blocked. Existing requests are cancelled as the revocation is applied.</p>
+            <p>The disclosure describes page text and language/model instructions sent to your configured endpoint, possible forwarding by that endpoint, use of API keys in authorization headers, local cache behavior, broad HTTP/HTTPS script access, and the limits of loopback HTTP. The extension shows the disclosure again when its data-use version changes.</p>
           </div>
         </details>
         <details open>
@@ -178,6 +186,7 @@
           <summary>Storage and retention</summary>
           <div class="details-copy">
             <p>Settings, enabled-site preferences, endpoint configuration, and API keys are stored in Chrome's local extension storage for your browser profile. The extension limits key access to trusted extension contexts; it does not claim to encrypt these values itself.</p>
+            <p>Configuration export is user initiated. Its option to include API keys is enabled by default until you change it, so review that setting and the downloaded file before sharing an export.</p>
             <p>If translation caching is enabled, source and translated text may remain in the local cache for up to 7 days and within a 2.5 MiB cap. Entries may be removed sooner to make room. Temporary tab state, rate-limit state, and operational diagnostics use Chrome session storage and are cleared with the browser session.</p>
             <p>Retention by your configured endpoint or any upstream provider is controlled by those services, not by the extension publisher. Check their policies and configuration for details.</p>
           </div>
@@ -185,14 +194,14 @@
         <details open id="choices">
           <summary>Your choices and deletion</summary>
           <div class="details-copy">
-            <p>Choose which sites can be translated, turn off auto-translation for a site, remove saved keys in the Connect settings, and disable translation caching in Config. You can also revoke the site's Chrome permission. Uninstalling the extension removes its Chrome extension storage for that profile.</p>
+            <p>Choose which sites are enabled for automatic translation, turn off auto-translation for a site, decline or revoke data consent, remove saved keys in the Connect settings, and disable translation caching in Config. You can also revoke Chrome site access. Uninstalling the extension removes its Chrome extension storage for that profile.</p>
             <p>Turning caching off prevents new translation results from being added to the cache. Existing entries expire within 7 days or may be evicted earlier. Data already sent to an endpoint must be handled through that provider's deletion and retention controls.</p>
           </div>
         </details>
         <details open>
           <summary>Network security</summary>
           <div class="details-copy">
-            <p>Version 0.1.0 accepts both HTTP and HTTPS Base URLs. HTTPS protects requests in transit. A remote HTTP endpoint does not provide TLS protection and could expose page text and the API key to parties on the network. Use HTTPS for remote endpoints; only use HTTP for a trusted service on your own device.</p>
+            <p>Version 0.1.1 requires HTTPS for remote endpoints and blocks remote HTTP before sending page text or API keys. HTTP is allowed only for loopback addresses on this device, such as 127.0.0.1 or localhost; loopback HTTP is not protected by TLS. Redirects from configured endpoints are rejected rather than followed.</p>
           </div>
         </details>
         <details open>
@@ -229,7 +238,7 @@
       <svg viewBox="0 0 36 36" aria-hidden="true"><path d="M5 9h18M5 18h12M5 27h18"/><path d="m23 5 8 13-8 13M17 13l-4 5 4 5"/></svg>
       <span>WebMCP <strong>Translator</strong></span>
     </a>
-    <p>Privacy policy for version 0.1.0 · Revised October 4, 2026</p>
+    <p>Privacy policy for version 0.1.1 · Revised October 4, 2026</p>
     <a href="https://github.com/uyencss/webmcp-translator-kit">Project repository <span aria-hidden="true">↗</span></a>
   </footer>
 </body>
