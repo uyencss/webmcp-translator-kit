@@ -18,7 +18,7 @@ Ngày kiểm tra Dashboard: 2026-10-01. Tab được người dùng cung cấp t
 
 Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình từng quyền (mỗi ô 1.000 ký tự), khai remote code, data usage categories, ba chứng nhận Limited Use, Privacy policy URL. Tab **Test instructions** có Username và Password (mỗi ô 100 ký tự), Additional instructions (500 ký tự). Có thể dùng Username làm Base URL và Password làm API key **chỉ khi** đã cấp riêng một endpoint/key thử ổn định cho reviewer; không đưa key thật vào tài liệu này.
 
-**Cập nhật 2026-10-04:** privacy policy cho item Translator đã được publish tại [https://uyencss.github.io/webmcp-translator-kit/](https://uyencss.github.io/webmcp-translator-kit/) bằng GitHub Pages và URL đã được lưu trong Privacy tab của draft. Đây là trang tĩnh riêng, không yêu cầu website sản phẩm đầy đủ. Dashboard vẫn yêu cầu chứng nhận data usage; chỉ hoàn thành sau khi disclosure/consent trong extension và policy khớp với hành vi thực tế.
+**Cập nhật 2026-10-04:** privacy policy cho item Translator đã được publish tại [https://uyencss.github.io/webmcp-translator-kit/](https://uyencss.github.io/webmcp-translator-kit/) bằng GitHub Pages; commit `2b438f9` bổ sung cam kết Limited Use công khai. URL đã được lưu trong Privacy tab của draft. Đây là trang tĩnh riêng, không yêu cầu website sản phẩm đầy đủ.
 
 ## 2. Bản nháp nội dung Store listing
 
@@ -28,22 +28,19 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 Đây là đề xuất sửa manifest, **chưa phải giá trị đã có trong ZIP**. Trước khi thay, kiểm tra tên/ID đã được tích hợp khác dùng và version release.
 
-**Description để dán vào Store Listing (tiếng Việt):**
+**English description for the current English (United States) listing:**
 
-> WebMCP Translator giúp bạn dịch văn bản trên trang web sang tiếng Việt hoặc ngôn ngữ đích đã chọn. Bạn tự cung cấp Base URL của dịch vụ AI tương thích OpenAI và API key; extension không kèm tài khoản hay hạn mức dịch.
+> Translate eligible text on web pages you choose into a selected language with an OpenAI-compatible endpoint you configure. Restore the original page text, translate as you scroll, or enable automatic translation for selected sites.
 >
-> Cách dùng:
-> 1. Mở tab Kết nối, nhập Base URL và API key, rồi chọn model.
-> 2. Mở trang cần dịch và bấm “Dịch trang”. Extension xin quyền truy cập trang đó và kết nối tới Base URL bạn đã chọn.
-> 3. Bấm “Khôi phục” để trả lại văn bản gốc. Bạn có thể cấu hình riêng các trang muốn tự dịch và tắt tính năng này bất cứ lúc nào.
+> Configure a Base URL, API key, and model in Settings. Then open a page and choose **Translate page**, or enable auto-translation for that site. Use **Restore** to return the original page text. When your endpoint supports Server-Sent Events (SSE), completed passages can appear progressively; standard JSON responses are also supported.
 >
-> Khi dịch vụ AI hỗ trợ phản hồi dạng stream, các đoạn dịch hoàn chỉnh có thể xuất hiện dần trong lúc xử lý. Với phản hồi JSON thông thường, kết quả được hiển thị sau khi dịch vụ trả xong. Tốc độ và chất lượng phụ thuộc vào endpoint và model bạn chọn.
+> **Data and permissions:** The packaged content script is injected on HTTP and HTTPS pages so the extension can support translation on websites you choose. It reads eligible text only when you start translation or have enabled auto-translation for that site. It skips form controls, password fields, editable content, hidden elements, and its own widget. Page text may still contain personal or sensitive information.
 >
-> Quyền riêng tư: Extension chỉ đọc văn bản đủ điều kiện khi bạn bắt đầu dịch hoặc bật tự dịch cho site. Văn bản có thể được gửi đến endpoint chính hoặc endpoint dự phòng do bạn cấu hình; nhà vận hành endpoint có thể chuyển tiếp đến nhà cung cấp AI. API key và tùy chọn được lưu cục bộ; key đang dùng được gửi trong header Authorization khi gọi model hoặc dịch. Content script được inject trên các trang HTTP(S), nhưng chỉ đọc văn bản khi bạn yêu cầu dịch hoặc bật tự dịch. Cache tùy chọn lưu văn bản nguồn và bản dịch cục bộ tối đa 7 ngày, tối đa 2.5 MiB. Xem Privacy Policy để biết chi tiết về dữ liệu, bên nhận và cách xóa.
+> Eligible page text and language/model instructions are sent to the Base URL you configure. A configured fallback may receive text when it is used. Endpoint operators may pass requests to upstream AI providers under their own terms. Your API keys and settings are stored in Chrome extension storage on your device; the active key is sent in an Authorization header to the configured endpoint for model discovery and translation. The extension publisher does not receive page text or API keys through an extension-owned server.
 >
-> Extension không dịch ô nhập liệu, mật khẩu hoặc vùng văn bản đang chỉnh sửa. Tự dịch chỉ chạy trên các site bạn đã thêm vào danh sách tự dịch. Cần Chrome và dịch vụ AI/API key riêng để sử dụng.
+> Remote endpoints must use HTTPS. HTTP is allowed only for loopback services on your device and is not protected by TLS. If enabled, the local cache can retain source and translated text for up to 7 days, capped at 2.5 MiB. You can disable caching in Config. You need Chrome and your own compatible endpoint and API key; the extension does not provide an AI service or credentials.
 
-**Điều kiện trước khi dùng copy:** sửa xong disclosure/consent và endpoint HTTPS/loopback trong kế hoạch; xác minh mọi câu với ZIP cuối cùng; có Privacy Policy công khai và reviewer test endpoint. Câu “không dịch ô nhập liệu…” được hỗ trợ bởi `content.js:90-114`, nhưng vẫn phải chạy negative test trên build cuối. Câu stream được hỗ trợ bởi `adapter/direct9router.mjs:350-405,554-724`, `sw.js:1446-1460`, `content.js:1823-1865`; kiểm tra real UI trước khi đưa vào listing cuối.
+**Kiểm tra trước submit:** description này mô tả quyền host rộng và static injection đúng theo manifest; đối chiếu lại với ZIP upload. Chỉ dùng câu về SSE khi endpoint reviewer có thể thử hoặc test instructions giải thích rõ điều kiện hỗ trợ.
 
 ## 3. Nội dung chuẩn bị cho Privacy và Test instructions
 
@@ -103,14 +100,23 @@ Form Dashboard cung cấp các trường `Username`, `Password` và `Additional 
 
 Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và ghi chú UI hiện tại](./store-assets/translator-store-v5-prompts.md). Bộ v5 thay bộ v4 làm bản nháp hiện hành; các phiên bản cũ dưới đây được giữ làm lịch sử. Đây vẫn là ảnh dựng cần đối chiếu bản release trước nộp.
 
-**Bộ v6 hiện hành — English UI, Chinese → English:** bốn ảnh dùng bố cục so sánh hai phần bằng nhau; toàn bộ UI extension bằng tiếng Anh, gồm target `English (en)`:
+**Bộ v6 — English UI, Chinese → English (lịch sử):** bốn ảnh dùng bố cục so sánh hai phần bằng nhau; bộ này vẫn hiển thị v0.1.0 và trạng thái `32 errors`, không dùng cho listing hiện tại.
 
 1. [Translate](./store-assets/translator-store-v6-en-zh-01-translate-1280x800.jpg).
 2. [Auto-translate site](./store-assets/translator-store-v6-en-zh-02-auto-site-1280x800.jpg).
 3. [Config → Appearance](./store-assets/translator-store-v6-en-zh-03-config-appearance-1280x800.jpg).
 4. [Floating widget with model selector](./store-assets/translator-store-v6-en-zh-04-floating-model-1280x800.jpg).
 
-Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và nội dung tiếng Anh đầy đủ](./store-assets/translator-store-v6-en-zh-prompts.md). Bộ v5 tiếng Việt vẫn được giữ để dùng cùng bốn ảnh English này; tổng cộng tám ảnh như owner yêu cầu. Đây là mockup dựng, cần đối chiếu với bản release cuối trước khi nộp.
+Tất cả là JPEG RGB 1280×800 không alpha. [Prompt và nội dung tiếng Anh](./store-assets/translator-store-v6-en-zh-prompts.md). Bộ này được giữ làm lịch sử.
+
+**Bộ v7 dùng cho draft v0.1.1 — English UI, Chinese → English:** bốn mockup tiếng Anh mới được tạo theo popup hiện tại (chỉ hai tab Translate/Auto; Config mở trong Settings modal) và floating widget. Tất cả là JPEG RGB 1280×800 không alpha, không chứa API key hay lỗi dịch.
+
+1. [Translate](./store-assets/translator-store-v7-en-zh-01-translate-1280x800.jpg).
+2. [Auto-translate site](./store-assets/translator-store-v7-en-zh-02-auto-site-1280x800.jpg).
+3. [Settings → Appearance](./store-assets/translator-store-v7-en-zh-03-appearance-1280x800.jpg).
+4. [Floating widget](./store-assets/translator-store-v7-en-zh-04-floating-widget-1280x800.jpg).
+
+Dashboard cho phép tối đa 5 screenshots; dùng bốn ảnh v7 cho listing English. Đây là mockup tạo bằng ImageGen, không phải capture. Các label/tab/progress được đối chiếu với source v0.1.1; trước khi submit, preview lại sau upload và giữ nội dung/label hiện trên màn hình đúng với tính năng thực.
 
 Theo yêu cầu mới nhất của owner, đã tạo lại **hai mockup tạm bằng ImageGen** với bố cục mới: bên trái chia hai section cao bằng nhau, trên là tiếng Trung và dưới là bản dịch tiếng Việt tương ứng; chữ rõ và placeholder nhỏ đơn giản. Bên phải là popup hoặc floating widget/icon, giữ vai trò chủ thể cùng văn bản dịch.
 
@@ -143,7 +149,7 @@ Nếu cần **ảnh 3**, có thể cho thấy thiết lập `Tự động` theo 
 ### Gate cho ảnh và copy
 
 - [x] Đã có hai mockup tạm 1280×800 JPG không alpha: popup riêng và floating icon/widget riêng.
-- [ ] Đối chiếu mockup với UI build cuối và ZIP hash; xác nhận không có chi tiết sai, claim quá mức hoặc hình ảnh không đúng trải nghiệm người dùng trước upload.
+- [ ] Preview bốn mockup v7 trong Dashboard sau upload; xác nhận không có chi tiết sai, claim quá mức hoặc hình ảnh không đúng trải nghiệm người dùng trước submit.
 - [ ] Ảnh không chứa credentials, tên cá nhân, dữ liệu nhạy cảm hoặc nội dung có bản quyền chưa được phép dùng quảng bá.
 - [ ] Dòng “xuất hiện dần” đã được quan sát trên UI với SSE provider thực và test SSE ở cùng tree xanh; nếu không, bỏ claim streaming khỏi Description và dùng screenshot chỉ thể hiện bản dịch hoàn tất.
 - [ ] Description, manifest, Privacy fields, privacy policy và Test instructions cùng nói đúng về endpoint, key, fallback và auto mode.
