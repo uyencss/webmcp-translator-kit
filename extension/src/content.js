@@ -3057,8 +3057,9 @@
       }
 
       // Effective Consent
-      const isEffectiveOn = widgetState.effective === 'on';
-      if (!isEffectiveOn || widgetState.permission !== true || widgetState.hasKey !== true) {
+      const dataConsentAccepted = widgetState.dataConsentAccepted === true;
+      const isEffectiveOn = widgetState.effective === 'on' && dataConsentAccepted;
+      if (!dataConsentAccepted || !isEffectiveOn || widgetState.permission !== true || widgetState.hasKey !== true) {
         if (autoStartTimer) {
           clearTimeout(autoStartTimer);
           autoStartTimer = null;

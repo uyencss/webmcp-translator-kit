@@ -103,7 +103,7 @@ Every translation response received from the 9router provider MUST be validated 
 5. **Model Pinning, Fallback Chain & Logging Hygiene**:
    - The adapter MUST request the exact model requested for that call. Automatic silent fallback within the adapter itself is prohibited (pinned 1 ID/call).
    - The background service worker coordinates sequential fallback strictly according to the user-configured fallback chain (`[primary, ...fallbacks]`, max 3 attempts) upon `NETWORK`, `TIMEOUT`, or `HTTP_5xx` errors. Each fallback may define a custom `baseURL` and distinct API key; missing fields inherit from the primary configuration, with API key inheritance strictly restricted to fallbacks sharing the exact same origin as the primary configuration (fallbacks with different origins lacking a distinct key are skipped; skipped fallbacks are surfaced in error envelope `details.skippedFallbacks` and in `GET_SETTINGS.fallbackWarnings`).
-   - Stop-list errors (`HTTP_401`, `HTTP_403`, `HTTP_404`, `HTTP_429`, policy, consent, rate, schema, abort) terminate immediately without fallback.
+   - Stop-list errors (`HTTP_401`, `HTTP_403`, `HTTP_404`, `HTTP_429`, policy, consent, endpoint-security, redirect, rate, schema, abort) terminate immediately without fallback.
    - Provider responses, receipts, and internal envelopes record `requestedModel`, `actualModel`, `fallbackIndex`, and `actualBaseURLHost`.
    - **Privacy Invariant**: NEVER log page text, source snippets, translated snippets, or API keys in browser consoles, receipts, or error payloads.
 
@@ -135,6 +135,9 @@ Every error produced by the Direct Mode pipeline MUST map to a typed error objec
 | `HTTP_404` | HTTP | Provider returned 404 Not Found (invalid endpoint path or model name). | `status: 404, statusText: string` |
 | `HTTP_429` | HTTP | Remote 9router rate limit exceeded (remote 429). | `status: 429, retryAfterMs?: number` |
 | `HTTP_5xx` | HTTP | Provider returned a server error (HTTP 500–599). | `status: number, statusText: string` |
+| `DATA_CONSENT_REQUIRED` | Consent | User has not accepted the current in-product data disclosure. No provider request is sent. | `dataConsentVersion: number` |
+| `INSECURE_ENDPOINT_BLOCKED` | Security | Base URL is remote HTTP; only HTTPS and loopback HTTP are allowed. | `reason?: string` |
+| `ENDPOINT_REDIRECT_UNSUPPORTED` | Network | Provider returned a redirect that Chrome's manual Fetch response does not expose for safe destination validation. Configure the final endpoint URL directly. | `status?: number` |
 
 ---
 

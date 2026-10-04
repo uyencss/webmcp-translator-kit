@@ -33,7 +33,10 @@
         "HTTP_403",
         "HTTP_404",
         "HTTP_429",
-        "HTTP_5xx"
+        "HTTP_5xx",
+        "DATA_CONSENT_REQUIRED",
+        "INSECURE_ENDPOINT_BLOCKED",
+        "ENDPOINT_REDIRECT_UNSUPPORTED"
       ],
       "description": "Standardized machine-readable error code"
     },
@@ -158,6 +161,11 @@
         "statusText": {
           "type": "string",
           "description": "HTTP status text"
+        },
+        "dataConsentVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Data consent disclosure version required by the extension"
         }
       }
     }

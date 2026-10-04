@@ -322,6 +322,20 @@ test('WI-49: Headless Chrome verifies natural height without modal (< 600px), 60
     });
     await new Promise(r => setTimeout(r, 150));
 
+    // Ensure initial baseline has no modal open (close any onboarding modal if opened on first boot)
+    await sendCdp('Runtime.evaluate', {
+      expression: `(() => {
+        if (typeof window.closeModal === 'function') {
+          window.closeModal();
+        } else {
+          document.body.classList.remove('modal-open');
+          const overlay = document.getElementById('modal-overlay');
+          if (overlay) overlay.style.display = 'none';
+        }
+      })()`
+    });
+    await new Promise(r => setTimeout(r, 50));
+
     // Phase 1: Verify Normal Popup Natural Height (No Modal)
     const naturalMetrics = await sendCdp('Runtime.evaluate', {
       expression: `(() => {

@@ -10,6 +10,8 @@
 // (bijection-validated). Non-SSE responses use the legacy parse unchanged.
 
 import { createIncrementalResultsParser } from '../sse-json.mjs';
+import { isSecureOrLoopbackBaseURL } from '../consent.mjs';
+
 
 function normalizeBaseURL(url) {
   if (!url) return '';
@@ -41,6 +43,33 @@ function createTypedError(code, message, retryable, details = {}) {
     }
   };
 }
+
+export async function secureFetch(initialUrl, fetchOptions, fetchFn = fetch) {
+  if (!isSecureOrLoopbackBaseURL(initialUrl)) {
+    return {
+      error: createTypedError(
+        'INSECURE_ENDPOINT_BLOCKED',
+        'Insecure HTTP remote endpoint blocked. Base URL must use HTTPS or loopback HTTP (localhost, 127.0.0.1, [::1])',
+        false
+      )
+    };
+  }
+
+  const resp = await fetchFn(initialUrl, { ...fetchOptions, redirect: 'manual' });
+  if (resp.type === 'opaqueredirect' || (resp.status >= 300 && resp.status < 400)) {
+    return {
+      error: createTypedError(
+        'ENDPOINT_REDIRECT_UNSUPPORTED',
+        'The configured endpoint returned an HTTP redirect. Chrome hides the redirect target for extension requests; configure the final endpoint URL directly.',
+        false,
+        Number.isInteger(resp.status) && resp.status > 0 ? { status: resp.status } : {}
+      )
+    };
+  }
+
+  return { resp };
+}
+
 
 function parseLlmJson(content) {
   if (!content || typeof content !== 'string') return null;
@@ -158,6 +187,14 @@ export function createDirect9Router(config = {}) {
       );
     }
 
+    if (!isSecureOrLoopbackBaseURL(baseURL)) {
+      return createTypedError(
+        'INSECURE_ENDPOINT_BLOCKED',
+        'Insecure HTTP remote endpoint blocked. Base URL must use HTTPS or loopback HTTP (localhost, 127.0.0.1, [::1])',
+        false
+      );
+    }
+
     const cacheKey = `${baseURL}::${apiKey.slice(0, 8)}`;
 
     // Invalidation when baseURL or apiKey changes
@@ -186,14 +223,18 @@ export function createDirect9Router(config = {}) {
 
     try {
       const url = `${baseURL}/models`;
-      const resp = await fetchImpl(url, {
+      const { resp, error: fetchErr } = await secureFetch(url, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           Accept: 'application/json'
         },
         signal: controller.signal
-      });
+      }, fetchImpl);
+
+      if (fetchErr) {
+        return fetchErr;
+      }
 
       if (!resp.ok) {
         if (resp.status === 401) {
@@ -335,6 +376,16 @@ export function createDirect9Router(config = {}) {
       return createTypedError('MISSING_CONFIG', `Missing required configuration: ${missing.join(', ')}`, false, { missing });
     }
 
+    // HTTPS enforcement: reject non-loopback http (WI-51)
+    if (!isSecureOrLoopbackBaseURL(baseURL)) {
+      return createTypedError(
+        'INSECURE_ENDPOINT_BLOCKED',
+        'Insecure HTTP remote endpoint blocked. Base URL must use HTTPS or loopback HTTP (localhost, 127.0.0.1, [::1])',
+        false
+      );
+    }
+
+
     // 2. Pre-dispatch batch checks
     if (!Array.isArray(items) || items.length === 0) {
       return createTypedError('INVALID_SCHEMA', 'Items array is empty or not an array', false, { schemaErrors: ['Empty items'] });
@@ -468,7 +519,7 @@ export function createDirect9Router(config = {}) {
         }, timeoutMs);
 
         try {
-          const resp = await fetchImpl(`${baseURL}/chat/completions`, {
+          const { resp, error: fetchErr } = await secureFetch(`${baseURL}/chat/completions`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -477,7 +528,13 @@ export function createDirect9Router(config = {}) {
             },
             body: requestBody,
             signal: internalController.signal
-          });
+          }, fetchImpl);
+
+          if (fetchErr) {
+            fetchErr.elapsedMs = now() - batchStart;
+            fetchErr.model = targetModel;
+            return fetchErr;
+          }
 
           if (signal?.aborted || callerAborted) {
             return createTypedError('ABORTED', 'Operation aborted by caller', false, {

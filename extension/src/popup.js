@@ -1,14 +1,16 @@
 // WebMCP Translator Kit — Popup Logic (Taste-Skill Redesign)
 // Contract Version: webmcp-translator-contract/1
 
-import { normalizeOrigin } from './consent.mjs';
+import { normalizeOrigin, isLoopbackHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
 import {
   normalizeBaseURLKey,
   clampTabMaxBatches,
   clampSiteMaxBatches,
   clampProviderConcurrency,
   clampFabSize,
-  buildExportConfig
+  buildExportConfig,
+  isDataConsentAccepted,
+  CURRENT_DATA_CONSENT_VERSION
 } from './settings.mjs';
 import { t, SUPPORTED_UI_LOCALES } from './i18n.mjs';
 import { LANGS, SOURCE_LANGS, TARGET_LANGS, getLanguageLabel } from './languages.mjs';
@@ -103,10 +105,29 @@ if (typeof document !== 'undefined') {
     'tab-translate': document.getElementById('tabpanel-translate'),
     'tab-auto': document.getElementById('tabpanel-auto'),
     'tab-config': document.getElementById('tabpanel-config'),
-    'tab-log': document.getElementById('tabpanel-log')
+    'tab-log': document.getElementById('tabpanel-log'),
+    'tab-consent': document.getElementById('tabpanel-consent')
   };
   const logList = document.getElementById('log-list');
   const btnClearLog = document.getElementById('btn-clear-log');
+
+  // WI-50 Auto-Start Warning Banner Elements
+  const bannerAutoConsentWarning = document.getElementById('banner-auto-consent-warning');
+  const bannerAutoWarningText = document.getElementById('banner-auto-warning-text');
+  const btnBannerEnableSite = document.getElementById('btn-banner-enable-site');
+  const btnBannerEnableSiteText = document.getElementById('btn-banner-enable-site-text');
+
+  // Consent Unknown State Elements (P2-4)
+  const bannerConsentUnknown = document.getElementById('banner-consent-unknown');
+  const bannerConsentUnknownText = document.getElementById('banner-consent-unknown-text');
+  const btnConsentRetry = document.getElementById('btn-consent-retry');
+  const btnConsentRetryText = document.getElementById('btn-consent-retry-text');
+
+  // WI-51 Consent Elements
+  const privacyNote = document.getElementById('privacy-note');
+  const tabpanelConsent = document.getElementById('tabpanel-consent');
+  const btnConsentAccept = document.getElementById('btn-consent-accept');
+  const btnConsentDecline = document.getElementById('btn-consent-decline');
 
   // Tab 4 Elements ("Config")
   const selectUiLocale = document.getElementById('select-ui-locale');
@@ -201,7 +222,8 @@ if (typeof document !== 'undefined') {
     siteOrigin: null,
     siteEnabled: false,
     tabOverride: null,
-    effective: 'off'
+    effective: 'off',
+    authoritative: false
   };
 
   let savedSettings = {};
@@ -244,6 +266,8 @@ if (typeof document !== 'undefined') {
     renderFallbackRows();
     renderFavoritesSection();
     renderAllModelDropdowns();
+    if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
+    if (typeof updateAutoConsentWarningBanner === 'function') updateAutoConsentWarningBanner();
     evaluateActionReadiness();
   }
 
@@ -456,9 +480,9 @@ if (typeof document !== 'undefined') {
       if (showProgress && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
         const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
         const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ' ' + t(currentUiLocale, 'status_failed_count', { count: data.totalFailed }) : '';
-        footerStatusSummary.textContent = `v0.1.0 · ${fApplied}/${data.totalCollected}${fFailed}`;
+        footerStatusSummary.textContent = `v0.1.1 · ${fApplied}/${data.totalCollected}${fFailed}`;
       } else {
-        footerStatusSummary.textContent = 'v0.1.0';
+        footerStatusSummary.textContent = 'v0.1.1';
       }
     }
   }
@@ -477,7 +501,12 @@ if (typeof document !== 'undefined') {
   function sendMsg(message) {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage(message, resolve);
+        chrome.runtime.sendMessage(message, (response) => {
+          const runtimeError = chrome.runtime.lastError;
+          resolve(runtimeError
+            ? { error: { code: 'RUNTIME_MESSAGE_FAILED', message: runtimeError.message || 'Extension message failed' } }
+            : response);
+        });
       } catch (err) {
         resolve({ error: { code: 'ERROR', message: String((err && err.message) || err) } });
       }
@@ -506,8 +535,10 @@ if (typeof document !== 'undefined') {
       const fbModelSelect = document.getElementById(`select-fallback-${i}`);
       const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
       const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
-      if (fbUrl && !/^https?:\/\/.+/i.test(fbUrl)) {
-        return { fallbacks: null, error: t(currentUiLocale, 'err_fallback_base_url_invalid', { index: i + 1 }) };
+      if (fbUrl) {
+        if (!/^https?:\/\/.+/i.test(fbUrl) || !isSecureOrLoopbackBaseURL(fbUrl)) {
+          return { fallbacks: null, error: t(currentUiLocale, 'err_fallback_base_url_invalid', { index: i + 1 }) };
+        }
       }
       out.push({ id: fb.id || `fb${i + 1}`, model: fbModel, baseURL: fbUrl || undefined });
     }
@@ -516,8 +547,13 @@ if (typeof document !== 'undefined') {
 
   function collectSettingsPatch() {
     const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : '';
-    if (rawUrl && !/^https?:\/\/.+/i.test(rawUrl)) {
-      return { patch: null, error: t(currentUiLocale, 'err_base_url_protocol') };
+    if (rawUrl) {
+      if (!/^https?:\/\/.+/i.test(rawUrl)) {
+        return { patch: null, error: t(currentUiLocale, 'err_base_url_protocol') };
+      }
+      if (!isSecureOrLoopbackBaseURL(rawUrl)) {
+        return { patch: null, error: t(currentUiLocale, 'privacy_note_insecure') };
+      }
     }
     const fbRes = collectCleanFallbacks();
     if (fbRes.error) return { patch: null, error: fbRes.error };
@@ -662,6 +698,7 @@ if (typeof document !== 'undefined') {
         throw new Error((err && err.message) || t(currentUiLocale, 'err_save_settings_failed'));
       }
       savedSettings = { ...savedSettings, ...patch };
+      if (typeof updatePrivacyNote === 'function') updatePrivacyNote(savedSettings.baseURL);
 
       // Primary API key (saved on change/blur, then masked)
       const keyVal = inputApiKey ? inputApiKey.value.trim() : '';
@@ -915,11 +952,18 @@ if (typeof document !== 'undefined') {
       if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_config');
       if (tabPanels['tab-config']) tabPanels['tab-config'].classList.remove('hidden');
       if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+      if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.add('hidden');
     } else if (modalType === 'log') {
       if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_log');
       if (tabPanels['tab-log']) tabPanels['tab-log'].classList.remove('hidden');
       if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+      if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.add('hidden');
       loadErrorLog(options);
+    } else if (modalType === 'consent') {
+      if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'consent_modal_title');
+      if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.remove('hidden');
+      if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+      if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
     } else {
       closeModal();
       return;
@@ -939,6 +983,7 @@ if (typeof document !== 'undefined') {
     setBackgroundInert(false);
     if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
     if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+    if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.add('hidden');
     if (activeTabNav === 'tab-config' || activeTabNav === 'tab-log') {
       switchTab('tab-translate');
     }
@@ -1594,9 +1639,19 @@ if (typeof document !== 'undefined') {
     window.__testPopup = {
       renderLanguageDropdowns,
       loadSettings,
+      loadConsent,
+      loadModels,
       collectSettingsPatch,
       getSavedSettings: () => savedSettings,
-      setSavedSettings: (s) => { savedSettings = s; }
+      setSavedSettings: (s) => { savedSettings = s; },
+      getCurrentConsent: () => currentConsent,
+      setCurrentConsent: (c) => { currentConsent = c; },
+      updateAutoConsentWarningBanner,
+      setConsentUnknownUI,
+      updatePrivacyNote,
+      openModal,
+      closeModal,
+      enableSiteForOrigin
     };
   }
 
@@ -1627,6 +1682,29 @@ if (typeof document !== 'undefined') {
       return;
     }
 
+    if (!isDataConsentAccepted(savedSettings)) {
+      if (btnTranslate) {
+        btnTranslate.disabled = false;
+        btnTranslate.title = t(currentUiLocale, 'err_data_consent_required');
+      }
+      setTranslateBusy(false);
+      updateStatus('unconfigured', t(currentUiLocale, 'err_data_consent_required'));
+      if (btnRestore) btnRestore.disabled = restorableCount === 0;
+      return;
+    }
+
+    const curBaseUrl = (inputBaseUrl ? inputBaseUrl.value.trim() : '') || savedSettings?.baseURL || '';
+    if (curBaseUrl && !isSecureOrLoopbackBaseURL(curBaseUrl)) {
+      if (btnTranslate) {
+        btnTranslate.disabled = false;
+        btnTranslate.title = t(currentUiLocale, 'privacy_note_insecure');
+      }
+      setTranslateBusy(false);
+      updateStatus('error', t(currentUiLocale, 'privacy_note_insecure'));
+      if (btnRestore) btnRestore.disabled = restorableCount === 0;
+      return;
+    }
+
     const curModel = selectModel?.value ? selectModel.value.trim() : '';
     if (!curModel || curModel === '' || curModel.includes(t(currentUiLocale, 'status_error')) || curModel.toLowerCase().includes('error')) {
       if (btnTranslate) {
@@ -1651,6 +1729,22 @@ if (typeof document !== 'undefined') {
   }
 
   // Consent Management
+  function setConsentUnknownUI(show) {
+    if (bannerConsentUnknown) {
+      if (show) {
+        bannerConsentUnknown.classList.remove('hidden');
+        if (bannerConsentUnknownText) {
+          bannerConsentUnknownText.textContent = t(currentUiLocale, 'consent_state_unknown');
+        }
+        if (btnConsentRetryText) {
+          btnConsentRetryText.textContent = t(currentUiLocale, 'log_retry');
+        }
+      } else {
+        bannerConsentUnknown.classList.add('hidden');
+      }
+    }
+  }
+
   async function loadConsent() {
     if (!activeTab || !activeTab.id || !activeTab.url || (!activeTab.url.startsWith('http://') && !activeTab.url.startsWith('https://'))) {
       if (toggleSiteConsent) toggleSiteConsent.disabled = true;
@@ -1658,6 +1752,15 @@ if (typeof document !== 'undefined') {
       if (btnOverrideOn) btnOverrideOn.disabled = true;
       if (btnOverrideOff) btnOverrideOff.disabled = true;
       if (siteOriginBadge) { siteOriginBadge.textContent = '--'; siteOriginBadge.classList.add('unsupported'); }
+      currentConsent = {
+        siteOrigin: null,
+        siteEnabled: false,
+        tabOverride: null,
+        effective: 'off',
+        authoritative: false
+      };
+      setConsentUnknownUI(false);
+      updateAutoConsentWarningBanner();
       return null;
     }
 
@@ -1667,12 +1770,23 @@ if (typeof document !== 'undefined') {
           if (resp && resp.error && resp.error.code === 'KEY_ACCESS_UNAVAILABLE') {
             showKeyAccessBanner();
           }
+          currentConsent = {
+            siteOrigin: null,
+            siteEnabled: false,
+            tabOverride: null,
+            effective: 'off',
+            authoritative: false
+          };
           if (siteOriginBadge) { siteOriginBadge.textContent = '--'; siteOriginBadge.classList.add('unsupported'); }
+          setConsentUnknownUI(true);
+          updateAutoConsentWarningBanner();
+          updateStatus('error', t(currentUiLocale, 'consent_state_unknown'));
           resolve(null);
           return;
         }
 
-        currentConsent = resp;
+        currentConsent = { ...resp, authoritative: true };
+        setConsentUnknownUI(false);
         if (siteOriginBadge) { siteOriginBadge.textContent = resp.siteOrigin || '--'; siteOriginBadge.classList.remove('unsupported'); }
         if (toggleSiteConsent) {
           toggleSiteConsent.disabled = !resp.siteOrigin;
@@ -1689,6 +1803,7 @@ if (typeof document !== 'undefined') {
           btnOverrideOff.classList.toggle('active', resp.tabOverride === 'off');
         }
 
+        updateAutoConsentWarningBanner();
         resolve(resp);
       });
     });
@@ -2233,6 +2348,9 @@ if (typeof document !== 'undefined') {
 
   // Model Loading via LIST_MODELS (Cache-First)
   async function loadModels({ forceRefresh = false } = {}) {
+    if (!isDataConsentAccepted(savedSettings)) {
+      return;
+    }
     if (forceRefresh && btnRefreshModels) {
       btnRefreshModels.disabled = true;
     }
@@ -2272,6 +2390,10 @@ if (typeof document !== 'undefined') {
 
   if (btnRefreshModels) {
     btnRefreshModels.addEventListener('click', async () => {
+      if (!isDataConsentAccepted(savedSettings)) {
+        openModal('consent');
+        return;
+      }
       // Host permission needs a user gesture — ensure it here before fetch.
       const perm = await ensureBaseUrlPermission();
       if (!perm.ok) {
@@ -2409,6 +2531,7 @@ if (typeof document !== 'undefined') {
           try { renderFavoritesSection(); } catch (e) { try { console.error('[popup] renderFavoritesSection failed:', e && e.message); } catch {} }
           try { renderAllModelDropdowns(); } catch (e) { try { console.error('[popup] renderAllModelDropdowns failed:', e && e.message); } catch {} }
           try { renderAutoSites(); } catch (e) { try { console.error('[popup] renderAutoSites failed:', e && e.message); } catch {} }
+          if (typeof updatePrivacyNote === 'function') updatePrivacyNote(resp.settings.baseURL);
           resolve(true);
           return;
         }
@@ -2629,10 +2752,12 @@ if (typeof document !== 'undefined') {
   // granted via the shield button or at Translate time — never inside autosave.
   if (inputBaseUrl) {
     inputBaseUrl.addEventListener('input', () => {
+      if (typeof updatePrivacyNote === 'function') updatePrivacyNote(inputBaseUrl.value);
       if (typeof renderFavoritesSection === 'function') renderFavoritesSection();
       markDirty();
     });
     inputBaseUrl.addEventListener('change', () => {
+      if (typeof updatePrivacyNote === 'function') updatePrivacyNote(inputBaseUrl.value);
       // Switching Base URL only swaps which map bucket is displayed.
       try {
         const nextKey = currentFavKey();
@@ -2720,6 +2845,11 @@ if (typeof document !== 'undefined') {
   // gesture (autosave/refresh-without-gesture cannot). Shared by Translate,
   // refresh-models and the shield button.
   async function ensureBaseUrlPermission() {
+    const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
+    if (!rawUrl) return { ok: false, reason: 'invalid' };
+    if (!isSecureOrLoopbackBaseURL(rawUrl)) {
+      return { ok: false, reason: 'insecure' };
+    }
     const origin = await getBaseOrigin();
     if (!origin) return { ok: false, reason: 'invalid' };
     if (!chrome.permissions || typeof chrome.permissions.contains !== 'function') {
@@ -2756,6 +2886,12 @@ if (typeof document !== 'undefined') {
 
   if (btnBasePerm) {
     btnBasePerm.addEventListener('click', async () => {
+      const rawUrl = inputBaseUrl ? inputBaseUrl.value.trim() : (savedSettings.baseURL || '');
+      if (rawUrl && !isSecureOrLoopbackBaseURL(rawUrl)) {
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'privacy_note_insecure'), true);
+        updateStatus('error', t(currentUiLocale, 'privacy_note_insecure'));
+        return;
+      }
       const origin = await getBaseOrigin();
       if (!origin) {
         setConfigMsg(configMessageConnect, t(currentUiLocale, 'err_base_url_invalid'), true);
@@ -2905,6 +3041,177 @@ if (typeof document !== 'undefined') {
     }
   });
 
+
+  // Privacy Note & Data Consent Modal (WI-51)
+  function updatePrivacyNote(baseURL) {
+    if (!privacyNote) return;
+    const urlToCheck = baseURL || (inputBaseUrl ? inputBaseUrl.value.trim() : '') || savedSettings?.baseURL || 'http://localhost:8080/v1';
+    const isSecure = isSecureOrLoopbackBaseURL(urlToCheck);
+    let isLoopbackHttp = false;
+    try {
+      const parsed = new URL(urlToCheck);
+      isLoopbackHttp = parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname);
+    } catch {}
+    const svgIcon = privacyNote.querySelector('svg');
+    if (isSecure) {
+      const msg = t(currentUiLocale, isLoopbackHttp ? 'privacy_note_loopback' : 'privacy_note_secure');
+      privacyNote.title = msg;
+      privacyNote.setAttribute('aria-label', msg);
+      if (svgIcon) {
+        svgIcon.classList.remove('text-warning', 'text-danger');
+        svgIcon.classList.toggle('text-muted', !isLoopbackHttp);
+        svgIcon.classList.toggle('text-warning', isLoopbackHttp);
+      }
+    } else {
+      const msg = t(currentUiLocale, 'privacy_note_insecure');
+      privacyNote.title = msg;
+      privacyNote.setAttribute('aria-label', msg);
+      if (svgIcon) {
+        svgIcon.classList.remove('text-muted');
+        svgIcon.classList.add('text-warning');
+      }
+    }
+  }
+
+  if (privacyNote) {
+    privacyNote.style.cursor = 'pointer';
+    privacyNote.addEventListener('click', () => {
+      openModal('consent', { opener: privacyNote });
+    });
+    privacyNote.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openModal('consent', { opener: privacyNote });
+      }
+    });
+  }
+
+  if (btnConsentAccept) {
+    btnConsentAccept.addEventListener('click', async () => {
+      btnConsentAccept.disabled = true;
+      const consentPayload = {
+        version: CURRENT_DATA_CONSENT_VERSION,
+        acceptedAt: new Date().toISOString()
+      };
+      const res = await sendMsg({
+        action: 'SAVE_SETTINGS',
+        settings: { dataConsent: consentPayload }
+      });
+      btnConsentAccept.disabled = false;
+      if (res?.ok !== true) {
+        updateStatus('error', t(currentUiLocale, 'err_save_settings_failed'));
+        return;
+      }
+      savedSettings.dataConsent = consentPayload;
+      closeModal();
+      evaluateActionReadiness();
+      updateStatus('ready', t(currentUiLocale, 'status_ready_detail'));
+      if (hasStoredKey) {
+        loadModels({ forceRefresh: false }).catch(() => {});
+      }
+    });
+  }
+
+  if (btnConsentDecline) {
+    btnConsentDecline.addEventListener('click', async () => {
+      btnConsentDecline.disabled = true;
+      const declinedConsent = {
+        version: CURRENT_DATA_CONSENT_VERSION,
+        acceptedAt: null
+      };
+      try {
+        const res = await sendMsg({
+          action: 'SAVE_SETTINGS',
+          settings: { dataConsent: declinedConsent }
+        });
+        if (res?.ok !== true) {
+          updateStatus('error', t(currentUiLocale, 'err_save_settings_failed'));
+          return;
+        }
+        savedSettings.dataConsent = declinedConsent;
+        closeModal();
+        evaluateActionReadiness();
+        updateStatus('unconfigured', t(currentUiLocale, 'consent_status_declined'));
+      } catch {
+        updateStatus('error', t(currentUiLocale, 'err_save_settings_failed'));
+      } finally {
+        btnConsentDecline.disabled = false;
+      }
+    });
+  }
+
+  if (btnConsentRetry) {
+    btnConsentRetry.addEventListener('click', async () => {
+      btnConsentRetry.disabled = true;
+      try {
+        await loadConsent();
+      } finally {
+        btnConsentRetry.disabled = false;
+      }
+    });
+  }
+
+  // WI-50 Auto-Start Warning Banner
+  function updateAutoConsentWarningBanner() {
+    if (!bannerAutoConsentWarning) return;
+    if (!currentConsent || currentConsent.authoritative !== true) {
+      bannerAutoConsentWarning.classList.add('hidden');
+      return;
+    }
+    const origin = currentConsent.siteOrigin;
+    if (!origin) {
+      bannerAutoConsentWarning.classList.add('hidden');
+      return;
+    }
+
+    const matchingSite = autoTranslateSites.find((s) => (s.origin || s) === origin);
+    const hasAutoEntry = Boolean(matchingSite && (matchingSite.autoStart !== false));
+    const effective = currentConsent.effective || 'off';
+
+    if (hasAutoEntry && effective === 'off') {
+      bannerAutoConsentWarning.classList.remove('hidden');
+      if (currentConsent.tabOverride === 'off') {
+        if (bannerAutoWarningText) {
+          bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_tab_override_off');
+        }
+        if (btnBannerEnableSite) {
+          btnBannerEnableSite.classList.add('hidden');
+        }
+      } else {
+        if (bannerAutoWarningText) {
+          bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_site_off');
+        }
+        if (btnBannerEnableSite) {
+          btnBannerEnableSite.classList.remove('hidden');
+          if (btnBannerEnableSiteText) {
+            btnBannerEnableSiteText.textContent = t(currentUiLocale, 'btn_enable_site_format', { origin });
+          }
+        }
+      }
+    } else {
+      bannerAutoConsentWarning.classList.add('hidden');
+    }
+  }
+
+  if (btnBannerEnableSite) {
+    btnBannerEnableSite.addEventListener('click', async () => {
+      const origin = currentConsent?.siteOrigin || (activeTab?.url ? normalizeOrigin(activeTab.url) : null);
+      if (!origin) return;
+      btnBannerEnableSite.disabled = true;
+      const res = await enableSiteForOrigin(origin);
+      btnBannerEnableSite.disabled = false;
+      if (!res.ok) {
+        updateStatus('error', res.reason === 'permission'
+          ? t(currentUiLocale, 'err_perm_required_site')
+          : t(currentUiLocale, 'err_enable_site_failed_short'));
+        return;
+      }
+      await loadConsent();
+      await refreshSiteDots();
+      updateAutoConsentWarningBanner();
+      evaluateActionReadiness();
+    });
+  }
 
   // Tab 2 Auto-Translate Sites Management
   function showAutoSiteError(msg) {
@@ -3347,6 +3654,13 @@ if (typeof document !== 'undefined') {
         return;
       }
 
+      if (!isDataConsentAccepted(savedSettings)) {
+        openModal('consent');
+        updateStatus('error', t(currentUiLocale, 'err_data_consent_required'));
+        evaluateActionReadiness();
+        return;
+      }
+
       btnTranslate.disabled = true;
       setTranslateBusy(true);
       updateStatus('translating', t(currentUiLocale, 'status_translating_prep'));
@@ -3362,8 +3676,13 @@ if (typeof document !== 'undefined') {
         const basePerm = await ensureBaseUrlPermission();
         if (!basePerm.ok) {
           stopPolling();
-          updateStatus('error', t(currentUiLocale, 'err_perm_required_base'));
-          setConfigMsg(configMessageConnect, basePerm.reason === 'invalid' ? t(currentUiLocale, 'err_base_url_invalid') : t(currentUiLocale, 'err_base_url_perm_needed'), true);
+          if (basePerm.reason === 'insecure') {
+            updateStatus('error', t(currentUiLocale, 'privacy_note_insecure'));
+            setConfigMsg(configMessageConnect, t(currentUiLocale, 'privacy_note_insecure'), true);
+          } else {
+            updateStatus('error', t(currentUiLocale, 'err_perm_required_base'));
+            setConfigMsg(configMessageConnect, basePerm.reason === 'invalid' ? t(currentUiLocale, 'err_base_url_invalid') : t(currentUiLocale, 'err_base_url_perm_needed'), true);
+          }
           evaluateActionReadiness();
           return;
         }
@@ -3511,15 +3830,23 @@ if (typeof document !== 'undefined') {
   applyTheme('dark');
   applyFontScale('md');
   updateFabSizeDisplay(1.0);
+  if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
 
   // Initial Sequence (writes stay blocked until settings load succeeds)
   settingsLoaded = await loadSettings();
   setSaveState('saved');
   await refreshBasePermState();
+  if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
+
+  const consentAccepted = isDataConsentAccepted(savedSettings);
+  if (!consentAccepted) {
+    openModal('consent');
+  }
+
   const tabOk = await resolveActiveTab();
   if (tabOk) {
     await loadConsent();
-    if (hasStoredKey) {
+    if (hasStoredKey && consentAccepted) {
       // Cache-first: only reads local cache on open, does NOT force refresh from network
       loadModels({ forceRefresh: false }).catch(() => {});
     }

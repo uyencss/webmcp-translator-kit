@@ -251,6 +251,62 @@ body.modal-open .container {
   line-height: 1.35;
 }
 
+/* Warning Banner (WI-50 auto-start mismatch alert) */
+.warning-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-left: 3px solid var(--status-amber, #f59e0b);
+  color: var(--text-warning, #fcd34d);
+  font-size: 11px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  line-height: 1.35;
+  margin-bottom: 10px;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.warning-banner-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.warning-banner-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.warning-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.warning-banner-text {
+  word-break: break-word;
+}
+
+.btn-warning {
+  background: var(--status-amber, #f59e0b);
+  color: #111827;
+  font-weight: 600;
+  border: 1px solid rgba(217, 119, 6, 0.5);
+  align-self: flex-start;
+}
+
+.btn-warning:hover {
+  background: #d97706;
+  color: #ffffff;
+}
+
 /* ==========================================================================
    Status Strip (Icon-First, 1 single compact line with tooltip)
    ========================================================================== */
@@ -2344,6 +2400,89 @@ select optgroup {
   background: #f1f5f9;
   border-color: #cbd5e1;
   color: #0284c7;
+}
+
+/* Consent Modal (WI-51 Data Consent & Disclosure) */
+.consent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.consent-intro {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  margin: 0;
+  word-break: break-word;
+}
+
+.consent-points-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 18px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.consent-points-list li {
+  word-break: break-word;
+}
+
+.consent-policy-link {
+  align-self: flex-start;
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+[data-theme="light"] .consent-policy-link {
+  color: #0369a1;
+}
+
+.consent-actions-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.consent-actions-row .btn {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-theme="light"] .warning-banner {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  border-left-color: #d97706;
+  color: #92400e;
+}
+
+[data-theme="light"] .btn-warning {
+  background: #f59e0b;
+  color: #ffffff;
+  border-color: #d97706;
+}
+
+[data-theme="light"] .consent-intro {
+  color: #0f172a;
+}
+
+[data-theme="light"] .consent-points-list {
+  color: #475569;
 }
 
 

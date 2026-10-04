@@ -1213,7 +1213,7 @@ test('popup: footer shows live applied/collected (+failed), keeps polling, never
   assert.ok(failedScrollBranch.includes('}), st);'), 'failed scroll status must pass counters into footer rendering');
   const completedScrollBranch = popupSrc.slice(popupSrc.indexOf("} else if (st.state === 'done')"), popupSrc.indexOf("} else if (st.state === 'restored')"));
   assert.ok(completedScrollBranch.includes('}), st);'), 'completed scroll status must pass counters into footer rendering');
-  assert.ok(popupSrc.includes('v0.1.0 · ${'), 'footer slot must mirror live progress');
+  assert.ok(popupSrc.includes('v0.1.1 · ${'), 'footer slot must mirror live progress');
   // Watching branch must keep polling (refresh while open + recover on reopen)
   const watchingIdx = popupSrc.indexOf("updateStatus('watching'");
   assert.ok(watchingIdx > 0, 'missing watching status update');

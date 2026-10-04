@@ -5,7 +5,7 @@
  * Verifies:
  * 1. All JSON and JSON Schema files parse without errors.
  * 2. All schemas specify $id, type: "object", and additionalProperties: false.
- * 3. All 20 typed error codes are aligned between direct-interface.md and error.schema.json.
+ * 3. All 23 typed error codes are aligned between direct-interface.md and error.schema.json.
  * 4. defaults.json contains all required frozen fields and exact initial default values.
  * 5. Every value in defaults.json matches the defaults table in direct-interface.md.
  * 6. All 6 required contract deliverables exist.
@@ -171,7 +171,7 @@ assert(
 // 5. Verify error code alignment between direct-interface.md and error.schema.json
 const schemaErrorCodes = parsedSchemas['error.schema.json'].properties.code.enum;
 assert(Array.isArray(schemaErrorCodes), 'error.schema.json enum must be an array');
-assert.strictEqual(schemaErrorCodes.length, 20, `error.schema.json must contain exactly 20 error codes, found ${schemaErrorCodes.length}`);
+assert.strictEqual(schemaErrorCodes.length, 23, `error.schema.json must contain exactly 23 error codes, found ${schemaErrorCodes.length}`);
 
 // Extract error codes specifically from section 3 of direct-interface.md
 const section3Match = interfaceDoc.match(/## 3\. Complete Typed Error Taxonomy([\s\S]*?)## 4\. Retry Policy/);
@@ -189,8 +189,8 @@ while ((match = errorCodeRegex.exec(section3Text)) !== null) {
 
 assert.strictEqual(
   docErrorCodes.length,
-  20,
-  `direct-interface.md must document exactly 20 error codes, found ${docErrorCodes.length}: ${docErrorCodes.join(', ')}`
+  23,
+  `direct-interface.md must document exactly 23 error codes, found ${docErrorCodes.length}: ${docErrorCodes.join(', ')}`
 );
 
 for (const code of schemaErrorCodes) {

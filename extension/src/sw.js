@@ -6,6 +6,7 @@ import {
   getEffectivePolicy,
   normalizeOrigin,
   isValidOrigin,
+  isSecureOrLoopbackBaseURL,
   ConsentError
 } from './consent.mjs';
 import {
@@ -38,6 +39,8 @@ import {
 } from './semaphore.mjs';
 import {
   SETTINGS_VERSION,
+  CURRENT_DATA_CONSENT_VERSION,
+  isDataConsentAccepted,
   DEFAULT_SETTINGS,
   migrateSettings,
   validateSettings,
@@ -54,6 +57,10 @@ const MODEL_CACHE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MODEL_CACHE_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 let configRevision = 1;
+// A decline takes effect synchronously, before queued storage/cache cleanup can await.
+// Keep the gate closed if persistence fails; only a successful explicit consent write clears it.
+let dataConsentRevocationPending = false;
+let dataConsentRevocationGeneration = 0;
 let _revalidateModelsPromise = null;
 
 // Ephemeral In-Memory Cache: destroyed upon SW restart per contract/lifecycle.md §3.3
@@ -435,6 +442,9 @@ export const STOP_ERROR_CODES = Object.freeze([
   'HTTP_403',
   'HTTP_404',
   'HTTP_429',
+  'DATA_CONSENT_REQUIRED',
+  'INSECURE_ENDPOINT_BLOCKED',
+  'ENDPOINT_REDIRECT_UNSUPPORTED',
   'MISSING_CONFIG',
   'MODEL_NOT_ALLOWED',
   'PERMISSION_REQUIRED',
@@ -670,9 +680,25 @@ let _testRateWindowSeconds = null;
 let _testMaxQueue = null;
 let _testMaxRetries = null;
 let _testTranslateBatch = null;
+let _testConsentOverride = null;
 
 export function _setTranslateBatchForTest(fn) {
   _testTranslateBatch = fn;
+}
+
+export function _setTestConsentOverride(val) {
+  _testConsentOverride = typeof val === 'boolean' ? val : null;
+}
+
+export function checkDataConsentAccepted(settings) {
+  if (dataConsentRevocationPending) return false;
+  if (_testConsentOverride !== null) {
+    return _testConsentOverride;
+  }
+  if (_testMode) {
+    return true;
+  }
+  return isDataConsentAccepted(settings);
 }
 
 // TEST-ONLY: Activate test mode for automated test suites
@@ -686,6 +712,7 @@ export function _setTestMode(enabled) {
     _testMaxQueue = null;
     _testMaxRetries = null;
     _testTranslateBatch = null;
+    _testConsentOverride = null;
   }
 }
 
@@ -1434,15 +1461,25 @@ async function verifyTabDispatchPolicy({ tabId, origin, epoch, expectedConfigRev
     }
 
     // Consent check: tab override > site enabled > default OFF (covers N4 race)
-    let sites, tabOverrides;
+    let sites, tabOverrides, settings;
     try {
       sites = await getStoredSites();
       tabOverrides = await getStoredTabOverrides();
+      settings = await getStoredSettings();
     } catch (err) {
       return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
         tabId,
         reason: err?.message || 'Storage read error'
       });
+    }
+
+    if (!checkDataConsentAccepted(settings)) {
+      return createTypedError(
+        'DATA_CONSENT_REQUIRED',
+        'Data consent is not accepted',
+        false,
+        { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
+      );
     }
 
     const siteEnabled = Boolean(sites[origin || curOrigin]);
@@ -1717,6 +1754,14 @@ const router = createDirect9Router(routerConfig);
 // Without it the request dies as opaque "Failed to fetch" — surface the real
 // cause instead. Skipped in test mode (harness bypasses the permission system).
 async function checkBaseUrlPermission(baseURL) {
+  if (!isSecureOrLoopbackBaseURL(baseURL)) {
+    return createTypedError(
+      'INSECURE_ENDPOINT_BLOCKED',
+      'Chỉ chấp nhận Base URL HTTPS hoặc loopback HTTP (localhost, 127.0.0.1) — không gửi dữ liệu qua HTTP từ xa',
+      false,
+      { reason: 'HTTPS_REQUIRED' }
+    );
+  }
   if (_testMode) return null;
   const baseOrigin = baseURL ? normalizeOrigin(baseURL) : null;
   if (!baseOrigin) return null;
@@ -1741,8 +1786,23 @@ async function listModels(options = {}) {
   const forceRefresh = Boolean(options && options.forceRefresh);
   await ensureStorageAccess();
   const settings = await getStoredSettings();
+
+  // P1-1: Consent Gate — gate LIST_MODELS (+ mọi op chạm key/endpoint) bằng dataConsent accepted
+  if (!checkDataConsentAccepted(settings)) {
+    return createTypedError(
+      'DATA_CONSENT_REQUIRED',
+      'Data consent not accepted — please accept terms in popup before listing models',
+      false,
+      { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
+    );
+  }
+
   const apiKey = (options && options.apiKey) || (await getStoredApiKey());
   const baseURL = (options && options.baseURL) || settings.baseURL || '';
+
+  // P1-2: Centralized HTTPS/loopback guard — remote http chặn + lỗi rõ ngay cả khi cache stale
+  const basePermError = await checkBaseUrlPermission(baseURL);
+  if (basePermError) return basePermError;
 
   if (!baseURL || !apiKey) {
     return await router.listModels({ forceRefresh, baseURL, apiKey });
@@ -1770,8 +1830,6 @@ async function listModels(options = {}) {
 
   // 1. Force refresh: bypass L1 and L2
   if (forceRefresh) {
-    const basePermError = await checkBaseUrlPermission(baseURL);
-    if (basePermError) return basePermError;
     const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
     if (fetchRes && Array.isArray(fetchRes.models)) {
       const fetchedAt = Date.now();
@@ -1811,6 +1869,8 @@ async function listModels(options = {}) {
     if (!_revalidateModelsPromise) {
       _revalidateModelsPromise = (async () => {
         try {
+          const permErr = await checkBaseUrlPermission(baseURL);
+          if (permErr) return;
           const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
           if (fetchRes && Array.isArray(fetchRes.models)) {
             const fetchedAt = Date.now();
@@ -1839,8 +1899,6 @@ async function listModels(options = {}) {
   }
 
   // 4. Missing, fingerprint changed, or > 7 days: blocking fetch
-  const basePermError = await checkBaseUrlPermission(baseURL);
-  if (basePermError) return basePermError;
   const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
   if (fetchRes && Array.isArray(fetchRes.models)) {
     const fetchedAt = Date.now();
@@ -1859,15 +1917,23 @@ async function listModels(options = {}) {
 
 // Batch Translation (delegated to adapter)
 async function translateBatch(input = {}) {
-  if (_testMode && typeof _testTranslateBatch === 'function') {
-    return await _testTranslateBatch(input);
-  }
   await ensureStorageAccess();
   const settings = await getStoredSettings();
-  const apiKey = await getStoredApiKey();
+  if (!checkDataConsentAccepted(settings)) {
+    return createTypedError(
+      'DATA_CONSENT_REQUIRED',
+      'Data consent not accepted — please accept terms in popup before translating',
+      false,
+      { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
+    );
+  }
   const baseURL = input.baseURL || settings.baseURL;
   const basePermError = await checkBaseUrlPermission(baseURL);
   if (basePermError) return basePermError;
+  if (_testMode && typeof _testTranslateBatch === 'function') {
+    return await _testTranslateBatch(input);
+  }
+  const apiKey = await getStoredApiKey();
   const key = input.apiKey !== undefined ? input.apiKey : apiKey;
   const model = input.model || settings.model || DEFAULT_MODEL;
   return await router.translateBatch({
@@ -2346,7 +2412,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
   try {
     switch (message.action) {
       case 'PING':
-        return { ok: true, version: '0.1.0' };
+        return { ok: true, version: '0.1.1' };
 
       case 'GET_SETTINGS': {
         if (!isPrivilegedSender(sender)) {
@@ -2380,11 +2446,27 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'SAVE_SETTINGS': {
-        return await serializeSettingsWrite(async () => {
         if (!isPrivilegedSender(sender)) {
           return createTypedError('PERMISSION_REQUIRED', 'SAVE_SETTINGS is only permitted from extension UI', false, {
             permissionType: 'host'
           });
+        }
+        const requestedSettings = (message.settings && typeof message.settings === 'object' && !Array.isArray(message.settings))
+          ? message.settings
+          : {};
+        const hasExplicitConsentPatch = Object.prototype.hasOwnProperty.call(requestedSettings, 'dataConsent');
+        const requestedConsentAccepted = hasExplicitConsentPatch &&
+          isDataConsentAccepted({ dataConsent: requestedSettings.dataConsent });
+        let consentGenerationAtRequest = dataConsentRevocationGeneration;
+        if (hasExplicitConsentPatch && !requestedConsentAccepted) {
+          consentGenerationAtRequest = ++dataConsentRevocationGeneration;
+          dataConsentRevocationPending = true;
+        }
+        return await serializeSettingsWrite(async () => {
+        // A previous queued acceptance may have completed after this decline was
+        // requested. Reassert the newer revocation before the first await here.
+        if (hasExplicitConsentPatch && !requestedConsentAccepted) {
+          dataConsentRevocationPending = true;
         }
         await ensureStorageAccess();
 
@@ -2497,8 +2579,14 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           oldSettings.translationMode !== migrated.translationMode ||
           !fallbacksEqual(oldSettings.fallbacks, migrated.fallbacks)
         );
+        const dataConsentChanged = isDataConsentAccepted(oldSettings) !== isDataConsentAccepted(migrated);
+        const dataConsentRevoked = isDataConsentAccepted(oldSettings) && !isDataConsentAccepted(migrated);
 
-        if (configChanged) {
+        if (configChanged || dataConsentChanged) {
+          const abortReason = dataConsentRevoked ? 'data_consent_revoked' : 'config_changed';
+          const abortMessage = dataConsentRevoked
+            ? 'Translation request aborted because data consent was revoked'
+            : 'Translation request aborted because settings changed';
           configRevision++;
           translationCache.clear();
           pendingL2Writes.clear();
@@ -2508,7 +2596,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
           // Abort active in-flight requests across all tabs
           for (const [reqId, active] of activeBatchControllers.entries()) {
-            try { active.controller.abort('config_changed'); } catch {}
+            try { active.controller.abort(abortReason); } catch {}
           }
           activeBatchControllers.clear();
           // Abort all queued batches across all tabs
@@ -2517,13 +2605,17 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
               if (entry.timer) clearTimeout(entry.timer);
               entry.resolve(createTypedError(
                 'ABORTED',
-                'Translation request aborted due to configuration change',
+                abortMessage,
                 false,
-                { reason: 'Configuration changed' }
+                { reason: abortReason }
               ));
             }
           }
           tabQueues.clear();
+        }
+
+        if (dataConsentRevoked) {
+          try { await clearL2Cache(); } catch {}
         }
 
         // Invalidate model cache if baseURL changed (best-effort)
@@ -2552,9 +2644,13 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         } catch {}
 
         await chrome.storage.local.set({ settings: migrated });
+        if (hasExplicitConsentPatch && consentGenerationAtRequest === dataConsentRevocationGeneration) {
+          dataConsentRevocationPending = false;
+        }
 
-        // Push WIDGET_STATE_CHANGED if mode, widgetVisible, uiLocale, theme, uiFontScale, fabSize or autoTranslateSites changed
+        // Refresh open widgets when presentation settings, enabled sites, or global data consent changes.
         if (
+          dataConsentChanged ||
           oldSettings.translationMode !== migrated.translationMode ||
           oldSettings.widgetVisible !== migrated.widgetVisible ||
           oldSettings.uiLocale !== migrated.uiLocale ||
@@ -3166,6 +3262,17 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         // 1. Fail-closed storage access verification
         await ensureStorageAccess();
 
+        // 1b. Fail-closed data consent verification (WI-51)
+        const storedSettings = await getStoredSettings();
+        if (!checkDataConsentAccepted(storedSettings)) {
+          return createTypedError(
+            'DATA_CONSENT_REQUIRED',
+            'Data consent not accepted — please accept terms in popup before translating',
+            false,
+            { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
+          );
+        }
+
         // 2. Sender metadata enforcement: only top frame of tab sender
         if (!sender || typeof sender.frameId !== 'number' || sender.frameId !== 0) {
           return createTypedError('PERMISSION_REQUIRED', 'Only top frame translation is permitted', false, {
@@ -3239,7 +3346,6 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
 
         // 5. Cache lookup on primary model (after consent & permission, BEFORE rate admission)
-        const storedSettings = await getStoredSettings();
         // NOTE: payload.model wins — content sends the resolved effective model
         // (per-site override, else global). Stored model is only the default.
         // (Same rule as the fallback-chain primary leg in executeBatchTranslation.)
@@ -3432,12 +3538,16 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         const { siteConfig } = resolveEffectiveSiteConfig(settings, gate.origin);
 
+        const consentAccepted = checkDataConsentAccepted(settings);
+
         const urlMatchesSender = !sender.url || !sender.tab?.url || (normalizeOrigin(sender.url) === normalizeOrigin(sender.tab.url));
 
         let autoStart = false;
         let reason;
 
-        if (!siteConfig) {
+        if (!consentAccepted) {
+          reason = 'consent_required';
+        } else if (!siteConfig) {
           reason = 'not_in_list';
         } else if (siteConfig.autoStart === false) {
           reason = 'auto_off';
@@ -3491,6 +3601,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           availableModels: widgetModels,
           showFavoritesOnly: Boolean(settings.showFavoritesOnly),
           favoritesHint,
+          dataConsentAccepted: consentAccepted,
           widgetVisible: settings.widgetVisible ?? true,
           uiLocale: settings.uiLocale || 'vi',
           theme: settings.theme || 'dark',
@@ -3743,6 +3854,7 @@ globalScope.__translatorSw = {
   dispatchMessage: (message, sender = { url: defaultTestExtensionUrl }) => handleRuntimeMessage(message, sender),
   _resetStorageAccessStateForTest,
   _setTestMode,
+  _setTestConsentOverride,
   _setTestPermission,
   _registerTestTab,
   _testRegistryHas,

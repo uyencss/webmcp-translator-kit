@@ -1,10 +1,37 @@
 // WebMCP Translator Kit — Pure Settings Schema, Versioning & Migration
 // Contract Version: webmcp-translator-contract/1
 
-import { normalizeOrigin } from './consent.mjs';
+import { normalizeOrigin, isLoopbackHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
 import { SUPPORTED_UI_LOCALES } from './i18n.mjs';
 
+export { isLoopbackHost, isSecureOrLoopbackBaseURL };
+
 export const SETTINGS_VERSION = 9;
+export const CURRENT_DATA_CONSENT_VERSION = 2;
+
+function isCanonicalIsoTimestamp(value) {
+  if (typeof value !== 'string') return false;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return false;
+  try {
+    return new Date(timestamp).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks whether user has explicitly accepted the current version of the data consent policy.
+ *
+ * @param {object} [settings]
+ * @returns {boolean}
+ */
+export function isDataConsentAccepted(settings) {
+  if (!settings || !settings.dataConsent) return false;
+  return settings.dataConsent.version === CURRENT_DATA_CONSENT_VERSION &&
+         isCanonicalIsoTimestamp(settings.dataConsent.acceptedAt);
+}
+
 
 export const FAB_SIZE_BOUNDS = Object.freeze({
   min: 0.75,
@@ -134,6 +161,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
       maxBatches: 12,
       maxSourceCodePoints: 36000
     })
+  }),
+  dataConsent: Object.freeze({
+    version: CURRENT_DATA_CONSENT_VERSION,
+    acceptedAt: null
   })
 });
 
@@ -261,6 +292,23 @@ export function migrateSettings(raw) {
   // cacheEnabled (boolean)
   if (typeof res.cacheEnabled !== 'boolean') {
     res.cacheEnabled = DEFAULT_SETTINGS.cacheEnabled;
+  }
+
+  // Data consent (WI-51)
+  if (res.dataConsent && typeof res.dataConsent === 'object' && !Array.isArray(res.dataConsent)) {
+    const v = typeof res.dataConsent.version === 'number' ? res.dataConsent.version : 0;
+    const acceptedAt = (v === CURRENT_DATA_CONSENT_VERSION && isCanonicalIsoTimestamp(res.dataConsent.acceptedAt))
+      ? res.dataConsent.acceptedAt
+      : null;
+    res.dataConsent = {
+      version: CURRENT_DATA_CONSENT_VERSION,
+      acceptedAt
+    };
+  } else {
+    res.dataConsent = {
+      version: CURRENT_DATA_CONSENT_VERSION,
+      acceptedAt: null
+    };
   }
 
   // v3: fallbacks (0-2 items, unique non-empty id, non-empty model, optional baseURL)
@@ -459,6 +507,8 @@ export function validateSettings(settings) {
   // Check baseURL
   if (typeof settings.baseURL !== 'string' || !/^https?:\/\/.+/i.test(settings.baseURL.trim())) {
     errors.push('baseURL must be a valid HTTP(S) URL');
+  } else if (!isSecureOrLoopbackBaseURL(settings.baseURL)) {
+    errors.push('baseURL must use HTTPS or loopback HTTP (localhost, 127.0.0.1, [::1])');
   }
 
   // Check model
@@ -560,6 +610,8 @@ export function validateSettings(settings) {
         if (fb.baseURL !== undefined && fb.baseURL !== null && fb.baseURL !== '') {
           if (typeof fb.baseURL !== 'string' || !/^https?:\/\/.+/i.test(fb.baseURL.trim())) {
             errors.push(`fallbacks[${i}].baseURL must be a valid HTTP(S) URL`);
+          } else if (!isSecureOrLoopbackBaseURL(fb.baseURL)) {
+            errors.push(`fallbacks[${i}].baseURL must use HTTPS or loopback HTTP (localhost, 127.0.0.1, [::1])`);
           }
         }
         if ('api_key' in fb || 'apiKey' in fb || 'key' in fb) {
@@ -754,6 +806,20 @@ export function validateSettings(settings) {
             errors.push('rateLimits.site.maxSourceCodePoints must be a positive number');
           }
         }
+      }
+    }
+  }
+
+  // Check dataConsent (WI-51)
+  if (settings.dataConsent !== undefined && settings.dataConsent !== null) {
+    if (typeof settings.dataConsent !== 'object' || Array.isArray(settings.dataConsent)) {
+      errors.push('dataConsent must be an object');
+    } else {
+      if (typeof settings.dataConsent.version !== 'number' || settings.dataConsent.version < 1) {
+        errors.push('dataConsent.version must be a positive number');
+      }
+      if (settings.dataConsent.acceptedAt !== null && !isCanonicalIsoTimestamp(settings.dataConsent.acceptedAt)) {
+        errors.push('dataConsent.acceptedAt must be a canonical ISO timestamp or null');
       }
     }
   }

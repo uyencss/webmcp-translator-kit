@@ -18,11 +18,13 @@ Ngày kiểm tra Dashboard: 2026-10-01. Tab được người dùng cung cấp t
 
 Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình từng quyền (mỗi ô 1.000 ký tự), khai remote code, data usage categories, ba chứng nhận Limited Use, Privacy policy URL. Tab **Test instructions** có Username và Password (mỗi ô 100 ký tự), Additional instructions (500 ký tự). Có thể dùng Username làm Base URL và Password làm API key **chỉ khi** đã cấp riêng một endpoint/key thử ổn định cho reviewer; không đưa key thật vào tài liệu này.
 
+**Cập nhật 2026-10-04:** privacy policy cho item Translator đã được publish tại [https://uyencss.github.io/webmcp-translator-kit/](https://uyencss.github.io/webmcp-translator-kit/) bằng GitHub Pages và URL đã được lưu trong Privacy tab của draft. Đây là trang tĩnh riêng, không yêu cầu website sản phẩm đầy đủ. Dashboard vẫn yêu cầu chứng nhận data usage; chỉ hoàn thành sau khi disclosure/consent trong extension và policy khớp với hành vi thực tế.
+
 ## 2. Bản nháp nội dung Store listing
 
 **Đề xuất manifest name:** `WebMCP Translator` — thay cho `WebMCP Translator Kit` khi sẵn sàng release. **Đề xuất manifest description (dưới 132 ký tự):**
 
-> Dịch nội dung trang web sang tiếng Việt bằng API AI do bạn cấu hình, với quyền truy cập theo từng trang.
+> Dịch trang web bằng endpoint AI tương thích OpenAI do bạn cấu hình; có chế độ thủ công, tự động và khôi phục.
 
 Đây là đề xuất sửa manifest, **chưa phải giá trị đã có trong ZIP**. Trước khi thay, kiểm tra tên/ID đã được tích hợp khác dùng và version release.
 
@@ -37,9 +39,9 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 >
 > Khi dịch vụ AI hỗ trợ phản hồi dạng stream, các đoạn dịch hoàn chỉnh có thể xuất hiện dần trong lúc xử lý. Với phản hồi JSON thông thường, kết quả được hiển thị sau khi dịch vụ trả xong. Tốc độ và chất lượng phụ thuộc vào endpoint và model bạn chọn.
 >
-> Quyền riêng tư: Extension đọc văn bản của trang bạn chọn để gửi đến Base URL đã cấu hình nhằm tạo bản dịch. Nếu bạn cấu hình các endpoint dự phòng, văn bản có thể được gửi tới một endpoint dự phòng khi endpoint chính gặp lỗi đủ điều kiện. Nội dung trang có thể chứa thông tin cá nhân; hãy chỉ bật dịch trên những trang mà bạn chấp nhận gửi nội dung tới dịch vụ đã chọn. API key và tùy chọn được lưu trong bộ nhớ cục bộ của extension. Xem Privacy Policy để biết chi tiết về dữ liệu, bên nhận và cách xóa.
+> Quyền riêng tư: Extension chỉ đọc văn bản đủ điều kiện khi bạn bắt đầu dịch hoặc bật tự dịch cho site. Văn bản có thể được gửi đến endpoint chính hoặc endpoint dự phòng do bạn cấu hình; nhà vận hành endpoint có thể chuyển tiếp đến nhà cung cấp AI. API key và tùy chọn được lưu cục bộ; key đang dùng được gửi trong header Authorization khi gọi model hoặc dịch. Content script được inject trên các trang HTTP(S), nhưng chỉ đọc văn bản khi bạn yêu cầu dịch hoặc bật tự dịch. Cache tùy chọn lưu văn bản nguồn và bản dịch cục bộ tối đa 7 ngày, tối đa 2.5 MiB. Xem Privacy Policy để biết chi tiết về dữ liệu, bên nhận và cách xóa.
 >
-> Extension không dịch ô nhập liệu, mật khẩu hoặc vùng văn bản đang chỉnh sửa. Chỉ những site được cấp quyền mới có thể bật chế độ dịch tự động. Cần Chrome và dịch vụ AI/API key riêng để sử dụng.
+> Extension không dịch ô nhập liệu, mật khẩu hoặc vùng văn bản đang chỉnh sửa. Tự dịch chỉ chạy trên các site bạn đã thêm vào danh sách tự dịch. Cần Chrome và dịch vụ AI/API key riêng để sử dụng.
 
 **Điều kiện trước khi dùng copy:** sửa xong disclosure/consent và endpoint HTTPS/loopback trong kế hoạch; xác minh mọi câu với ZIP cuối cùng; có Privacy Policy công khai và reviewer test endpoint. Câu “không dịch ô nhập liệu…” được hỗ trợ bởi `content.js:90-114`, nhưng vẫn phải chạy negative test trên build cuối. Câu stream được hỗ trợ bởi `adapter/direct9router.mjs:350-405,554-724`, `sw.js:1446-1460`, `content.js:1823-1865`; kiểm tra real UI trước khi đưa vào listing cuối.
 
@@ -51,20 +53,44 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Permission justifications (đề xuất, điều chỉnh theo manifest cuối):**
 
-- `activeTab`: Truy cập tab hiện tại khi người dùng bấm extension/Dịch để xác định trang cần dịch và chỉ thao tác trên tab đó.
-- `scripting`: Chèn content script đọc, thay thế và khôi phục text nodes trên site người dùng đã cấp quyền; đăng ký cho site tự dịch đã chọn.
+- `activeTab`: Cho phép popup xác định tab hiện tại cho thao tác dịch/khôi phục do người dùng khởi chạy.
+- `scripting`: Cho phép service worker đăng ký/hủy các content script hỗ trợ dịch trang và tự dịch.
 - `storage`: Lưu Base URL, model, site được bật, API key ở `storage.local`; giữ trạng thái tab và giới hạn yêu cầu tạm thời trong `storage.session`.
-- Optional host permissions: Xin quyền cho **origin cụ thể** của trang người dùng chọn và của API endpoint họ cấu hình. Không tự truy cập tất cả site chỉ vì manifest cho phép khai báo các origin tùy chọn.
+- Host permissions `http://*/*` và `https://*/*`: Đây là quyền bắt buộc hiện có để dịch các website người dùng chọn; manifest cũng khai báo content script tĩnh trên các trang HTTP(S). Script không gửi văn bản chỉ vì được inject; đọc/xử lý text chỉ sau khi người dùng bắt đầu dịch hoặc đã bật auto-translate cho site. Đây là quyền rộng, cần giải trình rõ trên Dashboard. `chrome.permissions.request` còn được dùng cho luồng cấp quyền theo site/endpoint trong UI, nhưng không biến các host permissions trong manifest thành optional.
+- Kết nối endpoint: Extension gọi Base URL và các fallback do người dùng cấu hình; remote HTTP bị chặn, HTTPS được phép, HTTP loopback trên thiết bị được phép nhưng không có TLS.
+
+**Quy định HTTPS và Bảo vệ Endpoint (WI-51):**
+- Toàn bộ kết nối gửi văn bản trang và API key tới AI provider bắt buộc phải sử dụng giao thức bảo mật `https://`.
+- Cho phép ngoại lệ `http://` duy nhất đối với loopback cục bộ (`localhost`, `127.0.0.1`, `[::1]`, `127.0.0.0/8`) nhằm phục vụ mô hình 9router/AI local do người dùng tự chạy trên cùng thiết bị.
+- Mọi endpoint HTTP từ xa (non-loopback) đều bị chặn ở tầng validation cài đặt, UI cảnh báo và adapter network (`INSECURE_ENDPOINT_BLOCKED`), ngăn chặn rò rỉ văn bản trang và API key qua kênh truyền không mã hóa.
+- Tooltip và chỉ báo bảo mật tại giao diện popup hiển thị động: thông báo bảo mật với HTTPS/loopback và cảnh báo rõ ràng khi endpoint không an toàn.
+
+**Cơ chế Minh bạch và Đồng thuận Dữ liệu — Data Consent v2 (WI-51):**
+- Cấu trúc đồng thuận: `settings.dataConsent = { version: 2, acceptedAt: ISO_TIMESTAMP }`. Bumping version làm người dùng cũ xác nhận lại sau khi disclosure được cập nhật.
+- Onboarding modal tự động xuất hiện ngay lần đầu mở extension nếu người dùng chưa xác nhận:
+  1. *Nội dung được xử lý và bên nhận*: Khi dịch, text đủ điều kiện cùng ngôn ngữ/model được gửi tới Base URL đã cấu hình; nhà vận hành endpoint có thể chuyển tiếp đến AI provider. Không gửi input/password/contenteditable theo luồng trích xuất đã xác định trong mã.
+  2. *Mục đích duy nhất*: Dữ liệu gửi đi chỉ nhằm mục đích duy nhất là tạo bản dịch sang ngôn ngữ đích đã chọn.
+  3. *Lưu trữ và truyền API key*: API key và thiết lập lưu trong `chrome.storage.local` của profile Chrome; key đang dùng được truyền qua header `Authorization` đến endpoint tương ứng khi list model/dịch. Cache cục bộ có thể giữ text nguồn và bản dịch tối đa 7 ngày, giới hạn 2.5 MiB.
+  4. *Tự động và Endpoint dự phòng*: Tính năng tự dịch theo trang và các fallback providers (nếu có cấu hình) cũng sẽ gửi văn bản tới đúng các endpoint tương ứng.
+  5. *Phạm vi content script*: Manifest inject script đã đóng gói trên trang HTTP(S); script chỉ đọc văn bản đủ điều kiện khi người dùng bắt đầu dịch hoặc bật auto-translate cho site. Host permissions hiện khai báo rộng trong manifest và phải được giải trình trung thực.
+- Chính sách **Fail-closed**: Nếu người dùng chưa bấm "Đồng ý" (hoặc bấm "Từ chối"), mọi luồng dịch (Dịch thủ công từ popup, Tự động dịch khi mở trang, Widget nổi, Content script) đều bị chặn hoàn toàn với mã lỗi `DATA_CONSENT_REQUIRED`, bảo đảm không có bất kỳ byte dữ liệu nào được gửi qua mạng.
+- Khi người dùng từ chối, trạng thái revoked được bật đồng bộ trước cleanup bất đồng bộ; các request mới bị chặn, request đang chạy bị hủy và cache được xóa best-effort. Consent mới chỉ được ghi nhận khi thao tác lưu trả thành công rõ ràng.
 
 **Remote code:** đề xuất chọn `No` sau khi kiểm tra ZIP cuối không tải hoặc chạy JS/Wasm từ mạng. SSE/JSON trả về **văn bản dịch**, không phải mã được `eval`. Kết nối từ xa để dịch dữ liệu cần khai trong phần data usage và policy, nhưng không tự động là remote hosted code.
 
 **Data usage:** chắc chắn cần đánh giá `Website content`; API key người dùng nhập cần đánh giá `Authentication information`, kể cả khi chỉ lưu cục bộ. Vì extension có thể đọc văn bản trang bất kỳ được cấp quyền, trang đó có thể chứa PII, liên lạc cá nhân, sức khỏe hoặc tài chính. Chốt chính xác checkbox với phạm vi tính năng/data map và hướng dẫn của Dashboard; **không** tích mặc định “không thu thập dữ liệu”. Chỉ chứng nhận ba mục Limited Use khi hành vi, policy và bên nhận đã được xác minh. Privacy policy URL công khai là gate bắt buộc.
 
-**Test instructions:** form hiện tại chỉ cho 500 ký tự Additional instructions. Khi có endpoint/key reviewer, điền Base URL vào `Username` và key thử vào `Password` trên Dashboard, rồi dùng bản nháp sau:
+**Test instructions cho Reviewer (Cập nhật WI-51 — Dùng Loopback 9router & Test Key):**
+Form Dashboard cung cấp các trường `Username`, `Password` và `Additional instructions` (tối đa 500 ký tự). Nhằm tạo điều kiện cho reviewer kiểm tra toàn diện chức năng mà không bắt buộc phải có API key thương mại trả phí thật, quy trình kiểm thử hỗ trợ trực tiếp local loopback fixture hoặc proxy 9router:
 
-> Open the extension popup > Kết nối. Use the Username field above as Base URL and Password as API key. Click the model refresh icon and choose an available model. Open a public article page, click Dịch > Dịch trang, and confirm text is translated. Click Khôi phục to restore it. For SSE-capable models, completed passages appear progressively; otherwise they appear when the response finishes. Do not use private pages. This review key is limited to testing.
-
-Không dán bản này nếu chưa có endpoint/key dùng được từ máy reviewer. Nếu reviewer không thể truy cập local 9router, phải cấp HTTPS endpoint thử; không dùng `localhost` trong instructions của họ.
+- Điền vào Dashboard:
+  - `Username`: `http://127.0.0.1:8080/v1` (hoặc HTTPS review proxy nếu có)
+  - `Password`: `test-key` (khóa kiểm thử, không yêu cầu thanh toán hay key thật)
+- Nội dung `Additional instructions` (dưới 500 ký tự):
+  > 1. Launch local test proxy (e.g. 9router at http://127.0.0.1:8080/v1) or use provided HTTPS test endpoint.
+  > 2. Open extension popup. An onboarding modal appears explaining data collection (page text sent to configured endpoint only for translation). Click "Đồng ý" (Agree).
+  > 3. Go to Cấu hình (Menu > Cấu hình). Base URL accepts http://127.0.0.1:* (loopback) or any https:// URL. Remote insecure http:// is blocked. Enter API key 'test-key'.
+  > 4. Open any article, click 'Dịch trang' to translate, and 'Khôi phục' to restore. Auto-translate can be toggled per site.
 
 ## 4. Ảnh Store tạm và gate cho bản nộp
 

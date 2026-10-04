@@ -543,7 +543,7 @@ test('H1 (a): translateBatch times out when body stream stalls after HTTP 200', 
   });
 
   const router = createDirect9Router({
-    baseURL: 'http://example.com/v1',
+    baseURL: 'https://example.com/v1',
     apiKey: 'test-key',
     model: 'test-model',
     timeoutMs: 50,
@@ -574,7 +574,7 @@ test('H1 (b): listModels times out when body json stalls after HTTP 200', async 
   });
 
   const router = createDirect9Router({
-    baseURL: 'http://example.com/v1',
+    baseURL: 'https://example.com/v1',
     apiKey: 'test-key',
     listModelsTimeoutMs: 50,
     fetchImpl: mockFetch
@@ -602,7 +602,7 @@ test('H1 (c): translateBatch times out when stream stalls mid-body after initial
   });
 
   const router = createDirect9Router({
-    baseURL: 'http://example.com/v1',
+    baseURL: 'https://example.com/v1',
     apiKey: 'test-key',
     model: 'test-model',
     timeoutMs: 50,
@@ -685,7 +685,7 @@ test('WI-10 (b): retry-bỏ-temperature 1 lần khi gặp HTTP 400', async () =>
   };
 
   const router = createDirect9Router({
-    baseURL: 'http://router.example.com/v1',
+    baseURL: 'https://router.example.com/v1',
     apiKey: 'test-key',
     model: 'do/glm-5.3-flash',
     fetchImpl: mockFetch,
@@ -717,7 +717,7 @@ test('WI-10 (b): retry-bỏ-temperature chỉ retry ĐÚNG 1 lần khi vẫn g�
   };
 
   const router = createDirect9Router({
-    baseURL: 'http://router.example.com/v1',
+    baseURL: 'https://router.example.com/v1',
     apiKey: 'test-key',
     model: 'do/glm-5.3-flash',
     fetchImpl: mockFetch,
@@ -752,7 +752,7 @@ test('WI-10 (a): body lỗi provider xuất hiện trong details và schemaError
   });
 
   const router = createDirect9Router({
-    baseURL: 'http://router.example.com/v1',
+    baseURL: 'https://router.example.com/v1',
     apiKey: 'test-key',
     model: 'do/glm-5.3-flash',
     fetchImpl: mockFetchJson,
@@ -785,7 +785,7 @@ test('WI-10 (a): body lỗi provider xuất hiện trong details và schemaError
   });
 
   const routerPlain = createDirect9Router({
-    baseURL: 'http://router.example.com/v1',
+    baseURL: 'https://router.example.com/v1',
     apiKey: 'test-key',
     model: 'do/glm-5.3-flash',
     fetchImpl: mockFetchPlain,
@@ -834,7 +834,7 @@ test('WI-20: merge sau retry khi thiếu item ở lượt đầu', async () => {
   };
 
   const router = createDirect9Router({
-    baseURL: 'http://test.router/v1',
+    baseURL: 'https://test.router/v1',
     apiKey: 'test-key',
     model: 'ag/gemini-3.1-pro-low',
     fetchImpl: mockFetch,
@@ -868,7 +868,7 @@ test('WI-20: zero-match vẫn trả về lỗi INVALID_SCHEMA', async () => {
   };
 
   const router = createDirect9Router({
-    baseURL: 'http://test.router/v1',
+    baseURL: 'https://test.router/v1',
     apiKey: 'test-key',
     model: 'ag/gemini-3.1-pro-low',
     fetchImpl: mockFetch,
@@ -904,7 +904,7 @@ test('WI-20: abort giữa retry trả về lỗi ABORTED', async () => {
   };
 
   const router = createDirect9Router({
-    baseURL: 'http://test.router/v1',
+    baseURL: 'https://test.router/v1',
     apiKey: 'test-key',
     model: 'ag/gemini-3.1-pro-low',
     fetchImpl: mockFetch,

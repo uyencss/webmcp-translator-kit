@@ -20,7 +20,7 @@
         <h1 class="brand-title">WebMCP Translator</h1>
       </div>
       <div class="header-right">
-        <span class="privacy-note" title="Dữ liệu trang được gửi an toàn tới Base URL đã cấu hình" aria-label="Thông tin bảo mật" data-i18n-title="privacy_note" data-i18n-aria-label="privacy_aria">
+        <span class="privacy-note" id="privacy-note" role="button" tabindex="0" title="Dữ liệu trang được gửi an toàn tới Base URL đã cấu hình (HTTPS / Loopback)" aria-label="Thông tin bảo mật" data-i18n-title="privacy_note_secure" data-i18n-aria-label="privacy_aria">
           <svg class="icon icon-sm text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
           </svg>
@@ -95,6 +95,36 @@
 
     <!-- Tab 1: Dịch -->
     <section class="section tab-panel" id="tabpanel-translate" role="tabpanel" aria-labelledby="tab-translate" tabindex="0">
+      <!-- WI-50 Auto-Start Mismatch Warning Banner -->
+      <div id="banner-auto-consent-warning" class="warning-banner hidden" role="alert">
+        <div class="warning-banner-body">
+          <svg class="icon icon-sm text-warning warning-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/>
+          </svg>
+          <div class="warning-banner-content">
+            <span id="banner-auto-warning-text" class="warning-banner-text"></span>
+            <button type="button" id="btn-banner-enable-site" class="btn btn-xs btn-warning hidden">
+              <span id="btn-banner-enable-site-text"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Consent Unknown State Banner -->
+      <div id="banner-consent-unknown" class="warning-banner hidden" role="alert">
+        <div class="warning-banner-body">
+          <svg class="icon icon-sm text-warning warning-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/>
+          </svg>
+          <div class="warning-banner-content">
+            <span id="banner-consent-unknown-text" class="warning-banner-text" data-i18n="consent_state_unknown">Không rõ trạng thái sự đồng ý, hãy thử lại</span>
+            <button type="button" id="btn-consent-retry" class="btn btn-xs btn-outline">
+              <span id="btn-consent-retry-text" data-i18n="log_retry">Thử lại</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Ngôn ngữ -->
       <div class="form-row">
         <div class="form-group flex-1">
@@ -379,7 +409,7 @@
 
           <div class="config-version-row">
             <span class="config-version-label" id="label-version" data-i18n="config_version_label">Phiên bản</span>
-            <span class="config-version-badge" id="config-version-text">v0.1.0</span>
+              <span class="config-version-badge" id="config-version-text">v0.1.1</span>
           </div>
         </div>
       </div>
@@ -427,13 +457,34 @@
         <div class="log-list" id="log-list" role="log" aria-live="polite"></div>
       </div>
     </section>
+
+    <!-- Tab Consent: Chấp thuận dữ liệu (Data Consent & Privacy Disclosure) -->
+    <section class="section tab-panel hidden" id="tabpanel-consent" role="tabpanel" aria-labelledby="modal-title" tabindex="0">
+      <div class="card-compact consent-card">
+        <p class="consent-intro" id="consent-intro" data-i18n="consent_modal_intro">Để thực hiện dịch thuật, tiện ích cần sự đồng ý của bạn với các điều khoản xử lý dữ liệu:</p>
+        <ul class="consent-points-list">
+          <li id="consent-point-data" data-i18n="consent_point_data">Khi dịch, văn bản đủ điều kiện cùng ngôn ngữ và model bạn chọn được gửi tới Base URL đã cấu hình. Nhà vận hành endpoint có thể chuyển văn bản tới nhà cung cấp AI phía sau theo điều khoản của họ.</li>
+          <li id="consent-point-purpose" data-i18n="consent_point_purpose">Mục đích duy nhất của việc gửi dữ liệu là để dịch thuật nội dung theo yêu cầu của bạn.</li>
+          <li id="consent-point-storage" data-i18n="consent_point_storage">API key và thiết lập được lưu trong Chrome extension storage của hồ sơ trình duyệt này. Khi tìm model hoặc dịch, key đang dùng được gửi trong header Authorization tới endpoint tương ứng; key dự phòng chỉ gửi nếu fallback được dùng.</li>
+          <li id="consent-point-auto" data-i18n="consent_point_auto">Tính năng tự động dịch và nhà cung cấp dự phòng (fallback) cũng sẽ gửi tới các endpoint do bạn chỉ định.</li>
+          <li id="consent-point-permissions" data-i18n="consent_point_permissions">Content script đã đóng gói được gắn trên các trang HTTP(S). Script chỉ đọc văn bản đủ điều kiện khi bạn yêu cầu dịch hoặc bật tự dịch cho site.</li>
+          <li id="consent-point-cache" data-i18n="consent_point_cache">Nếu bật, văn bản nguồn và bản dịch được cache cục bộ tối đa 7 ngày, giới hạn 2.5 MiB. Bạn có thể tắt cache trong Config.</li>
+          <li id="consent-point-transport" data-i18n="consent_point_transport">Endpoint từ xa phải dùng HTTPS. HTTP chỉ được chấp nhận cho địa chỉ loopback trên thiết bị này và không được mã hóa TLS.</li>
+        </ul>
+        <a id="consent-policy-link" class="consent-policy-link" href="https://uyencss.github.io/webmcp-translator-kit/" target="_blank" rel="noopener noreferrer" data-i18n="consent_policy_link">Mở chính sách quyền riêng tư đầy đủ</a>
+        <div class="consent-actions-row">
+          <button type="button" id="btn-consent-decline" class="btn btn-outline flex-1" data-i18n="consent_btn_decline">Từ chối</button>
+          <button type="button" id="btn-consent-accept" class="btn btn-primary flex-1" data-i18n="consent_btn_accept">Đồng ý</button>
+        </div>
+      </div>
+    </section>
         </div>
       </div>
     </div>
 
     <!-- Footer (right side = live translate status) -->
     <footer class="footer">
-      <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.0</span></span>
+      <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.1</span></span>
       <span class="status-indicator status-footer" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái..." data-i18n-title="status_checking">
         <span class="status-icon" id="status-icon" aria-hidden="true">
           <span class="status-dot"></span>

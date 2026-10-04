@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebMCP Translator Kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Direct mode translator extension calling 9router OpenAI-compatible endpoints",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAua3V3W5GSdQz7LvdLuc6D9Sysgz1o7Q1BSSrkzv4A5X+PfMq14Oo4U4zaVnWEFRE1VvXkNTydOo+luXmzg8L50tl5ixVv5t/s47Pvhtguc7IKskufId3mNSbdGSYaWfoZxSfW2RG5AbEfX/bPzN/ddNsf4gn5ctXX9udAt4kodNmiV9hNgXch6ct242+fbkLW1ot2UIovgIgmgUQ9tn8m7o5OG7PDUIFgiazVHqQ8N2VFB1naGtFGToPFaZZGJ6fI5M9nHK7nI12WfZLnA7XPYr32eGjrnf6aGaaSnEHVGgijN4qUzLDqkpPH1izjBxUF02v+Xlih+8DbBGz+rjD+wIDAQAB",
   "permissions": [

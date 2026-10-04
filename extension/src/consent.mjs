@@ -93,3 +93,44 @@ export function getEffectivePolicy({ tabOverride, siteEnabled, stateError } = {}
   // 3. Default Policy: OFF
   return 'off';
 }
+
+/**
+ * Checks whether a given hostname is a local loopback address.
+ * Matches: localhost, 127.0.0.1, [::1], ::1, and 127.0.0.0/8 IPv4 range.
+ *
+ * @param {string} hostname
+ * @returns {boolean}
+ */
+export function isLoopbackHost(hostname) {
+  if (!hostname || typeof hostname !== 'string') return false;
+  const clean = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (clean === 'localhost' || clean === '127.0.0.1' || clean === '::1' || clean === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+  // IPv4 loopback block 127.0.0.0/8
+  if (/^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$/.test(clean)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a URL uses HTTPS or loopback HTTP.
+ * Remote HTTP is explicitly rejected.
+ *
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isSecureOrLoopbackBaseURL(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const u = new URL(url.trim());
+    if (u.protocol === 'https:') return true;
+    if (u.protocol === 'http:') {
+      return isLoopbackHost(u.hostname);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}

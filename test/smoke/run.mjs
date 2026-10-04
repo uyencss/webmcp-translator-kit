@@ -390,7 +390,7 @@ async function runSingleAttempt() {
         await sleep(100);
       }
       console.log('[DEBUG] PING result:', JSON.stringify(pingRes));
-      assert.ok(pingRes && pingRes.ok === true && pingRes.version === '0.1.0', 'PING response valid: ' + JSON.stringify(pingRes));
+      assert.ok(pingRes && pingRes.ok === true && pingRes.version === '0.1.1', 'PING response valid: ' + JSON.stringify(pingRes));
       record('T1', 'Load extension & SW responsive', true, `Version: ${pingRes.version}`);
     } catch (e) {
       console.log('[DEBUG] PING error:', e.message);
