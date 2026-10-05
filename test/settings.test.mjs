@@ -4,8 +4,10 @@ import {
   SETTINGS_VERSION,
   DEFAULT_SETTINGS,
   FAB_SIZE_BOUNDS,
+  CURRENT_DATA_CONSENT_VERSION,
   clampFabSize,
   buildExportConfig,
+  parseImportConfig,
   migrateSettings,
   validateSettings
 } from '../extension/src/settings.mjs';
@@ -897,6 +899,46 @@ test('settings: buildExportConfig sanitizes credentials and includes all metadat
   scanForSecrets(exported);
 });
 
+test('settings: parseImportConfig accepts exported settings and separates credentials from consent', () => {
+  const exported = buildExportConfig({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      providerConcurrency: 4,
+      fallbacks: [{ id: 'fb1', model: 'backup-model', baseURL: 'https://backup.example/v1' }]
+    },
+    fallbackKeyPresence: { fb1: true },
+    hasStoredKey: true,
+    exportedAt: '2026-10-03T12:00:00.000Z'
+  });
+  const imported = parseImportConfig(JSON.stringify({
+    ...exported,
+    apiKey: 'primary-secret',
+    fallbackApiKeys: { fb1: 'fallback-secret' },
+    dataConsent: { version: CURRENT_DATA_CONSENT_VERSION, acceptedAt: '2026-10-03T12:00:00.000Z' }
+  }));
+
+  assert.deepEqual(imported.settings.fallbacks, [
+    { id: 'fb1', model: 'backup-model', baseURL: 'https://backup.example/v1' }
+  ]);
+  assert.equal(imported.apiKey, 'primary-secret');
+  assert.equal(imported.settings.providerConcurrency, 4);
+  assert.deepEqual(imported.fallbackApiKeys, { fb1: 'fallback-secret' });
+  assert.equal(imported.includesKeys, true);
+  assert.equal('dataConsent' in imported.settings, false, 'import must leave device-local consent untouched');
+  assert.equal('hasKey' in imported.settings, false);
+  assert.equal('exportedAt' in imported.settings, false);
+});
+
+test('settings: parseImportConfig rejects malformed, unsafe, and mismatched key data', () => {
+  assert.throws(() => parseImportConfig('{'), /JSON/i);
+  assert.throws(() => parseImportConfig('[]'), /configuration/i);
+
+  const exported = buildExportConfig({ settings: DEFAULT_SETTINGS });
+  assert.throws(() => parseImportConfig(JSON.stringify({ ...exported, baseURL: 'http://example.com/v1' })), /baseURL/i);
+  assert.throws(() => parseImportConfig(JSON.stringify({ ...exported, fallbackApiKeys: { unknown: 'secret' } })), /fallback/i);
+  assert.throws(() => parseImportConfig(JSON.stringify({ ...exported, apiKey: 42 })), /apiKey/i);
+});
+
 test('settings: validateSettings accepts valid v8 settings and rejects invalid showFavoritesOnly', () => {
   const baseValid = {
     version: 8,
@@ -980,4 +1022,3 @@ test('settings: migrateSettings and validateSettings accept all 7 supported UI l
     );
   }
 });
-

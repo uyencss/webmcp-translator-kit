@@ -9,6 +9,7 @@ import {
   clampProviderConcurrency,
   clampFabSize,
   buildExportConfig,
+  parseImportConfig,
   isDataConsentAccepted,
   CURRENT_DATA_CONSENT_VERSION
 } from './settings.mjs';
@@ -150,6 +151,8 @@ if (typeof document !== 'undefined') {
 
   // Export JSON & Fab Size Elements
   const btnExportConfigConnect = document.getElementById('btn-export-config-connect');
+  const btnImportConfigConnect = document.getElementById('btn-import-config-connect');
+  const inputImportConfigConnect = document.getElementById('input-import-config-connect');
   const checkboxExportKeys = document.getElementById('checkbox-export-keys');
   const inputFabSize = document.getElementById('input-fab-size');
   const fabSizeValue = document.getElementById('fab-size-value');
@@ -357,6 +360,7 @@ if (typeof document !== 'undefined') {
   let autosaveTimer = null;
   let autosaveInFlight = false;
   let autosaveQueued = false;
+  let importInProgress = false;
   let favoriteWriteInFlight = false;
   let favoriteWriteQueue = Promise.resolve();
   const autosaveIdleWaiters = [];
@@ -480,9 +484,9 @@ if (typeof document !== 'undefined') {
       if (showProgress && data && typeof data.totalCollected === 'number' && data.totalCollected > 0) {
         const fApplied = Math.min(data.totalApplied || 0, data.totalCollected);
         const fFailed = (typeof data.totalFailed === 'number' && data.totalFailed > 0) ? ' ' + t(currentUiLocale, 'status_failed_count', { count: data.totalFailed }) : '';
-        footerStatusSummary.textContent = `v0.1.1 · ${fApplied}/${data.totalCollected}${fFailed}`;
+        footerStatusSummary.textContent = `v0.1.2 · ${fApplied}/${data.totalCollected}${fFailed}`;
       } else {
-        footerStatusSummary.textContent = 'v0.1.1';
+        footerStatusSummary.textContent = 'v0.1.2';
       }
     }
   }
@@ -670,7 +674,7 @@ if (typeof document !== 'undefined') {
   }
 
   async function flushAutosave() {
-    if (!settingsLoaded) return;
+    if (importInProgress || !settingsLoaded) return;
     if (favoriteWriteInFlight) {
       autosaveQueued = true;
       return;
@@ -753,7 +757,7 @@ if (typeof document !== 'undefined') {
   }
 
   function markDirty() {
-    if (!settingsLoaded) return;
+    if (importInProgress || !settingsLoaded) return;
     setSaveState('saving');
     if (autosaveTimer) clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
@@ -1073,6 +1077,80 @@ if (typeof document !== 'undefined') {
 
   if (typeof window !== 'undefined') {
     window.triggerExportConfig = triggerExportConfig;
+  }
+
+  async function triggerImportConfig(file) {
+    if (!file) return;
+    let settingsSaved = false;
+    const lockedControls = [];
+    try {
+      if (file.size > 1_000_000) throw new Error('Configuration file is too large');
+      const imported = parseImportConfig(await file.text());
+      const confirmFn = (typeof window !== 'undefined' && typeof window.confirm === 'function')
+        ? window.confirm
+        : (typeof globalThis !== 'undefined' && typeof globalThis.confirm === 'function' ? globalThis.confirm : null);
+      const confirmMessage = t(currentUiLocale, imported.includesKeys ? 'import_json_keys_confirm' : 'import_json_confirm');
+      if (!confirmFn || !confirmFn(confirmMessage)) return;
+
+      // The confirmed import replaces pending edits, so let any active save
+      // finish, then persist the imported snapshot through the normal API.
+      importInProgress = true;
+      const configPanel = tabPanels['tab-config'];
+      if (configPanel && typeof configPanel.querySelectorAll === 'function') {
+        for (const control of configPanel.querySelectorAll('button, input, select, textarea')) {
+          lockedControls.push([control, Boolean(control.disabled)]);
+          control.disabled = true;
+        }
+      }
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+      }
+      await favoriteWriteQueue;
+      await waitForAutosaveIdle();
+      const saveResponse = await sendMsg({
+        action: 'SAVE_SETTINGS',
+        settings: imported.settings,
+        replaceFavoriteModelsByBaseURL: true
+      });
+      if (!saveResponse || saveResponse.error) throw new Error(saveResponse?.error?.message || 'Settings save failed');
+      settingsSaved = true;
+
+      if (imported.apiKey) {
+        const keyResponse = await sendMsg({ action: 'SET_KEY', key: imported.apiKey });
+        if (!keyResponse || keyResponse.error) throw new Error(keyResponse?.error?.message || 'API key save failed');
+      }
+      for (const [id, key] of Object.entries(imported.fallbackApiKeys)) {
+        const keyResponse = await sendMsg({ action: 'SET_FALLBACK_KEY', id, key });
+        if (!keyResponse || keyResponse.error) throw new Error(keyResponse?.error?.message || 'Fallback API key save failed');
+      }
+
+      if (inputApiKey) inputApiKey.value = '';
+      await loadSettings();
+      setConfigMsg(configMessageConnect, t(currentUiLocale, 'import_json_success'));
+    } catch (err) {
+      console.warn('[popup] Import JSON failed:', err);
+      if (settingsSaved) {
+        if (inputApiKey) inputApiKey.value = '';
+        await loadSettings();
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'import_json_partial'), true);
+      } else {
+        setConfigMsg(configMessageConnect, t(currentUiLocale, 'import_json_failed'), true);
+      }
+    } finally {
+      importInProgress = false;
+      for (const [control, wasDisabled] of lockedControls) control.disabled = wasDisabled;
+      if (settingsSaved) {
+        try { renderFallbackRows(); } catch {}
+        try { renderAllModelDropdowns(); } catch {}
+        evaluateActionReadiness();
+      }
+      if (inputImportConfigConnect) inputImportConfigConnect.value = '';
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.triggerImportConfig = triggerImportConfig;
   }
 
   function updateFabSizeDisplay(val) {
@@ -2510,8 +2588,8 @@ if (typeof document !== 'undefined') {
           if (keyStatusIndicator) {
             keyStatusIndicator.textContent = hasStoredKey ? t(currentUiLocale, 'conn_key_stored') : t(currentUiLocale, 'conn_key_not_stored');
           }
-          if (hasStoredKey && inputApiKey && !inputApiKey.value) {
-            inputApiKey.placeholder = t(currentUiLocale, 'conn_key_placeholder_saved');
+          if (inputApiKey && !inputApiKey.value) {
+            inputApiKey.placeholder = t(currentUiLocale, hasStoredKey ? 'conn_key_placeholder_saved' : 'conn_api_key_placeholder');
           }
 
           if (inputRateTab) {
@@ -2527,6 +2605,7 @@ if (typeof document !== 'undefined') {
             inputRateConcurrency.value = (typeof concVal === 'number') ? concVal : 2;
           }
 
+          if (selectModel) selectModel.value = resp.settings.model || DEFAULT_MODEL;
           try { renderFallbackRows(); } catch (e) { try { console.error('[popup] renderFallbackRows failed:', e && e.message); } catch {} }
           try { renderFavoritesSection(); } catch (e) { try { console.error('[popup] renderFavoritesSection failed:', e && e.message); } catch {} }
           try { renderAllModelDropdowns(); } catch (e) { try { console.error('[popup] renderAllModelDropdowns failed:', e && e.message); } catch {} }
@@ -3028,6 +3107,10 @@ if (typeof document !== 'undefined') {
   }
   if (btnExportConfigConnect) {
     btnExportConfigConnect.addEventListener('click', triggerExportConfig);
+  }
+  if (btnImportConfigConnect && inputImportConfigConnect) {
+    btnImportConfigConnect.addEventListener('click', () => inputImportConfigConnect.click());
+    inputImportConfigConnect.addEventListener('change', () => triggerImportConfig(inputImportConfigConnect.files?.[0]));
   }
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {

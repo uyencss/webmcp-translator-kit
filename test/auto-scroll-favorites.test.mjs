@@ -292,6 +292,52 @@ test('autostart gate: configured scroll-follow site auto-starts when all gates p
   assert.equal(st.hasKey, true);
 });
 
+test('favorites: imported settings replace provider buckets instead of merging old favorites', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousSelf = globalThis.self;
+  const importedStore = {
+    local: {
+      settings: baseSettings({
+        favoriteModels: [],
+        favoriteModelsByBaseURL: { 'https://old.example/v1': ['old-model'] }
+      }),
+      sites: {},
+      api_key: 'test-key'
+    },
+    session: {}
+  };
+  globalThis.chrome = makeChromeStub(importedStore, { granted: true });
+  globalThis.self = globalThis;
+  const importSw = await import('../extension/src/sw.js?importReplaceFavorites=' + Date.now()).then(() => globalThis.__translatorSw);
+  importSw._setTestMode(true);
+  importSw._setTestPermission(SITE, true);
+  const importedFavorites = { 'https://imported.example/v1': ['imported-model'] };
+
+  try {
+    const response = await importSw.dispatchMessage({
+      action: 'SAVE_SETTINGS',
+      settings: {
+        baseURL: PROVIDER_A,
+        model: 'ag/imported',
+        sourceLanguage: 'auto',
+        targetLanguage: 'vi',
+        favoriteModels: [],
+        favoriteModelsByBaseURL: importedFavorites
+      },
+      replaceFavoriteModelsByBaseURL: true
+    }, { url: 'chrome-extension://test-ext-id/popup.html' });
+
+    assert.equal(response?.ok, true);
+    assert.deepEqual(importedStore.local.settings.favoriteModelsByBaseURL, importedFavorites);
+  } finally {
+    importSw._setTestMode(true);
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousSelf === undefined) delete globalThis.self;
+    else globalThis.self = previousSelf;
+  }
+});
+
 test('autostart gate: no requests when key absent / permission revoked / tab override OFF / autoStart off / not listed / default OFF', async () => {
   // key absent
   delete store.local.api_key;
@@ -1213,7 +1259,7 @@ test('popup: footer shows live applied/collected (+failed), keeps polling, never
   assert.ok(failedScrollBranch.includes('}), st);'), 'failed scroll status must pass counters into footer rendering');
   const completedScrollBranch = popupSrc.slice(popupSrc.indexOf("} else if (st.state === 'done')"), popupSrc.indexOf("} else if (st.state === 'restored')"));
   assert.ok(completedScrollBranch.includes('}), st);'), 'completed scroll status must pass counters into footer rendering');
-  assert.ok(popupSrc.includes('v0.1.1 · ${'), 'footer slot must mirror live progress');
+  assert.ok(popupSrc.includes('v0.1.2 · ${'), 'footer slot must mirror live progress');
   // Watching branch must keep polling (refresh while open + recover on reopen)
   const watchingIdx = popupSrc.indexOf("updateStatus('watching'");
   assert.ok(watchingIdx > 0, 'missing watching status update');

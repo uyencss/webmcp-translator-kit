@@ -2412,7 +2412,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
   try {
     switch (message.action) {
       case 'PING':
-        return { ok: true, version: '0.1.1' };
+        return { ok: true, version: '0.1.2' };
 
       case 'GET_SETTINGS': {
         if (!isPrivilegedSender(sender)) {
@@ -2454,6 +2454,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const requestedSettings = (message.settings && typeof message.settings === 'object' && !Array.isArray(message.settings))
           ? message.settings
           : {};
+        const replaceFavoriteModelsByBaseURL = message.replaceFavoriteModelsByBaseURL === true;
         const hasExplicitConsentPatch = Object.prototype.hasOwnProperty.call(requestedSettings, 'dataConsent');
         const requestedConsentAccepted = hasExplicitConsentPatch &&
           isDataConsentAccepted({ dataConsent: requestedSettings.dataConsent });
@@ -2481,10 +2482,12 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         // Merge patch with previously saved settings
         const mergedRaw = { ...oldSettings, ...settingsPatch };
         if (patch.favoriteModelsByBaseURL && typeof patch.favoriteModelsByBaseURL === 'object' && !Array.isArray(patch.favoriteModelsByBaseURL)) {
-          mergedRaw.favoriteModelsByBaseURL = {
-            ...(oldSettings.favoriteModelsByBaseURL || {}),
-            ...patch.favoriteModelsByBaseURL
-          };
+          mergedRaw.favoriteModelsByBaseURL = replaceFavoriteModelsByBaseURL
+            ? { ...patch.favoriteModelsByBaseURL }
+            : {
+                ...(oldSettings.favoriteModelsByBaseURL || {}),
+                ...patch.favoriteModelsByBaseURL
+              };
         }
         if (patch.rateLimits && typeof patch.rateLimits === 'object' && !Array.isArray(patch.rateLimits)) {
           mergedRaw.rateLimits = {

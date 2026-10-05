@@ -90,6 +90,38 @@ test('WI-41: Export config button exists in Connect subpanel and menu dropdown',
   assert.ok(popupHtml.includes('id="menu-item-export"'), '#menu-item-export must exist in settings menu');
 });
 
+test('Settings: JSON import control is available beside export and uses the existing settings/key APIs', () => {
+  assert.ok(popupHtml.includes('id="btn-import-config-connect"'), 'Connect settings must include an import button');
+  assert.ok(popupHtml.includes('id="input-import-config-connect" accept="application/json,.json"'), 'Import control must select JSON files');
+  assert.ok(popupJs.includes('parseImportConfig(await file.text())'), 'Import must parse and validate the selected JSON file');
+  assert.ok(popupJs.includes("action: 'SAVE_SETTINGS',") && popupJs.includes('settings: imported.settings'), 'Settings must use SAVE_SETTINGS');
+  assert.ok(popupJs.includes("action: 'SET_KEY', key: imported.apiKey"), 'Primary credentials must use SET_KEY');
+  assert.ok(popupJs.includes("action: 'SET_FALLBACK_KEY', id, key"), 'Fallback credentials must use SET_FALLBACK_KEY');
+
+  const importStart = popupJs.indexOf('async function triggerImportConfig(file)');
+  const importEnd = popupJs.indexOf("if (typeof window !== 'undefined')", importStart);
+  const importHandler = popupJs.slice(importStart, importEnd);
+  assert.ok(importHandler.includes('importInProgress = true'), 'Import must pause config writes');
+  assert.ok(importHandler.includes("configPanel.querySelectorAll('button, input, select, textarea')"), 'Import must lock settings controls while applying');
+  assert.ok(importHandler.includes('await favoriteWriteQueue;'), 'Import must wait for queued favorite writes');
+  assert.ok(importHandler.includes('replaceFavoriteModelsByBaseURL: true'), 'Import must replace the complete favorites map');
+  assert.match(importHandler, /if \(inputApiKey\) inputApiKey\.value = ''\s*;\s*await loadSettings\(\)/, 'Import must clear pending primary key input before reloading');
+  const restoredControlsAt = importHandler.indexOf('for (const [control, wasDisabled] of lockedControls)');
+  const fallbackStateRefreshAt = importHandler.indexOf('try { renderFallbackRows(); }', restoredControlsAt);
+  assert.ok(fallbackStateRefreshAt > restoredControlsAt, 'Fallback controls must recalculate their disabled state after unlocking');
+  const favoritesStateRefreshAt = importHandler.indexOf('try { renderAllModelDropdowns(); }', restoredControlsAt);
+  assert.ok(favoritesStateRefreshAt > restoredControlsAt, 'Favorite controls must recalculate their disabled state after unlocking');
+  assert.ok(importHandler.indexOf('evaluateActionReadiness();', restoredControlsAt) > favoritesStateRefreshAt, 'Action readiness must be recalculated after unlocking');
+  const loadStart = popupJs.indexOf('async function loadSettings()');
+  const loadEnd = popupJs.indexOf('// Telemetry Formatters', loadStart);
+  const loadHandler = popupJs.slice(loadStart, loadEnd);
+  const importedModelAt = loadHandler.indexOf('selectModel.value = resp.settings.model || DEFAULT_MODEL');
+  const modelRefreshAt = loadHandler.lastIndexOf('try { renderAllModelDropdowns(); }');
+  assert.ok(importedModelAt >= 0 && modelRefreshAt > importedModelAt, 'Settings reload must select the stored primary model before rendering choices');
+  assert.match(popupJs, /async function flushAutosave\(\) \{\s*if \(importInProgress \|\| !settingsLoaded\) return;/, 'Autosave must pause during import');
+  assert.match(popupJs, /function markDirty\(\) \{\s*if \(importInProgress \|\| !settingsLoaded\) return;/, 'New edits must not queue autosaves during import');
+});
+
 test('WI-41: fabSize slider exists in Appearance subpanel', () => {
   assert.ok(popupHtml.includes('id="input-fab-size"'), '#input-fab-size slider must exist');
   assert.ok(popupHtml.includes('id="fab-size-value"'), '#fab-size-value badge must exist');
@@ -106,7 +138,13 @@ test('WI-41: All WI-41 i18n keys are present in all 7 locales with identical par
     'btn_close_menu',
     'btn_close_modal',
     'config_fab_size_label',
-    'export_json_success'
+    'export_json_success',
+    'settings_import_json',
+    'import_json_confirm',
+    'import_json_keys_confirm',
+    'import_json_success',
+    'import_json_failed',
+    'import_json_partial'
   ];
 
   for (const loc of SUPPORTED_UI_LOCALES) {

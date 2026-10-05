@@ -343,6 +343,15 @@
               <span class="toggle-text" id="label-export-keys" data-i18n="export_include_keys_label">Kèm API keys</span>
             </label>
           </div>
+          <input type="file" id="input-import-config-connect" accept="application/json,.json" hidden />
+          <button type="button" id="btn-import-config-connect" class="btn btn-secondary w-full" title="Nhập cấu hình JSON" aria-label="Nhập cấu hình JSON" data-i18n-title="settings_import_json" data-i18n-aria-label="settings_import_json">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" />
+              <polyline points="7 8 12 3 17 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span data-i18n="settings_import_json">Nhập cấu hình JSON</span>
+          </button>
           <button type="button" id="btn-export-config-connect" class="btn btn-secondary w-full" title="Xuất cấu hình JSON" aria-label="Xuất cấu hình JSON" data-i18n-title="menu_export_json" data-i18n-aria-label="menu_export_json">
             <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/>
@@ -409,7 +418,7 @@
 
           <div class="config-version-row">
             <span class="config-version-label" id="label-version" data-i18n="config_version_label">Phiên bản</span>
-              <span class="config-version-badge" id="config-version-text">v0.1.1</span>
+              <span class="config-version-badge" id="config-version-text">v0.1.2</span>
           </div>
         </div>
       </div>
@@ -484,7 +493,7 @@
 
     <!-- Footer (right side = live translate status) -->
     <footer class="footer">
-      <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.1</span></span>
+      <span class="footer-brand">WebMCP Translator <span class="footer-dot">•</span> <span class="footer-mode" id="footer-status-summary">v0.1.2</span></span>
       <span class="status-indicator status-footer" id="status-strip" role="status" aria-live="polite" title="Đang kiểm tra trạng thái..." data-i18n-title="status_checking">
         <span class="status-icon" id="status-icon" aria-hidden="true">
           <span class="status-dot"></span>

@@ -886,8 +886,99 @@ export function buildExportConfig({ settings, fallbackKeyPresence = {}, hasStore
     widgetVisible: s.widgetVisible,
     showFavoritesOnly: s.showFavoritesOnly,
     rateLimits: s.rateLimits,
+    providerConcurrency: s.providerConcurrency,
     favoriteModelsByBaseURL: s.favoriteModelsByBaseURL || {},
     favoriteModels: s.favoriteModels || [],
     cacheEnabled: s.cacheEnabled
+  };
+}
+
+const IMPORTABLE_SETTING_KEYS = Object.freeze([
+  'version', 'baseURL', 'model', 'fallbacks', 'autoTranslateSites',
+  'translationMode', 'sourceLanguage', 'targetLanguage', 'uiLocale', 'theme',
+  'uiFontScale', 'fabSize', 'widgetVisible', 'showFavoritesOnly', 'rateLimits', 'providerConcurrency',
+  'favoriteModelsByBaseURL', 'favoriteModels', 'cacheEnabled'
+]);
+
+/**
+ * Parses and validates a JSON file produced by buildExportConfig/buildExportPayload.
+ * Consent is deliberately excluded: importing a backup cannot grant or revoke it.
+ *
+ * @param {string|unknown} input
+ * @returns {{ settings: Record<string, any>, apiKey: string, fallbackApiKeys: Record<string, string>, includesKeys: boolean }}
+ */
+export function parseImportConfig(input) {
+  let raw = input;
+  if (typeof input === 'string') {
+    if (input.length > 1_000_000) throw new Error('Configuration file is too large');
+    try {
+      raw = JSON.parse(input);
+    } catch {
+      throw new Error('Invalid JSON configuration');
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || (Object.getPrototypeOf(raw) !== Object.prototype && Object.getPrototypeOf(raw) !== null)) {
+    throw new Error('Configuration must be a JSON object');
+  }
+
+  const allowedKeys = new Set([...IMPORTABLE_SETTING_KEYS, 'exportedAt', 'hasKey', 'apiKey', 'fallbackApiKeys', 'dataConsent']);
+  const unsupportedKey = Object.keys(raw).find((key) => !allowedKeys.has(key));
+  if (unsupportedKey) throw new Error(`Unsupported configuration field: ${unsupportedKey}`);
+  if (!Number.isInteger(raw.version) || raw.version < 1 || raw.version > SETTINGS_VERSION) {
+    throw new Error('Configuration version is missing, invalid, or newer than this extension supports');
+  }
+  if (raw.exportedAt !== undefined && (typeof raw.exportedAt !== 'string' || !isCanonicalIsoTimestamp(raw.exportedAt))) {
+    throw new Error('Configuration export timestamp is invalid');
+  }
+  if (raw.hasKey !== undefined && typeof raw.hasKey !== 'boolean') throw new Error('Configuration hasKey value is invalid');
+
+  const settingsInput = {};
+  for (const key of IMPORTABLE_SETTING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) settingsInput[key] = raw[key];
+  }
+  if (Array.isArray(settingsInput.fallbacks)) {
+    settingsInput.fallbacks = settingsInput.fallbacks.map((fallback, index) => {
+      if (!fallback || typeof fallback !== 'object' || Array.isArray(fallback)) return fallback;
+      if (fallback.hasKey !== undefined && typeof fallback.hasKey !== 'boolean') {
+        throw new Error(`Configuration fallbacks[${index}].hasKey value is invalid`);
+      }
+      const allowedFallbackKeys = new Set(['id', 'model', 'baseURL', 'hasKey']);
+      const unsupportedFallbackKey = Object.keys(fallback).find((key) => !allowedFallbackKeys.has(key));
+      if (unsupportedFallbackKey) throw new Error(`Unsupported fallback field: ${unsupportedFallbackKey}`);
+      return { id: fallback.id, model: fallback.model, ...(fallback.baseURL !== undefined ? { baseURL: fallback.baseURL } : {}) };
+    });
+  }
+
+  const validation = validateSettings(settingsInput);
+  if (!validation.valid) throw new Error((validation.errors || []).join('; '));
+  const settings = migrateSettings(settingsInput);
+  // Consent is device-local and must be left to the destination installation.
+  delete settings.dataConsent;
+
+  let apiKey = '';
+  if (raw.apiKey !== undefined) {
+    if (typeof raw.apiKey !== 'string') throw new Error('Configuration apiKey must be a string');
+    apiKey = raw.apiKey.trim();
+  }
+
+  const fallbackApiKeys = {};
+  if (raw.fallbackApiKeys !== undefined) {
+    const rawFallbackKeys = raw.fallbackApiKeys;
+    if (!rawFallbackKeys || typeof rawFallbackKeys !== 'object' || Array.isArray(rawFallbackKeys) || (Object.getPrototypeOf(rawFallbackKeys) !== Object.prototype && Object.getPrototypeOf(rawFallbackKeys) !== null)) {
+      throw new Error('Configuration fallbackApiKeys must be an object');
+    }
+    const fallbackIds = new Set(settings.fallbacks.map((fallback) => fallback.id));
+    for (const [id, key] of Object.entries(rawFallbackKeys)) {
+      if (!fallbackIds.has(id)) throw new Error(`Fallback key refers to an unknown fallback: ${id}`);
+      if (typeof key !== 'string') throw new Error(`Fallback key for ${id} must be a string`);
+      if (key.trim()) fallbackApiKeys[id] = key.trim();
+    }
+  }
+
+  return {
+    settings,
+    apiKey,
+    fallbackApiKeys,
+    includesKeys: Boolean(apiKey || Object.keys(fallbackApiKeys).length)
   };
 }
