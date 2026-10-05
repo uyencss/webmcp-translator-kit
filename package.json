@@ -15,6 +15,7 @@
     "check:contract": "node contract/check.mjs",
     "check:closure": "node scripts/check-closure.mjs",
     "check:layout": "node scripts/check-modal-overflow.mjs",
-    "pack:ext": "node scripts/pack-ext.mjs"
+    "pack:ext": "node scripts/pack-ext.mjs",
+    "pack:store": "node scripts/pack-store.mjs"
   }
 }

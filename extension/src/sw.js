@@ -1199,8 +1199,8 @@ function scheduleQueueEntry(entry, delayMs) {
         return;
       }
 
-      // Re-check epoch: if tab epoch changed during queue wait, abort with ABORTED
-      if (entry.epoch !== undefined && tabEpochs.has(entry.tabId) && entry.epoch !== tabEpochs.get(entry.tabId)) {
+      // Re-check epoch: if tab epoch changed during queue wait, abort if older
+      if (entry.epoch !== undefined && tabEpochs.has(entry.tabId) && entry.epoch < tabEpochs.get(entry.tabId)) {
         removeEntryFromQueue(entry);
         entry.resolve(createTypedError(
           'ABORTED',
@@ -1422,13 +1422,19 @@ async function verifyTabDispatchPolicy({ tabId, origin, epoch, expectedConfigRev
   }
 
   if (typeof tabId === 'number') {
-    if (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId)) {
-      return createTypedError(
-        'ABORTED',
-        'Pending translation cancelled by new epoch',
-        false,
-        { reason: 'epoch_changed', tabId }
-      );
+    if (epoch !== undefined && tabEpochs.has(tabId)) {
+      const curTabEpoch = tabEpochs.get(tabId);
+      if (epoch < curTabEpoch) {
+        return createTypedError(
+          'ABORTED',
+          'Pending translation cancelled by new epoch',
+          false,
+          { reason: 'epoch_changed', tabId, epoch, currentEpoch: curTabEpoch }
+        );
+      }
+      if (epoch > curTabEpoch) {
+        tabEpochs.set(tabId, epoch);
+      }
     }
 
     const tabInfo = await resolveTabPolicy(tabId);
@@ -2299,8 +2305,8 @@ export async function executeBatchTranslation({
     };
   }
 
-  // If tab epoch changed while batch was in-flight, do NOT cache and abort
-  if (epoch !== undefined && tabEpochs.has(tabId) && epoch !== tabEpochs.get(tabId)) {
+  // If tab epoch changed while batch was in-flight, do NOT cache and abort if older
+  if (epoch !== undefined && tabEpochs.has(tabId) && epoch < tabEpochs.get(tabId)) {
     return createTypedError(
       'ABORTED',
       'Translation batch discarded due to epoch change',
@@ -3214,7 +3220,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           return { ok: true, cancelled: 0 };
         }
 
-        const nextEpoch = typeof message.epoch === 'number' ? message.epoch : ((tabEpochs.get(tabId) || 0) + 1);
+        const curEpoch = tabEpochs.get(tabId) || 0;
+        const nextEpoch = typeof message.epoch === 'number' ? Math.max(curEpoch, message.epoch) : (curEpoch + 1);
         tabEpochs.set(tabId, nextEpoch);
 
         for (const [reqId, active] of activeBatchControllers.entries()) {
@@ -3460,7 +3467,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         const cost = { batches: 1, codePoints: totalCodePoints };
 
         const reqEpoch = typeof message.epoch === 'number' ? message.epoch : (tabEpochs.get(sender.tab.id) || 0);
-        if (!tabEpochs.has(sender.tab.id)) {
+        if (!tabEpochs.has(sender.tab.id) || reqEpoch > tabEpochs.get(sender.tab.id)) {
           tabEpochs.set(sender.tab.id, reqEpoch);
         }
 

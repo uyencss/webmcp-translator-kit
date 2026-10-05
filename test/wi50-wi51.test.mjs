@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isLoopbackHost,
+  isTailscaleHost,
   isSecureOrLoopbackBaseURL
 } from '../extension/src/consent.mjs';
 import {
@@ -58,6 +59,31 @@ test('WI-51: isLoopbackHost correctly identifies loopback addresses', () => {
   assert.equal(isLoopbackHost(undefined), false);
 });
 
+test('WI-51: isTailscaleHost correctly identifies Tailscale addresses and domains', () => {
+  assert.equal(isTailscaleHost('100.105.109.56'), true);
+  assert.equal(isTailscaleHost('100.64.0.1'), true);
+  assert.equal(isTailscaleHost('100.127.255.254'), true);
+  assert.equal(isTailscaleHost('my-node.ts.net'), true);
+  assert.equal(isTailscaleHost('MY-NODE.TS.NET'), true);
+  assert.equal(isTailscaleHost('fd7a:115c:a1e0::1'), true);
+  assert.equal(isTailscaleHost('[fd7a:115c:a1e0::1]'), true);
+
+  // Non-Tailscale IPs / invalid octets
+  assert.equal(isTailscaleHost('100.63.255.255'), false);
+  assert.equal(isTailscaleHost('100.128.0.1'), false);
+  assert.equal(isTailscaleHost('100.64.0.1evil'), false);
+  assert.equal(isTailscaleHost('100.64.0.1junk'), false);
+  assert.equal(isTailscaleHost('100.64.0.1:8080'), false);
+  assert.equal(isTailscaleHost('ts.net'), false);
+  assert.equal(isTailscaleHost('.ts.net'), false);
+  assert.equal(isTailscaleHost('192.168.1.1'), false);
+  assert.equal(isTailscaleHost('10.0.0.1'), false);
+  assert.equal(isTailscaleHost('localhost'), false);
+  assert.equal(isTailscaleHost(''), false);
+  assert.equal(isTailscaleHost(null), false);
+  assert.equal(isTailscaleHost(undefined), false);
+});
+
 test('WI-51: isSecureOrLoopbackBaseURL enforces HTTPS for remote and allows loopback HTTP', () => {
   // Secure HTTPS
   assert.equal(isSecureOrLoopbackBaseURL('https://api.openai.com/v1'), true);
@@ -70,11 +96,21 @@ test('WI-51: isSecureOrLoopbackBaseURL enforces HTTPS for remote and allows loop
   assert.equal(isSecureOrLoopbackBaseURL('http://127.0.1.5:9000/v1'), true);
   assert.equal(isSecureOrLoopbackBaseURL('http://[::1]:8080/v1'), true);
 
+  // Tailscale HTTP (ALLOWED)
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.105.109.56:20128/v1'), true);
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.64.0.1:8080/v1'), true);
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.127.255.254:8080/v1'), true);
+  assert.equal(isSecureOrLoopbackBaseURL('http://my-node.ts.net:8080/v1'), true);
+  assert.equal(isSecureOrLoopbackBaseURL('http://[fd7a:115c:a1e0::1]:8080/v1'), true);
+
   // Remote HTTP (BLOCKED)
   assert.equal(isSecureOrLoopbackBaseURL('http://api.openai.com/v1'), false);
   assert.equal(isSecureOrLoopbackBaseURL('http://example.com/v1'), false);
   assert.equal(isSecureOrLoopbackBaseURL('http://192.168.1.100:8080/v1'), false);
   assert.equal(isSecureOrLoopbackBaseURL('http://10.0.0.2:8080/v1'), false);
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.63.255.255:8080/v1'), false);
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.128.0.1:8080/v1'), false);
+  assert.equal(isSecureOrLoopbackBaseURL('http://100.64.0.1junk:8080/v1'), false);
 
   // Invalid protocol or format
   assert.equal(isSecureOrLoopbackBaseURL('ftp://localhost:8080/v1'), false);

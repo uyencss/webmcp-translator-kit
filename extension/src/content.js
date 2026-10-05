@@ -775,11 +775,25 @@
     syncFallbackState(resp);
     refreshLivePin();
 
-    if (resp && resp.error && isNonRetryable(resp.error)) {
-      if (resp.error.code === 'RATE_LIMITED') {
-        const retrySec = Math.ceil((resp.error.details?.retryAfterMs || 0) / 1000);
-        console.warn(`[WebMCP Translator] Quota exceeded (${resp.error.details?.scope || 'tab'}): retry after ${retrySec}s`);
+    let rateLimitAttempts = 0;
+    const MAX_RATE_LIMIT_RETRIES = 3;
+    while (resp && resp.error && resp.error.code === 'RATE_LIMITED' && rateLimitAttempts < MAX_RATE_LIMIT_RETRIES) {
+      rateLimitAttempts++;
+      const reportedMs = Number(resp.error.details?.retryAfterMs);
+      const backoffMs = 2000 * Math.pow(2, rateLimitAttempts - 1);
+      const delay = Math.min(Math.max(!isNaN(reportedMs) && reportedMs > 0 ? reportedMs : backoffMs, 1000), 60000);
+      const retrySec = Math.ceil(delay / 1000);
+      console.warn(`[WebMCP Translator] Quota exceeded (${resp.error.details?.scope || 'tab'}): attempt ${rateLimitAttempts}/${MAX_RATE_LIMIT_RETRIES}, waiting ${retrySec}s before retry...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (targetEpoch !== undefined && epoch !== targetEpoch) {
+        return { cancelled: true, applied: 0, failed: 0 };
       }
+      refreshLivePin();
+      resp = await sendChunk(items, currentSettings, targetEpoch, runConfig);
+      syncFallbackState(resp);
+      refreshLivePin();
+    }
+    if (resp && resp.error && isNonRetryable(resp.error)) {
       const isFb = Boolean(currentSettings.fallbackConsumed || resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed || runConfig?.fallbackConsumed || (scrollSession?.active && scrollSession?.fallbackConsumed));
       const isRespFb = Boolean(resp.error.fallbackConsumed || resp.error.details?.fallbackConsumed);
       const fbMod = isFb
@@ -1147,7 +1161,7 @@
             runConfig
           );
 
-          if (epoch !== currentEpoch || runAborted) break;
+          if (epoch !== currentEpoch) break;
 
           const chunkApplied = (chunkRes.applied || 0) + (chunkRes.alreadyApplied || 0);
           totalApplied += chunkApplied;
@@ -1161,9 +1175,8 @@
           lastTranslateStatus.totalFailed = totalFailed;
           lastTranslateStatus.chunksDone = chunksDone;
 
-          if (chunkRes.fatal || chunkRes.cancelled) {
+          if (runAborted || chunkRes.fatal || chunkRes.cancelled) {
             runAborted = true;
-            epoch++;
             break;
           }
         }
@@ -1577,7 +1590,7 @@
 
     const H = window.innerHeight || 800;
     const topBound = SCROLL_BEHIND_H * H;
-    const bottomBound = SCROLL_AHEAD_H * H;
+    const bottomBound = (SCROLL_AHEAD_H + 1) * H;
 
     const root = document.body || document.documentElement;
     if (!root) {
@@ -1744,12 +1757,13 @@
 
     const H = window.innerHeight || 800;
     const topBound = SCROLL_BEHIND_H * H;
-    const bottomBound = SCROLL_AHEAD_H * H;
+    const bottomBound = (SCROLL_AHEAD_H + 1) * H;
 
     const sliceStart = (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
     let sliceNodes = 0;
     let hitBudget = false;
     const candidateRecs = [];
+    const deferredBlocks = [];
     if (!scrollSession.flushSeenRecIds) scrollSession.flushSeenRecIds = new Set();
     const seenRecIds = scrollSession.flushSeenRecIds;
 
@@ -1775,7 +1789,11 @@
         if (!block || !block.isConnected) continue;
         let rect;
         try { rect = block.getBoundingClientRect(); } catch { continue; }
-        if (rect.bottom < topBound || rect.top > bottomBound) continue;
+        if (rect.bottom < topBound) continue;
+        if (rect.top > bottomBound) {
+          deferredBlocks.push(block);
+          continue;
+        }
 
         const blockCenterY = rect.top + (rect.height || (rect.bottom - rect.top) || 0) / 2;
         const distToViewport = Math.abs(blockCenterY - H / 2);
@@ -1907,11 +1925,17 @@
       }
     }
 
+    if (deferredBlocks.length > 0) {
+      for (const b of deferredBlocks) {
+        scrollSession.readyBlocks.add(b);
+      }
+    }
+
     if (candidateRecs.length > 0) {
       dispatchScrollCandidateRecs(candidateRecs);
     }
 
-    const hasMore = hitBudget || scrollSession.readyBlocks.size > 0 || Boolean(scrollSession.flushBlockWalker) || Boolean(scrollSession.followUpDomWalker);
+    const hasMore = hitBudget || Boolean(scrollSession.flushBlockWalker) || Boolean(scrollSession.followUpDomWalker);
 
     if (hasMore) {
       scrollSession.sweepYieldCount++;
@@ -2304,7 +2328,7 @@
     // Lazily observe candidate block containers and seed initial readyBlocks in [-2H, 3H]
     const H = window.innerHeight || 800;
     const topBound = SCROLL_BEHIND_H * H;
-    const bottomBound = SCROLL_AHEAD_H * H;
+    const bottomBound = (SCROLL_AHEAD_H + 1) * H;
     const blocks = document.querySelectorAll(BLOCK_SELECTOR);
     for (const b of blocks) {
       if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
@@ -2365,11 +2389,28 @@
 
     const scanViewportBlocks = () => {
       scrollSession.domSweepNeeded = true;
+      if (scrollSession.flushSeenRecIds) {
+        scrollSession.flushSeenRecIds.clear();
+      }
       if (scrollSession.overflowQueue && scrollSession.overflowQueue.length > 0) {
         drainOverflowQueue();
       }
       if (scrollSession.inFlight >= MAX_IN_FLIGHT_BATCHES) return;
-      scrollSession.followUpDomWalker = null;
+      if (scrollSession.readyBlocks.size === 0) {
+        const H = window.innerHeight || 800;
+        const topBound = SCROLL_BEHIND_H * H;
+        const bottomBound = (SCROLL_AHEAD_H + 1) * H;
+        const blocks = document.querySelectorAll(BLOCK_SELECTOR);
+        for (const b of blocks) {
+          if (b.closest && (b.closest('#__wmt-widget-host') || b.closest('[data-wmt-ignore]'))) continue;
+          try {
+            const rect = b.getBoundingClientRect();
+            if (rect.bottom >= topBound && rect.top <= bottomBound) {
+              scrollSession.readyBlocks.add(b);
+            }
+          } catch {}
+        }
+      }
       scheduleScrollFlush();
     };
     window.addEventListener('scroll', scrollSession.scrollListener, { passive: true });
@@ -2522,8 +2563,8 @@
     host.setAttribute('data-wmt-ignore', 'true');
     host.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;line-height:normal;';
 
-    // Attach closed Shadow DOM
-    const shadow = host.attachShadow({ mode: 'closed' });
+    // Attach open Shadow DOM
+    const shadow = host.attachShadow({ mode: 'open' });
 
     const style = document.createElement('style');
     style.textContent = `
@@ -3469,9 +3510,9 @@
       if (__wmtHalted || !__wmtValidContext()) { __wmtHaltStale(); return; }
       setPanelVisibility(false);
       if (currentMode === 'scroll-follow') {
-        startScrollFollowSession(widgetState);
+        startScrollFollowSession({ ...widgetState, force: true });
       } else {
-        executeTranslation(widgetState).catch((e) => {
+        executeTranslation({ ...widgetState, force: true }).catch((e) => {
           if (__wmtInvalidatedErr(e)) __wmtHaltStale();
         });
       }

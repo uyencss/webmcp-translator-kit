@@ -115,8 +115,38 @@ export function isLoopbackHost(hostname) {
 }
 
 /**
- * Checks whether a URL uses HTTPS or loopback HTTP.
- * Remote HTTP is explicitly rejected.
+ * Checks whether a given hostname is a Tailscale address or domain.
+ * Matches:
+ * - Tailscale IPv4 CGNAT block: 100.64.0.0/10 (100.64.0.0 to 100.127.255.255)
+ * - Tailscale MagicDNS: *.ts.net
+ * - Tailscale IPv6 ULA: fd7a:115c:a1e0::/48
+ *
+ * @param {string} hostname
+ * @returns {boolean}
+ */
+export function isTailscaleHost(hostname) {
+  if (!hostname || typeof hostname !== 'string') return false;
+  const clean = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (/^[a-z0-9][a-z0-9.-]*\.ts\.net$/.test(clean)) return true;
+  const parts = clean.split('.');
+  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
+    const a = Number(parts[0]);
+    const b = Number(parts[1]);
+    const c = Number(parts[2]);
+    const d = Number(parts[3]);
+    if (a === 100 && b >= 64 && b <= 127 && c >= 0 && c <= 255 && d >= 0 && d <= 255) {
+      return true;
+    }
+  }
+  if (clean.startsWith('fd7a:115c:a1e0:') || clean === 'fd7a:115c:a1e0::') {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a URL uses HTTPS, loopback HTTP, or Tailscale HTTP.
+ * Remote public unencrypted HTTP is explicitly rejected.
  *
  * @param {string} url
  * @returns {boolean}
@@ -127,7 +157,7 @@ export function isSecureOrLoopbackBaseURL(url) {
     const u = new URL(url.trim());
     if (u.protocol === 'https:') return true;
     if (u.protocol === 'http:') {
-      return isLoopbackHost(u.hostname);
+      return isLoopbackHost(u.hostname) || isTailscaleHost(u.hostname);
     }
     return false;
   } catch {

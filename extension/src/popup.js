@@ -1,7 +1,7 @@
 // WebMCP Translator Kit — Popup Logic (Taste-Skill Redesign)
 // Contract Version: webmcp-translator-contract/1
 
-import { normalizeOrigin, isLoopbackHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
+import { normalizeOrigin, isLoopbackHost, isTailscaleHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
 import {
   normalizeBaseURLKey,
   clampTabMaxBatches,
@@ -3131,19 +3131,29 @@ if (typeof document !== 'undefined') {
     const urlToCheck = baseURL || (inputBaseUrl ? inputBaseUrl.value.trim() : '') || savedSettings?.baseURL || 'http://localhost:8080/v1';
     const isSecure = isSecureOrLoopbackBaseURL(urlToCheck);
     let isLoopbackHttp = false;
+    let isTailscaleHttp = false;
     try {
       const parsed = new URL(urlToCheck);
-      isLoopbackHttp = parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname);
+      if (parsed.protocol === 'http:') {
+        if (isLoopbackHost(parsed.hostname)) {
+          isLoopbackHttp = true;
+        } else if (isTailscaleHost(parsed.hostname)) {
+          isTailscaleHttp = true;
+        }
+      }
     } catch {}
     const svgIcon = privacyNote.querySelector('svg');
     if (isSecure) {
-      const msg = t(currentUiLocale, isLoopbackHttp ? 'privacy_note_loopback' : 'privacy_note_secure');
+      const noteKey = isLoopbackHttp
+        ? 'privacy_note_loopback'
+        : (isTailscaleHttp ? 'privacy_note_tailscale' : 'privacy_note_secure');
+      const msg = t(currentUiLocale, noteKey);
       privacyNote.title = msg;
       privacyNote.setAttribute('aria-label', msg);
       if (svgIcon) {
         svgIcon.classList.remove('text-warning', 'text-danger');
-        svgIcon.classList.toggle('text-muted', !isLoopbackHttp);
-        svgIcon.classList.toggle('text-warning', isLoopbackHttp);
+        svgIcon.classList.toggle('text-muted', !isLoopbackHttp && !isTailscaleHttp);
+        svgIcon.classList.toggle('text-warning', isLoopbackHttp || isTailscaleHttp);
       }
     } else {
       const msg = t(currentUiLocale, 'privacy_note_insecure');

@@ -1,10 +1,10 @@
 // WebMCP Translator Kit — Pure Settings Schema, Versioning & Migration
 // Contract Version: webmcp-translator-contract/1
 
-import { normalizeOrigin, isLoopbackHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
+import { normalizeOrigin, isLoopbackHost, isTailscaleHost, isSecureOrLoopbackBaseURL } from './consent.mjs';
 import { SUPPORTED_UI_LOCALES } from './i18n.mjs';
 
-export { isLoopbackHost, isSecureOrLoopbackBaseURL };
+export { isLoopbackHost, isTailscaleHost, isSecureOrLoopbackBaseURL };
 
 export const SETTINGS_VERSION = 9;
 export const CURRENT_DATA_CONSENT_VERSION = 2;
