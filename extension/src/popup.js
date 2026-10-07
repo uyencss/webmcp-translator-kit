@@ -691,6 +691,20 @@ if (typeof document !== 'undefined') {
     });
   }
 
+  const mascotPicker = setupMascotPicker({
+    mascotSelectorGrid,
+    selectFabMascot,
+    inputFabSize,
+    fabSizeValue,
+    btnResetFabSize,
+    onPresentationChange: (opts) => broadcastWidgetPresentation(opts),
+    onDirty: () => {
+      flushAutosave();
+      markDirty();
+    },
+    attachListeners: false
+  });
+
   function updateFabSizeDisplay(val, options = {}) {
     mascotPicker.updateFabSizeDisplay(val, options);
   }
