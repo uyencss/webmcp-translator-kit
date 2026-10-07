@@ -38,7 +38,12 @@ for (const mod of contentModules) {
   contents.push(code);
 }
 
-const bundled = contents.join('\n');
+const banner = `// WebMCP Translator Kit — Content Script Runtime Bundle
+// AUTO-GENERATED from extension/src/content/modules/*.js via scripts/sync-content.mjs. DO NOT EDIT DIRECTLY.
+// Source modules: extension/src/content/modules/{constants,walker,chunker,engine,scroll-observer,widget-dom,messages}.js
+`;
+
+const bundled = banner + contents.join('\n');
 fs.writeFileSync(targetFile, bundled, 'utf8');
 
 // Perform AST syntax verification on the generated content script

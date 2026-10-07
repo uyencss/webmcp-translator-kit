@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createFallbackRow, renderFallbackList } from '../extension/src/popup/modules/fallback-rows.mjs';
 import { mergeBatchResults } from '../extension/src/sw/modules/batch-executor.mjs';
+import { applyUiLocale } from '../extension/src/popup/modules/theme-manager.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '..', 'extension', 'src');
@@ -135,4 +136,53 @@ test('Sol 6.1 Blocker 2: PARTIAL_BATCH is logged exactly once (no duplicate in b
   assert.equal(outcome.actualModel, 'fallback-model');
   assert.equal(outcome.fallbackIndex, 1);
   assert.equal(outcome.fallbackConsumed, true);
+});
+
+test('Sol 6.1 Blocker 3: applyUiLocale assigns currentUiLocale before executing render functions', () => {
+  // 1. Static assertion in popup.js: currentUiLocale assignment must precede renderLocalizedStrings inside applyUiLocaleModule callback
+  const fnIdx = popupSrc.indexOf('function applyUiLocale(locale)');
+  assert.ok(fnIdx > 0, 'popup.js must define applyUiLocale');
+  const fnEnd = popupSrc.indexOf('function renderLanguageDropdowns', fnIdx);
+  const fnBody = popupSrc.slice(fnIdx, fnEnd);
+
+  const assignIdx = fnBody.indexOf('currentUiLocale = loc;');
+  const renderIdx = fnBody.indexOf('renderLocalizedStrings();');
+  assert.ok(assignIdx > 0, 'applyUiLocale must assign currentUiLocale');
+  assert.ok(renderIdx > 0, 'applyUiLocale must call renderLocalizedStrings');
+  assert.ok(assignIdx < renderIdx, 'currentUiLocale = loc must execute BEFORE renderLocalizedStrings()');
+
+  // 2. Behavioral assertion: theme-manager applyUiLocale updates DOM lang, selectUiLocale value, and executes callback
+  const mockDoc = {
+    documentElement: {
+      lang: 'en'
+    }
+  };
+  const mockSelect = {
+    value: 'en'
+  };
+  let observedLocaleInCb = null;
+
+  const origDocument = globalThis.document;
+  try {
+    globalThis.document = mockDoc;
+    const returnedLoc = applyUiLocale('vi', mockSelect, (loc) => {
+      observedLocaleInCb = loc;
+    });
+
+    assert.equal(returnedLoc, 'vi');
+    assert.equal(mockDoc.documentElement.lang, 'vi');
+    assert.equal(mockSelect.value, 'vi');
+    assert.equal(observedLocaleInCb, 'vi');
+
+    // Unsupported fallback to DEFAULT_UI_LOCALE ('vi')
+    const fallbackLoc = applyUiLocale('invalid-locale-xyz', mockSelect, (loc) => {
+      observedLocaleInCb = loc;
+    });
+    assert.equal(fallbackLoc, 'vi');
+    assert.equal(mockDoc.documentElement.lang, 'vi');
+    assert.equal(mockSelect.value, 'vi');
+    assert.equal(observedLocaleInCb, 'vi');
+  } finally {
+    globalThis.document = origDocument;
+  }
 });

@@ -1,3 +1,6 @@
+// WebMCP Translator Kit — Content Script Runtime Bundle
+// AUTO-GENERATED from extension/src/content/modules/*.js via scripts/sync-content.mjs. DO NOT EDIT DIRECTLY.
+// Source modules: extension/src/content/modules/{constants,walker,chunker,engine,scroll-observer,widget-dom,messages}.js
 // WebMCP Translator Kit — Content Script Module: Constants & Scope Bootstrap
 // Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
 // Content scripts run in an isolated world; modules share file-level closure scope.

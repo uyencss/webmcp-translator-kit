@@ -33,6 +33,23 @@ import { setupMascotPicker } from './popup/modules/mascot-picker.mjs';
 import { buildRateLimitsConfig, clampRateLimitTunables } from './popup/modules/state.mjs';
 import { renderFallbackList } from './popup/modules/fallback-rows.mjs';
 import { renderAutoSitesList } from './popup/modules/rules-manager.mjs';
+import {
+  showAutoSiteError as showAutoSiteErrorModule,
+  hideAutoSiteError as hideAutoSiteErrorModule,
+  enableSiteForOrigin as enableSiteForOriginModule,
+  refreshSiteDots as refreshSiteDotsModule,
+  commitAutoSite as commitAutoSiteModule,
+  openDraftAutoSite as openDraftAutoSiteModule
+} from './popup/modules/auto-sites-controller.mjs';
+import {
+  formatElapsed as formatElapsedModule,
+  formatDetail as formatDetailModule
+} from './popup/modules/telemetry.mjs';
+import {
+  applyTheme as applyThemeModule,
+  applyFontScale as applyFontScaleModule,
+  applyUiLocale as applyUiLocaleModule
+} from './popup/modules/theme-manager.mjs';
 
 export {
   buildExportPayload,
@@ -50,7 +67,18 @@ export {
   buildRateLimitsConfig,
   clampRateLimitTunables,
   renderFallbackList,
-  renderAutoSitesList
+  renderAutoSitesList,
+  showAutoSiteErrorModule,
+  hideAutoSiteErrorModule,
+  enableSiteForOriginModule,
+  refreshSiteDotsModule,
+  commitAutoSiteModule,
+  openDraftAutoSiteModule,
+  formatElapsedModule,
+  formatDetailModule,
+  applyThemeModule,
+  applyFontScaleModule,
+  applyUiLocaleModule
 };
 
 if (typeof window !== 'undefined') {
@@ -242,33 +270,28 @@ if (typeof document !== 'undefined') {
   let currentFontScale = 'md';
 
   function applyTheme(theme) {
-    const th = (theme === 'light' || theme === 'dark') ? theme : 'dark';
+    const th = applyThemeModule(theme, selectTheme);
     currentTheme = th;
-    document.documentElement.setAttribute('data-theme', th);
-    if (selectTheme) selectTheme.value = th;
   }
 
   function applyFontScale(scale) {
-    const sc = (scale === 'sm' || scale === 'md' || scale === 'lg') ? scale : 'md';
+    const sc = applyFontScaleModule(scale, selectUiFontScale);
     currentFontScale = sc;
-    document.documentElement.dataset.fontscale = sc;
-    if (selectUiFontScale) selectUiFontScale.value = sc;
   }
 
   function applyUiLocale(locale) {
-    const loc = SUPPORTED_UI_LOCALES.includes(locale) ? locale : 'vi';
-    currentUiLocale = loc;
-    document.documentElement.lang = loc;
-    if (selectUiLocale) selectUiLocale.value = loc;
-    renderLocalizedStrings();
-    renderLanguageDropdowns();
-    renderAutoSites();
-    renderFallbackRows();
-    renderFavoritesSection();
-    renderAllModelDropdowns();
-    if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
-    if (typeof updateAutoConsentWarningBanner === 'function') updateAutoConsentWarningBanner();
-    evaluateActionReadiness();
+    applyUiLocaleModule(locale, selectUiLocale, (loc) => {
+      currentUiLocale = loc;
+      renderLocalizedStrings();
+      renderLanguageDropdowns();
+      renderAutoSites();
+      renderFallbackRows();
+      renderFavoritesSection();
+      renderAllModelDropdowns();
+      if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
+      if (typeof updateAutoConsentWarningBanner === 'function') updateAutoConsentWarningBanner();
+      evaluateActionReadiness();
+    });
   }
 
   function renderLanguageDropdowns() {
@@ -2453,38 +2476,10 @@ if (typeof document !== 'undefined') {
 
   // Telemetry Formatters
   function formatElapsed(ms) {
-    if (typeof ms !== 'number' || ms <= 0) return '';
-    return `${(ms / 1000).toFixed(1)}s`;
+    return formatElapsedModule(ms);
   }
 
   function formatDetail(state, data = {}) {
-    const elapsed = formatElapsed(data.elapsedMs);
-    let modelStr = '';
-    if (data.actualModel) {
-      if (typeof data.fallbackIndex === 'number' && data.fallbackIndex >= 0) {
-        modelStr = `${data.actualModel} (fallback ${data.fallbackIndex + 1})`;
-      } else {
-        modelStr = data.actualModel;
-      }
-    } else {
-      modelStr = data.model || selectModel?.value || DEFAULT_MODEL;
-    }
-
-    const metaStr = elapsed ? ` (${elapsed} · ${modelStr})` : ` (${modelStr})`;
-
-    if (state === 'watching') {
-      const effApplied = typeof data.totalCollected === 'number'
-        ? Math.min(data.totalApplied || 0, data.totalCollected)
-        : (data.totalApplied || data.applied || 0);
-      const countStr = typeof data.totalCollected === 'number'
-        ? `${effApplied}/${data.totalCollected}`
-        : `${effApplied}`;
-      const failed = typeof data.totalFailed === 'number' ? data.totalFailed : 0;
-      const failStr = failed > 0 ? ' ' + t(currentUiLocale, 'status_failed_count', { count: failed }) : '';
-      const errSuffix = data.lastError && data.lastError.code ? t(currentUiLocale, 'detail_last_error_retry', { code: data.lastError.code }) : '';
-      return t(currentUiLocale, 'detail_watching_progress', { count: countStr, fail: failStr, meta: metaStr, errSuffix });
-    }
-
     if (state === 'translated') {
       const effTranslated = typeof data.totalCollected === 'number'
         ? Math.min(data.totalApplied || 0, data.totalCollected)
@@ -2496,65 +2491,29 @@ if (typeof document !== 'undefined') {
       if (failed > 0) {
         return t(currentUiLocale, 'detail_translated_with_errors', { count: countStr, failed });
       }
+      const elapsed = formatElapsed(data.elapsedMs);
+      const modelStr = (data.actualModel && typeof data.fallbackIndex === 'number' && data.fallbackIndex >= 0)
+        ? `${data.actualModel} (fallback ${data.fallbackIndex + 1})`
+        : (data.actualModel || data.model || selectModel?.value || DEFAULT_MODEL);
+      const metaStr = elapsed ? ` (${elapsed} · ${modelStr})` : ` (${modelStr})`;
       return t(currentUiLocale, 'detail_translated_success', { count: countStr, meta: metaStr });
     }
-
     if (state === 'error') {
-      const err = data.error || {};
-      const code = err.code || 'ERROR';
-      const msg = err.message || '';
-      if (code === 'DROPPED_ON_RESTART') {
-        return t(currentUiLocale, 'err_dropped_on_restart');
-      }
-      if (code === 'TIMEOUT') {
-        return t(currentUiLocale, 'err_timeout', { msg: msg || t(currentUiLocale, 'status_timeout_default'), meta: metaStr });
-      }
-      if (code === 'OPT_IN_REQUIRED') {
-        return t(currentUiLocale, 'err_opt_in_required');
-      }
-      if (code === 'SITE_NOT_ALLOWED') {
-        return t(currentUiLocale, 'err_site_not_allowed');
-      }
-      if (code === 'KEY_ACCESS_UNAVAILABLE') {
-        showKeyAccessBanner();
-        return t(currentUiLocale, 'err_key_access_unavailable');
-      }
-      if (code === 'CONSENT_STATE_UNAVAILABLE') {
-        return t(currentUiLocale, 'err_consent_state_unavailable');
-      }
-      if (code === 'PERMISSION_REQUIRED') {
-        return t(currentUiLocale, 'err_permission_required');
-      }
-      if (code === 'RATE_LIMITED') {
-        const scope = err.details?.scope || 'tab';
-        const retrySec = Math.ceil((err.details?.retryAfterMs || 0) / 1000);
-        return t(currentUiLocale, 'err_rate_limited', { scope, sec: retrySec });
-      }
-      if (code === 'CAP_EXCEEDED') {
-        const capType = err.details?.capType || t(currentUiLocale, 'cap_type_size');
-        const limit = err.details?.limit;
-        const actual = err.details?.actual;
-        const limitStr = (limit !== undefined && actual !== undefined) ? ` (${actual} > ${limit})` : '';
-        return t(currentUiLocale, 'err_cap_exceeded', { type: capType, limit: limitStr });
-      }
-      if (code === 'INVALID_SCHEMA') {
-        const schemaErrors = (err.details?.schemaErrors || []).join(', ');
-        return t(currentUiLocale, 'err_invalid_schema', { errors: schemaErrors ? ': ' + schemaErrors : '' });
-      }
-      if (code === 'NETWORK') {
-        return t(currentUiLocale, 'err_network');
-      }
-      if (code.startsWith('HTTP_')) {
-        const statusText = err.details?.statusText || msg || '';
-        return t(currentUiLocale, 'err_server_response', { code, statusText });
-      }
-      if (code === 'RATE_STATE_UNAVAILABLE') {
-        return t(currentUiLocale, 'err_rate_state_unavailable');
-      }
-      return `[${code}] ${msg}${metaStr}`;
+      return formatDetailModule(state, data, {
+        currentUiLocale,
+        t,
+        showKeyAccessBanner,
+        selectModel,
+        DEFAULT_MODEL
+      });
     }
-
-    return '';
+    return formatDetailModule(state, data, {
+      currentUiLocale,
+      t,
+      showKeyAccessBanner,
+      selectModel,
+      DEFAULT_MODEL
+    });
   }
 
   // Check tab status and queue status
@@ -3157,74 +3116,24 @@ if (typeof document !== 'undefined') {
 
   // Tab 2 Auto-Translate Sites Management
   function showAutoSiteError(msg) {
-    if (!autoSiteError) return;
-    autoSiteError.textContent = msg;
-    autoSiteError.style.display = 'block';
+    showAutoSiteErrorModule(autoSiteError, msg);
   }
 
   function hideAutoSiteError() {
-    if (!autoSiteError) return;
-    autoSiteError.textContent = '';
-    autoSiteError.style.display = 'none';
+    hideAutoSiteErrorModule(autoSiteError);
   }
 
-  // Shared: grant host permission + enable site consent for an origin.
-  // Must run inside a user gesture (button click). Adding an origin to the
-  // auto list alone is NOT enough — the auto-start gate also requires site
-  // consent + host permission, otherwise auto-translate silently does nothing.
   async function enableSiteForOrigin(origin) {
-    let granted = false;
-    try {
-      if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
-        granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
-      }
-      if (!granted && chrome.permissions && typeof chrome.permissions.request === 'function') {
-        granted = await chrome.permissions.request({ origins: [origin + '/*'] });
-      } else if (!chrome.permissions) {
-        granted = true;
-      }
-    } catch {
-      granted = false;
-    }
-    if (!granted) return { ok: false, reason: 'permission' };
-    const resp = await sendMsg({ action: 'SET_SITE_ENABLED', origin, enabled: true });
-    if (chrome.runtime.lastError || !resp || resp.error) {
-      return { ok: false, reason: 'save', error: (resp && resp.error) || chrome.runtime.lastError };
-    }
-    return { ok: true };
+    return enableSiteForOriginModule(origin, sendMsg);
   }
 
-  // Per-row status dots: green = permission granted + autoStart on (auto will
-  // run); amber = in list but missing permission/consent (auto silent);
-  // grey = autoStart off.
   async function refreshSiteDots() {
-    if (!autoSitesList) return;
-    const cards = autoSitesList.querySelectorAll('.auto-site-card');
-    for (const card of cards) {
-      const origin = card.dataset ? card.dataset.origin : null;
-      const dot = card.querySelector('.site-dot');
-      const powerBtn = card.querySelector('.btn-site-enable');
-      if (!dot || !origin) continue;
-      let granted = false;
-      try {
-        if (chrome.permissions && typeof chrome.permissions.contains === 'function') {
-          granted = await chrome.permissions.contains({ origins: [origin + '/*'] });
-        }
-      } catch {}
-      const site = autoTranslateSites.find((s) => (s.origin || s) === origin);
-      const autoOn = site && site.autoStart !== false;
-      const state = !autoOn ? 'off' : (granted ? 'on' : 'standby');
-      dot.dataset.state = state;
-      dot.title = state === 'on'
-        ? t(currentUiLocale, 'site_state_on', { origin })
-        : state === 'standby'
-          ? t(currentUiLocale, 'site_state_standby', { origin })
-          : t(currentUiLocale, 'site_state_off', { origin });
-      if (powerBtn) {
-        powerBtn.classList.toggle('enabled', granted);
-        powerBtn.title = granted ? t(currentUiLocale, 'site_btn_enabled', { origin }) : t(currentUiLocale, 'site_btn_enable', { origin });
-      }
-    }
+    return refreshSiteDotsModule({
+      autoSitesList,
+      autoTranslateSites,
+      currentUiLocale,
+      t
+    });
   }
 
   function renderAutoSites() {
@@ -3295,130 +3204,37 @@ if (typeof document !== 'undefined') {
     });
   }
 
-  // Tab 2: no save button — every row control autosaves via markDirty();
-  // delete/add flows persist immediately in their own handlers below.
-
-
-  // Commit a validated origin to the auto list: save + enable consent in the
-  // same gesture (the auto-start gate needs both, otherwise silent no-op).
   async function commitAutoSite(norm) {
-    if (!settingsLoaded) {
-      showAutoSiteError(getSettingsNotLoadedMsg());
-      return false;
-    }
-    if (autoTranslateSites.some((s) => (s.origin || s) === norm)) {
-      showAutoSiteError(t(currentUiLocale, 'err_site_exists', { origin: norm }));
-      return false;
-    }
-    if (autoTranslateSites.length >= 200) {
-      showAutoSiteError(t(currentUiLocale, 'err_site_max_reached'));
-      return false;
-    }
-    const newEntry = { origin: norm, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null };
-    const updatedList = [...autoTranslateSites, newEntry];
-    const saveResp = await sendMsg({ action: 'SAVE_SETTINGS', settings: { autoTranslateSites: updatedList } });
-    if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-      const err = (saveResp && saveResp.error) || chrome.runtime.lastError || {};
-      showAutoSiteError(t(currentUiLocale, 'err_add_site_failed', { error: (err && err.message) || t(currentUiLocale, 'err_cannot_save') }));
-      return false;
-    }
-    autoTranslateSites = updatedList;
-    savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
-    renderAutoSites();
-    const enableRes = await enableSiteForOrigin(norm);
-    if (!enableRes.ok) {
-      showAutoSiteError(enableRes.reason === 'permission'
-        ? t(currentUiLocale, 'msg_site_added_need_perm', { origin: norm })
-        : t(currentUiLocale, 'msg_site_added_enable_failed', { origin: norm }));
-    }
-    if (norm === currentConsent.siteOrigin) {
-      await loadConsent();
-    }
-    refreshSiteDots();
-    return true;
+    return commitAutoSiteModule({
+      norm,
+      settingsLoaded,
+      autoTranslateSites,
+      savedSettings,
+      sendMsg,
+      enableSiteForOriginFn: enableSiteForOrigin,
+      currentConsent,
+      loadConsent,
+      renderAutoSites,
+      refreshSiteDotsFn: refreshSiteDots,
+      showAutoSiteErrorFn: showAutoSiteError,
+      getSettingsNotLoadedMsg,
+      currentUiLocale,
+      t
+    });
   }
 
-  // Draft row: opened by the + icon. Input is prefilled with the current
-  // page origin, or left empty when the current page is already listed
-  // (or is not a valid HTTP(S) page).
   function openDraftAutoSite() {
-    if (!autoSitesList) return;
-    hideAutoSiteError();
-    if (autoSitesList.querySelector('.auto-site-draft')) {
-      const existing = autoSitesList.querySelector('.auto-site-draft input');
-      if (existing) existing.focus();
-      return;
-    }
-    let prefill = '';
-    const tabUrl = activeTab && activeTab.url ? activeTab.url : '';
-    const curOrigin = tabUrl ? normalizeOrigin(tabUrl) : null;
-    if (curOrigin && !autoTranslateSites.some((s) => (s.origin || s) === curOrigin)) {
-      prefill = curOrigin;
-    }
-
-    const draft = document.createElement('div');
-    draft.className = 'auto-site-card auto-site-draft';
-    draft.setAttribute('role', 'listitem');
-
-    const row = document.createElement('div');
-    row.className = 'input-with-button';
-
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.id = 'input-auto-site-draft';
-    input.placeholder = 'https://example.com';
-    input.autocomplete = 'off';
-    input.setAttribute('aria-label', t(currentUiLocale, 'site_draft_input_aria'));
-    input.value = prefill;
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'button';
-    confirmBtn.className = 'btn-icon btn-sm';
-    confirmBtn.title = t(currentUiLocale, 'btn_add_site_confirm_title');
-    confirmBtn.setAttribute('aria-label', t(currentUiLocale, 'btn_add_site_confirm_title'));
-    confirmBtn.innerHTML = SVG_ICONS.check;
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn-icon btn-sm';
-    cancelBtn.title = t(currentUiLocale, 'btn_cancel_title');
-    cancelBtn.setAttribute('aria-label', t(currentUiLocale, 'btn_cancel_title'));
-    cancelBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>';
-
-    const doConfirm = async () => {
-      const val = input.value.trim();
-      if (!val) {
-        showAutoSiteError(t(currentUiLocale, 'err_origin_required'));
-        return;
-      }
-      const norm = normalizeOrigin(val);
-      if (!norm) {
-        showAutoSiteError(t(currentUiLocale, 'err_origin_invalid'));
-        return;
-      }
-      confirmBtn.disabled = true;
-      const ok = await commitAutoSite(norm);
-      confirmBtn.disabled = false;
-      if (ok && draft.isConnected) draft.remove();
-    };
-    confirmBtn.addEventListener('click', doConfirm);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        doConfirm();
-      } else if (e.key === 'Escape') {
-        draft.remove();
-      }
+    openDraftAutoSiteModule({
+      autoSitesList,
+      activeTab,
+      autoTranslateSites,
+      currentUiLocale,
+      SVG_ICONS,
+      commitAutoSiteFn: commitAutoSite,
+      showAutoSiteErrorFn: showAutoSiteError,
+      hideAutoSiteErrorFn: hideAutoSiteError,
+      t
     });
-    cancelBtn.addEventListener('click', () => draft.remove());
-
-    row.appendChild(input);
-    row.appendChild(confirmBtn);
-    row.appendChild(cancelBtn);
-    draft.appendChild(row);
-    autoSitesList.prepend(draft);
-    input.focus();
-    if (prefill) input.select();
   }
 
   if (btnAddCurrentSite) {

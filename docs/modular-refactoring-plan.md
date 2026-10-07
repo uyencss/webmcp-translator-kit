@@ -159,3 +159,23 @@ Hiện tại, codebase của extension đang tập trung trong 6 tệp đơn kh�
     - [x] **Focused Verification**: Bổ sung bộ kiểm thử `test/modular-sol-verification.test.mjs` xác thực độc lập cả hai hành vi (render fallback và single error log).
     - [x] **Doc Parity**: Đồng bộ số dòng as-built (`popup.js`: 3,641; `sw.js`: 3,382) và trạng thái các module.
 
+- [x] **Giai đoạn 7: Deep Modularization (Bóc tách sâu đợt 2 theo yêu cầu người dùng)**
+  - [x] **Content Script & i18n Globals Clarity**: Ghi chú rõ ràng banner auto-generated trong `content.js` và `i18n-globals.js` trỏ trực tiếp đến source modules (`content/modules/*.js` và `locales/*.mjs`), giải thích ràng buộc MV3 content scripts không hỗ trợ native ES modules injection.
+  - [x] **sw.js Deep Extraction**:
+    - [x] `extension/src/sw/modules/keys-manager.mjs`: Bóc tách toàn bộ xử lý vòng đời credentials (`handleSetKeyAction`, `handleSetFallbackKeyAction`, `handleDeleteFallbackKeyAction`, `handleDeleteKeyAction`, `handleHasKeyAction`, `abortActiveWorkOnCredentialChange`).
+    - [x] `extension/src/sw/modules/models-discovery.mjs`: Bóc tách discovery endpoints, hash fingerprint SHA-256 (`computeKeyFingerprint`), kiểm tra quyền HTTPS/loopback (`checkBaseUrlPermission`), và L2 caching models (`listModelsWithContext`).
+    - [x] `sw.js`: Giảm từ 3,382 dòng xuống 3,136 dòng, giữ nguyên router chính và static contract assertions.
+  - [x] **popup.js Deep Extraction**:
+    - [x] `extension/src/popup/modules/auto-sites-controller.mjs`: Bóc tách toàn bộ controller auto sites (`showAutoSiteError`, `hideAutoSiteError`, `enableSiteForOrigin`, `refreshSiteDots`, `commitAutoSite`, `openDraftAutoSite`).
+    - [x] `extension/src/popup/modules/telemetry.mjs`: Bóc tách format thời gian, thống kê batch progress, và phân loại mã lỗi (`formatElapsed`, `formatDetail`).
+    - [x] `extension/src/popup/modules/theme-manager.mjs`: Bóc tách quản lý theme dark/light, font scale, và ngôn ngữ UI (`applyTheme`, `applyFontScale`, `applyUiLocale`).
+    - [x] `popup.js`: Giảm từ 3,641 dòng xuống 3,456 dòng, bảo toàn nguyên vẹn lát cắt kiểm thử VM sandbox và delimiter comments.
+  - [x] **Kiểm thử tự động hoàn tất**:
+    - [x] Chạy toàn bộ 410 automated tests: 410 PASS, 0 FAIL.
+    - [x] Bổ sung test `Sol 6.1 Blocker 3` trong `test/modular-sol-verification.test.mjs` xác thực thứ tự gán `currentUiLocale` trước khi render.
+    - [x] Contract check (`npm run check:contract`): `CONTRACT_OK`.
+    - [x] Closure check (`npm run check:closure`): `CLOSURE_OK`.
+    - [x] AST syntax check (`node --check`): 100% PASS cho mọi tệp module mới và sửa đổi.
+  - [x] **Reviewer L1 (Muse 1.3 Contributor)**: Đã kiểm tra và phê duyệt sau khi fix `dataset.fontscale` attribute.
+  - [x] **Reviewer L2 (Codex Sol 6.1 High)**: **STATUS: ACCEPTED** (0 blocking regressions, zero test failures, verified build & packaging).
+

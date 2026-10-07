@@ -53,15 +53,11 @@ const TRANSLATE_TIMEOUT_MS = 60000;
 const LIST_MODELS_TIMEOUT_MS = 15000;
 const DEFAULT_MODEL = 'ag/gemini-3.1-pro-low';
 
-const MODEL_CACHE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MODEL_CACHE_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
 let configRevision = 1;
 // A decline takes effect synchronously, before queued storage/cache cleanup can await.
 // Keep the gate closed if persistence fails; only a successful explicit consent write clears it.
 let dataConsentRevocationPending = false;
 let dataConsentRevocationGeneration = 0;
-let _revalidateModelsPromise = null;
 
 // Ephemeral In-Memory Cache: destroyed upon SW restart per contract/lifecycle.md §3.3
 const translationCache = createTranslationCache({
@@ -131,6 +127,33 @@ export {
   createTypedError,
   isPrivilegedSender,
   verifyWidgetSender
+};
+
+import {
+  abortActiveWorkOnCredentialChange,
+  handleSetKeyAction,
+  handleSetFallbackKeyAction,
+  handleDeleteFallbackKeyAction,
+  handleDeleteKeyAction,
+  handleHasKeyAction
+} from './sw/modules/keys-manager.mjs';
+
+import {
+  computeKeyFingerprint as computeKeyFingerprintModule,
+  checkBaseUrlPermission as checkBaseUrlPermissionModule,
+  listModelsWithContext
+} from './sw/modules/models-discovery.mjs';
+
+export {
+  abortActiveWorkOnCredentialChange,
+  handleSetKeyAction,
+  handleSetFallbackKeyAction,
+  handleDeleteFallbackKeyAction,
+  handleDeleteKeyAction,
+  handleHasKeyAction,
+  computeKeyFingerprintModule,
+  checkBaseUrlPermissionModule,
+  listModelsWithContext
 };
 
 // Provider concurrency semaphore = 2 (default, updated dynamically from settings)
@@ -1252,12 +1275,7 @@ async function notifyAllWidgetStateChanged(patch) {
 
 // Hash full key + baseURL into SHA-256 hex string (zero key material stored)
 async function computeKeyFingerprint(key, baseURL) {
-  if (!key) return '';
-  const normBaseURL = String(baseURL || '').trim();
-  const data = new TextEncoder().encode(`${key}::${normBaseURL}`);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return computeKeyFingerprintModule(key, baseURL);
 }
 
 // Adapter router instance configuration
@@ -1273,169 +1291,26 @@ const routerConfig = {
 const router = createDirect9Router(routerConfig);
 
 // Model Discovery (L2 storage.local cache with TTL & background revalidation)
-// Fail-fast diagnostic: SW fetch to the provider needs its host permission.
-// Without it the request dies as opaque "Failed to fetch" — surface the real
-// cause instead. Skipped in test mode (harness bypasses the permission system).
 async function checkBaseUrlPermission(baseURL) {
-  if (!isSecureOrLoopbackBaseURL(baseURL)) {
-    return createTypedError(
-      'INSECURE_ENDPOINT_BLOCKED',
-      'Chỉ chấp nhận Base URL HTTPS hoặc loopback HTTP (localhost, 127.0.0.1) — không gửi dữ liệu qua HTTP từ xa',
-      false,
-      { reason: 'HTTPS_REQUIRED' }
-    );
-  }
-  if (_testMode) return null;
-  const baseOrigin = baseURL ? normalizeOrigin(baseURL) : null;
-  if (!baseOrigin) return null;
-  let granted = false;
-  try {
-    granted = await permissionContains(baseOrigin);
-  } catch {
-    granted = false;
-  }
-  if (!granted) {
-    return createTypedError(
-      'PERMISSION_REQUIRED',
-      'Chưa cấp quyền kết nối Base URL — bấm nút khiên cạnh ô Base URL để cấp quyền rồi thử lại',
-      false,
-      { origin: baseOrigin, permissionType: 'host' }
-    );
-  }
-  return null;
+  return checkBaseUrlPermissionModule({
+    baseURL,
+    testMode: _testMode,
+    permissionContains
+  });
 }
 
 async function listModels(options = {}) {
-  const forceRefresh = Boolean(options && options.forceRefresh);
-  await ensureStorageAccess();
-  const settings = await getStoredSettings();
-
-  // P1-1: Consent Gate — gate LIST_MODELS (+ mọi op chạm key/endpoint) bằng dataConsent accepted
-  if (!checkDataConsentAccepted(settings)) {
-    return createTypedError(
-      'DATA_CONSENT_REQUIRED',
-      'Data consent not accepted — please accept terms in popup before listing models',
-      false,
-      { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
-    );
-  }
-
-  const apiKey = (options && options.apiKey) || (await getStoredApiKey());
-  const baseURL = (options && options.baseURL) || settings.baseURL || '';
-
-  // P1-2: Centralized HTTPS/loopback guard — remote http chặn + lỗi rõ ngay cả khi cache stale
-  const basePermError = await checkBaseUrlPermission(baseURL);
-  if (basePermError) return basePermError;
-
-  if (!baseURL || !apiKey) {
-    return await router.listModels({ forceRefresh, baseURL, apiKey });
-  }
-
-  const fingerprint = await computeKeyFingerprint(apiKey, baseURL);
-
-  // Read L2 cache from storage.local
-  let cached = null;
-  try {
-    const res = await chrome.storage.local.get(['modelListCache']);
-    cached = res.modelListCache;
-  } catch {}
-
-  const isCacheValid = Boolean(
-    cached &&
-    cached.baseURL === baseURL &&
-    cached.keyFingerprint === fingerprint &&
-    Array.isArray(cached.models) &&
-    typeof cached.fetchedAt === 'number'
-  );
-
-  const now = Date.now();
-  const age = isCacheValid ? (now - cached.fetchedAt) : Infinity;
-
-  // 1. Force refresh: bypass L1 and L2
-  if (forceRefresh) {
-    const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
-    if (fetchRes && Array.isArray(fetchRes.models)) {
-      const fetchedAt = Date.now();
-      await chrome.storage.local.set({
-        modelListCache: {
-          baseURL,
-          keyFingerprint: fingerprint,
-          models: fetchRes.models,
-          fetchedAt
-        }
-      });
-      return { models: fetchRes.models, stale: false, fetchedAt };
-    }
-    // Fetch failed: if stale cache exists within 7 days, return stale + error
-    if (isCacheValid && age <= MODEL_CACHE_STALE_MAX_MS) {
-      return {
-        models: cached.models,
-        stale: true,
-        fetchedAt: cached.fetchedAt,
-        error: fetchRes?.error || fetchRes
-      };
-    }
-    return fetchRes;
-  }
-
-  // 2. Fresh (<24h): return immediately
-  if (isCacheValid && age < MODEL_CACHE_FRESH_MS) {
-    return {
-      models: cached.models,
-      stale: false,
-      fetchedAt: cached.fetchedAt
-    };
-  }
-
-  // 3. Stale (<= 7 days): return immediately, revalidate in background (shared promise)
-  if (isCacheValid && age <= MODEL_CACHE_STALE_MAX_MS) {
-    if (!_revalidateModelsPromise) {
-      _revalidateModelsPromise = (async () => {
-        try {
-          const permErr = await checkBaseUrlPermission(baseURL);
-          if (permErr) return;
-          const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
-          if (fetchRes && Array.isArray(fetchRes.models)) {
-            const fetchedAt = Date.now();
-            await chrome.storage.local.set({
-              modelListCache: {
-                baseURL,
-                keyFingerprint: fingerprint,
-                models: fetchRes.models,
-                fetchedAt
-              }
-            });
-            notifyModelsUpdated({ models: fetchRes.models, fetchedAt });
-          }
-        } catch {
-        } finally {
-          _revalidateModelsPromise = null;
-        }
-      })();
-    }
-    return {
-      models: cached.models,
-      stale: true,
-      fetchedAt: cached.fetchedAt,
-      refreshing: true
-    };
-  }
-
-  // 4. Missing, fingerprint changed, or > 7 days: blocking fetch
-  const fetchRes = await router.listModels({ forceRefresh: true, baseURL, apiKey });
-  if (fetchRes && Array.isArray(fetchRes.models)) {
-    const fetchedAt = Date.now();
-    await chrome.storage.local.set({
-      modelListCache: {
-        baseURL,
-        keyFingerprint: fingerprint,
-        models: fetchRes.models,
-        fetchedAt
-      }
-    });
-    return { models: fetchRes.models, stale: false, fetchedAt };
-  }
-  return fetchRes;
+  return listModelsWithContext(options, {
+    router,
+    ensureStorageAccess,
+    getStoredSettings,
+    getStoredApiKey,
+    checkDataConsentAccepted,
+    CURRENT_DATA_CONSENT_VERSION,
+    testMode: _testMode,
+    permissionContains,
+    notifyModelsUpdated
+  });
 }
 
 // Batch Translation (delegated to adapter)
@@ -2179,176 +2054,51 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'SET_KEY': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'SET_KEY is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        await ensureStorageAccess();
-        configRevision++;
-        translationCache.clear();
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          try { active.controller.abort('credential_changed'); } catch {}
-        }
-        activeBatchControllers.clear();
-        for (const [tabId, queue] of tabQueues.entries()) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Translation request aborted due to credential change',
-              false,
-              { reason: 'Credential changed' }
-            ));
-          }
-        }
-        tabQueues.clear();
-        await clearL2Cache();
-        // Invalidate model list cache on key change (best-effort)
-        try {
-          await chrome.storage.local.remove(['modelListCache']);
-        } catch {}
-        if (typeof message.key === 'string') {
-          await chrome.storage.local.set({ api_key: message.key });
-        }
-        notifyAllWidgetStateChanged();
-        return { ok: true, configRevision };
+        return await handleSetKeyAction({
+          message,
+          sender,
+          ensureStorageAccess,
+          abortContext: { activeBatchControllers, tabQueues, translationCache, clearL2Cache },
+          bumpConfigRevision: () => ++configRevision,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'SET_FALLBACK_KEY': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'SET_FALLBACK_KEY is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const fbId = typeof message.id === 'string' ? message.id.trim() : '';
-        if (!fbId) {
-          return createTypedError('INVALID_SCHEMA', 'Fallback id is required', false, { id: message.id });
-        }
-        const key = typeof message.key === 'string' ? message.key.trim() : '';
-        if (!key) {
-          return createTypedError('INVALID_SCHEMA', 'Fallback key must be a non-empty string', false);
-        }
-
-        await ensureStorageAccess();
-        const settings = await getStoredSettings();
-        const exists = Array.isArray(settings.fallbacks) && settings.fallbacks.some((fb) => fb && fb.id === fbId);
-        if (!exists) {
-          return createTypedError('INVALID_SCHEMA', `Fallback id "${fbId}" does not exist in settings`, false, { id: fbId });
-        }
-
-        configRevision++;
-        translationCache.clear();
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          try { active.controller.abort('credential_changed'); } catch {}
-        }
-        activeBatchControllers.clear();
-        for (const [tabId, queue] of tabQueues.entries()) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Translation request aborted due to credential change',
-              false,
-              { reason: 'Credential changed' }
-            ));
-          }
-        }
-        tabQueues.clear();
-        await clearL2Cache();
-
-        const res = await chrome.storage.local.get(['fallback_api_keys']);
-        const fbKeys = res.fallback_api_keys || {};
-        fbKeys[fbId] = key;
-        await chrome.storage.local.set({ fallback_api_keys: fbKeys });
-
-        notifyAllWidgetStateChanged();
-        return { ok: true, configRevision };
+        return await handleSetFallbackKeyAction({
+          message,
+          sender,
+          ensureStorageAccess,
+          getStoredSettings,
+          abortContext: { activeBatchControllers, tabQueues, translationCache, clearL2Cache },
+          bumpConfigRevision: () => ++configRevision,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'DELETE_FALLBACK_KEY': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'DELETE_FALLBACK_KEY is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const fbId = typeof message.id === 'string' ? message.id.trim() : '';
-        if (!fbId) {
-          return createTypedError('INVALID_SCHEMA', 'Fallback id is required', false, { id: message.id });
-        }
-
-        await ensureStorageAccess();
-        configRevision++;
-        translationCache.clear();
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          try { active.controller.abort('credential_changed'); } catch {}
-        }
-        activeBatchControllers.clear();
-        for (const [tabId, queue] of tabQueues.entries()) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Translation request aborted due to credential removal',
-              false,
-              { reason: 'Credential removed' }
-            ));
-          }
-        }
-        tabQueues.clear();
-        await clearL2Cache();
-
-        const res = await chrome.storage.local.get(['fallback_api_keys']);
-        const fbKeys = res.fallback_api_keys || {};
-        if (fbId in fbKeys) {
-          delete fbKeys[fbId];
-          await chrome.storage.local.set({ fallback_api_keys: fbKeys });
-        }
-
-        notifyAllWidgetStateChanged();
-        return { ok: true, configRevision };
+        return await handleDeleteFallbackKeyAction({
+          message,
+          sender,
+          ensureStorageAccess,
+          abortContext: { activeBatchControllers, tabQueues, translationCache, clearL2Cache },
+          bumpConfigRevision: () => ++configRevision,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'DELETE_KEY': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'DELETE_KEY is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        await ensureStorageAccess();
-        configRevision++;
-        translationCache.clear();
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          try { active.controller.abort('credential_changed'); } catch {}
-        }
-        activeBatchControllers.clear();
-        for (const [tabId, queue] of tabQueues.entries()) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Translation request aborted due to credential removal',
-              false,
-              { reason: 'Credential removed' }
-            ));
-          }
-        }
-        tabQueues.clear();
-        await clearL2Cache();
-        // Invalidate model list cache on key removal, and remove all fallback keys
-        await chrome.storage.local.remove(['modelListCache', 'api_key', 'fallback_api_keys']);
-        notifyAllWidgetStateChanged();
-        return { ok: true, configRevision };
+        return await handleDeleteKeyAction({
+          sender,
+          ensureStorageAccess,
+          abortContext: { activeBatchControllers, tabQueues, translationCache, clearL2Cache },
+          bumpConfigRevision: () => ++configRevision,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'HAS_KEY': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'HAS_KEY is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const key = await getStoredApiKey();
-        return { hasKey: Boolean(key) };
+        return await handleHasKeyAction({ sender, getStoredApiKey });
       }
 
       case 'LIST_MODELS': {
