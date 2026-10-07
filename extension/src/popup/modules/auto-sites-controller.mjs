@@ -228,3 +228,80 @@ export function openDraftAutoSite({
   input.focus();
   if (prefill) input.select();
 }
+
+export function createAutoSiteCallbacks({
+  autoSitesList,
+  getAutoTranslateSites = () => [],
+  setAutoTranslateSites = () => {},
+  savedSettings = {},
+  isSettingsLoaded = () => true,
+  currentConsent = {},
+  getCurrentConsent,
+  currentUiLocale = 'vi',
+  t,
+  enableSiteForOrigin,
+  loadConsent,
+  refreshSiteDots,
+  renderAutoSites,
+  showAutoSiteError,
+  hideAutoSiteError,
+  markDirty,
+  getSettingsNotLoadedMsg
+} = {}) {
+  return {
+    onEnable: async (site, enableBtn) => {
+      if (typeof hideAutoSiteError === 'function') hideAutoSiteError();
+      enableBtn.disabled = true;
+      const res = await enableSiteForOrigin(site.origin);
+      enableBtn.disabled = false;
+      if (!res.ok && typeof showAutoSiteError === 'function') {
+        showAutoSiteError(res.reason === 'permission'
+          ? t(currentUiLocale, 'err_perm_site_needed', { origin: site.origin })
+          : t(currentUiLocale, 'err_enable_site_failed', { origin: site.origin, error: (res.error && res.error.message) || t(currentUiLocale, 'err_cannot_save') }));
+      }
+      const consent = typeof getCurrentConsent === 'function' ? getCurrentConsent() : currentConsent;
+      if (site.origin === consent?.siteOrigin && typeof loadConsent === 'function') {
+        await loadConsent();
+      }
+      if (typeof refreshSiteDots === 'function') refreshSiteDots();
+    },
+    onModeChange: () => markDirty(),
+    onAutoStartChange: () => {
+      markDirty();
+      if (typeof refreshSiteDots === 'function') refreshSiteDots();
+    },
+    onDelete: async (site, deleteBtn) => {
+      if (typeof hideAutoSiteError === 'function') hideAutoSiteError();
+      if (!isSettingsLoaded()) {
+        if (typeof showAutoSiteError === 'function') showAutoSiteError(getSettingsNotLoadedMsg());
+        return;
+      }
+      const sites = getAutoTranslateSites();
+      const updatedList = sites.filter((s) => (s.origin || s) !== site.origin);
+      deleteBtn.disabled = true;
+
+      const saveResp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'SAVE_SETTINGS',
+          settings: { autoTranslateSites: updatedList }
+        }, resolve);
+      });
+
+      if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+        const err = saveResp?.error || chrome.runtime.lastError;
+        if (typeof showAutoSiteError === 'function') {
+          showAutoSiteError(t(currentUiLocale, 'err_delete_site_failed', { error: err?.message || t(currentUiLocale, 'err_cannot_save') }));
+        }
+        deleteBtn.disabled = false;
+        return;
+      }
+
+      setAutoTranslateSites(updatedList);
+      savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
+      if (typeof renderAutoSites === 'function') renderAutoSites();
+    },
+    onSourceLangChange: () => markDirty(),
+    onTargetLangChange: () => markDirty(),
+    onModelChange: () => markDirty()
+  };
+}

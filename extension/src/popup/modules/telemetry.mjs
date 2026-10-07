@@ -111,3 +111,83 @@ export function formatDetail(state, data = {}, {
 
   return '';
 }
+
+export function resolveStatusPresentation(state, detail = '', data = null, { currentUiLocale, t, SVG_ICONS }) {
+  let iconSvg = '';
+  let shortText = '';
+  let fullDetail = detail;
+
+  switch (state) {
+    case 'unconfigured':
+      iconSvg = SVG_ICONS.lock;
+      shortText = t(currentUiLocale, 'status_no_key');
+      fullDetail = detail || t(currentUiLocale, 'status_no_key_detail');
+      break;
+    case 'ready':
+      iconSvg = SVG_ICONS.check;
+      shortText = '';
+      fullDetail = detail || t(currentUiLocale, 'status_ready_detail');
+      break;
+    case 'translating':
+      iconSvg = detail.includes('quota') ? SVG_ICONS.clock : SVG_ICONS.spinner;
+      shortText = detail.includes('quota') ? detail : (detail || t(currentUiLocale, 'status_translating'));
+      fullDetail = detail || t(currentUiLocale, 'status_translating_detail');
+      break;
+    case 'watching': {
+      iconSvg = SVG_ICONS.scroll;
+      const wApplied = data && typeof data.totalApplied === 'number'
+        ? Math.min(data.totalApplied, typeof data.totalCollected === 'number' ? data.totalCollected : data.totalApplied)
+        : (data && typeof data.applied === 'number' ? data.applied : null);
+      const wCollected = data && typeof data.totalCollected === 'number' ? data.totalCollected : null;
+      const wFailed = data && typeof data.totalFailed === 'number' ? data.totalFailed : 0;
+      shortText = (wApplied !== null && wCollected !== null && wCollected > 0)
+        ? t(currentUiLocale, 'status_watching_count', { applied: wApplied, collected: wCollected })
+        : t(currentUiLocale, 'status_watching');
+      if (wFailed > 0) shortText += ' ' + t(currentUiLocale, 'status_failed_count', { count: wFailed });
+      fullDetail = detail || t(currentUiLocale, 'status_watching_detail');
+      break;
+    }
+    case 'translated':
+      iconSvg = SVG_ICONS.check;
+      shortText = t(currentUiLocale, 'status_translated');
+      fullDetail = detail || t(currentUiLocale, 'status_translated_detail');
+      break;
+    case 'restored':
+      iconSvg = SVG_ICONS.restore;
+      shortText = t(currentUiLocale, 'status_restored');
+      fullDetail = detail || t(currentUiLocale, 'status_restored_detail');
+      break;
+    case 'unsupported':
+      iconSvg = SVG_ICONS.alert;
+      shortText = t(currentUiLocale, 'status_unsupported');
+      fullDetail = detail || t(currentUiLocale, 'status_unsupported_detail');
+      break;
+    case 'error':
+      iconSvg = SVG_ICONS.alert;
+      if (detail.includes('RATE_LIMITED')) {
+        iconSvg = SVG_ICONS.clock;
+        shortText = t(currentUiLocale, 'status_waiting_quota');
+      } else if (detail.includes('PERMISSION_REQUIRED')) {
+        shortText = t(currentUiLocale, 'status_missing_perm');
+      } else if (detail.includes('OPT_IN_REQUIRED')) {
+        shortText = t(currentUiLocale, 'status_site_disabled');
+      } else if (detail.includes('DROPPED_ON_RESTART')) {
+        shortText = t(currentUiLocale, 'status_interrupted');
+      } else if (detail.includes('HTTP_429')) {
+        shortText = 'HTTP_429';
+      } else if (detail.includes('HTTP_')) {
+        const match = detail.match(/HTTP_\d+/);
+        shortText = match ? t(currentUiLocale, 'status_error_http_code', { code: match[0] }) : t(currentUiLocale, 'status_error_http');
+      } else {
+        shortText = t(currentUiLocale, 'status_error');
+      }
+      fullDetail = detail || t(currentUiLocale, 'status_error_detail');
+      break;
+    default:
+      iconSvg = '<span class="status-dot"></span>';
+      shortText = state;
+      fullDetail = detail || state;
+  }
+
+  return { iconSvg, shortText, fullDetail };
+}

@@ -156,6 +156,26 @@ export {
   listModelsWithContext
 };
 
+import { createTabLifecycleManager } from './sw/modules/tab-lifecycle.mjs';
+import { createAdmissionManager } from './sw/modules/admission-queue.mjs';
+import {
+  resolveEffectiveSiteConfig as resolveEffectiveSiteConfigModule,
+  reconcilePermissions as reconcilePermissionsModule,
+  handleGetConsentAction,
+  handleSetSiteEnabledAction,
+  handleEnsureContentAction,
+  handleSetTabOverrideAction,
+  handleCancelPendingAction
+} from './sw/modules/site-policy-controller.mjs';
+import {
+  pushWidgetStateChanged as pushWidgetStateChangedModule,
+  notifyAllWidgetStateChanged as notifyAllWidgetStateChangedModule,
+  handleWidgetGetStateAction,
+  handleWidgetSetEnabledAction,
+  handleWidgetSetModeAction,
+  handleWidgetSetPositionAction
+} from './sw/modules/widget-controller.mjs';
+
 // Provider concurrency semaphore = 2 (default, updated dynamically from settings)
 const providerSemaphore = createSemaphore({
   maxConcurrency: DEFAULT_SETTINGS.providerConcurrency || 2,
@@ -498,61 +518,6 @@ async function getStoredTabOverrides() {
   return res.tab_overrides || {};
 }
 
-// Rate limit storage helpers (session storage)
-async function getRateState(scope, targetId) {
-  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
-    throw createTypedError('RATE_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false, {
-      scope,
-      targetId: String(targetId),
-      reason: 'chrome.storage.session is undefined'
-    });
-  }
-  const key = `rate:${scope}:${targetId}`;
-  try {
-    const res = await chrome.storage.session.get([key]);
-    return res[key] || createLimitState();
-  } catch (err) {
-    throw createTypedError('RATE_STATE_UNAVAILABLE', 'Failed to read rate state from storage', false, {
-      scope,
-      targetId: String(targetId),
-      reason: err?.message || String(err)
-    });
-  }
-}
-
-async function setRateStates(tabId, tabState, siteOrigin, siteState) {
-  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
-    throw createTypedError('RATE_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false, {
-      scope: 'tab',
-      targetId: String(tabId),
-      reason: 'chrome.storage.session is undefined'
-    });
-  }
-  const tabKey = `rate:tab:${tabId}`;
-  const siteKey = `rate:site:${siteOrigin}`;
-  try {
-    await chrome.storage.session.set({
-      [tabKey]: tabState,
-      [siteKey]: siteState
-    });
-  } catch (err) {
-    throw createTypedError('RATE_STATE_UNAVAILABLE', 'Failed to write rate state to storage', false, {
-      scope: 'tab',
-      targetId: String(tabId),
-      reason: err?.message || String(err)
-    });
-  }
-}
-
-// Admission Mutex & In-memory Bounded Queue
-let admissionChain = Promise.resolve();
-
-function runInAdmissionChain(fn) {
-  const next = admissionChain.then(fn, fn);
-  admissionChain = next.catch(() => {});
-  return next;
-}
-
 const DEFAULT_MAX_QUEUE_PER_TAB = 8;
 const tabQueues = new Map(); // tabId -> Array of QueueEntry
 const tabEpochs = new Map(); // tabId -> current epoch number
@@ -563,652 +528,73 @@ function getMaxQueue() {
   return (_testMode && typeof _testMaxQueue === 'number') ? _testMaxQueue : DEFAULT_MAX_QUEUE_PER_TAB;
 }
 
-function removeEntryFromQueue(entry) {
-  const queue = tabQueues.get(entry.tabId);
-  if (!queue) return;
-  const idx = queue.indexOf(entry);
-  if (idx !== -1) {
-    queue.splice(idx, 1);
-  }
-  if (queue.length === 0) {
-    tabQueues.delete(entry.tabId);
-  }
-}
+const admissionManager = createAdmissionManager({
+  tabQueues,
+  tabEpochs,
+  testTabRegistry,
+  isTestMode: () => _testMode,
+  getTestRateLimits: () => _testRateLimits,
+  getTestRateWindowSeconds: () => _testRateWindowSeconds,
+  getStoredSettings,
+  getStoredSites,
+  getStoredTabOverrides,
+  ensureStorageAccess,
+  permissionContains,
+  executeBatchTranslation: (args) => executeBatchTranslation(args),
+  translateBatch: (args) => translateBatch(args),
+  pushTranslateProgress
+});
 
-async function checkAdmission(tabId, origin, cost) {
-  return runInAdmissionChain(async () => {
-    const tabState = await getRateState('tab', tabId);
-    const siteState = await getRateState('site', origin);
+const {
+  getRateState,
+  setRateStates,
+  runInAdmissionChain,
+  removeEntryFromQueue,
+  checkAdmission,
+  resolveTabPolicy,
+  scheduleQueueEntry
+} = admissionManager;
 
-    const settings = await getStoredSettings();
-    let limits = resolveLimits(settings.rateLimits);
-    if (_testMode && _testRateLimits) {
-      limits = resolveLimits(_testRateLimits);
-    }
-    if (_testMode && typeof _testRateWindowSeconds === 'number' && _testRateWindowSeconds > 0) {
-      limits.windowSeconds = _testRateWindowSeconds;
-    }
-    limits.tab.windowSeconds = limits.windowSeconds;
-    limits.site.windowSeconds = limits.windowSeconds;
+const tabLifecycleManager = createTabLifecycleManager({
+  activeBatchControllers,
+  tabEpochs,
+  tabQueues,
+  resolveTabPolicy,
+  getStoredSites,
+  getStoredTabOverrides,
+  getStoredSettings,
+  checkDataConsentAccepted,
+  getEffectivePolicy,
+  permissionContains,
+  getConfigRevision: () => configRevision
+});
 
-    const now = Date.now();
-    prune(tabState, now, limits.windowSeconds);
-    prune(siteState, now, limits.windowSeconds);
-
-    const tabEval = evaluate(tabState, cost, limits.tab, now, limits.windowSeconds);
-    const siteEval = evaluate(siteState, cost, limits.site, now, limits.windowSeconds);
-
-    if (tabEval.allowed && siteEval.allowed) {
-      record(tabState, cost, now);
-      record(siteState, cost, now);
-      await setRateStates(tabId, tabState, origin, siteState);
-      return { allowed: true };
-    }
-
-    let scope, limit, used, metric, retryAfterMs;
-    if (!tabEval.allowed && (!siteEval.allowed ? tabEval.retryAfterMs >= siteEval.retryAfterMs : true)) {
-      scope = 'tab';
-      metric = tabEval.exceeded === 'codePoints' ? 'code_points' : 'batches';
-      limit = metric === 'batches' ? limits.tab.maxBatches : limits.tab.maxSourceCodePoints;
-      used = metric === 'batches' ? tabEval.used.batches : tabEval.used.codePoints;
-      retryAfterMs = tabEval.retryAfterMs;
-    } else {
-      scope = 'site';
-      metric = siteEval.exceeded === 'codePoints' ? 'code_points' : 'batches';
-      limit = metric === 'batches' ? limits.site.maxBatches : limits.site.maxSourceCodePoints;
-      used = metric === 'batches' ? siteEval.used.batches : siteEval.used.codePoints;
-      retryAfterMs = siteEval.retryAfterMs;
-    }
-
-    const targetId = scope === 'tab' ? String(tabId) : origin;
-    const rateLimitedError = createTypedError(
-      'RATE_LIMITED',
-      `Local 60s sliding window quota exceeded for ${scope}`,
-      false,
-      { scope, targetId, limit, used, retryAfterMs, metric }
-    );
-
-    return {
-      allowed: false,
-      rateLimitedError,
-      retryAfterMs,
-      scope
-    };
-  });
-}
-
-/**
- * Resolve tab existence + current URL for policy checks. Production reads
- * chrome.tabs. In test mode a TEST-ONLY registry covers simulated tab ids
- * (harness); ids unknown to both sources are treated as closed.
- */
-async function resolveTabPolicy(tabId) {
-  const idNum = Number(tabId);
-  if (_testMode && testTabRegistry.has(idNum)) {
-    const testUrl = testTabRegistry.get(idNum);
-    return { exists: true, url: (typeof testUrl === 'string' && testUrl) ? testUrl : null };
-  }
-  let real = null;
-  try {
-    if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.get === 'function') {
-      real = await chrome.tabs.get(tabId);
-    }
-  } catch {
-    real = null;
-  }
-  if (!real) return null;
-  const url = (typeof real.url === 'string' && real.url) || null;
-  return { exists: true, url };
-}
-
-function scheduleQueueEntry(entry, delayMs) {
-  if (entry.timer) {
-    clearTimeout(entry.timer);
-  }
-  entry.retryAt = Date.now() + Math.max(10, delayMs);
-  entry.timer = setTimeout(async () => {
-    entry.timer = null;
-    const queue = tabQueues.get(entry.tabId);
-    if (!queue || !queue.includes(entry)) {
-      return;
-    }
-
-    try {
-      await ensureStorageAccess();
-
-      // Navigation & tab existence check before consent & admission
-      const tabInfo = await resolveTabPolicy(entry.tabId);
-
-      if (!tabInfo) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'ABORTED',
-          'Tab was closed while translation was queued',
-          false,
-          { reason: 'tab_closed' }
-        ));
-        return;
-      }
-
-      const curOrigin = tabInfo.url ? normalizeOrigin(tabInfo.url) : null;
-      if (!curOrigin) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'ABORTED',
-          'Tab URL could not be verified before dispatch',
-          false,
-          { reason: 'tab_url_unverifiable', tabId: entry.tabId }
-        ));
-        return;
-      }
-
-      if (curOrigin !== entry.origin) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'ABORTED',
-          'Tab navigated while translation was queued',
-          false,
-          { reason: 'navigation', originalOrigin: entry.origin, currentOrigin: curOrigin }
-        ));
-        return;
-      }
-
-      const sites = await getStoredSites();
-      const tabOverrides = await getStoredTabOverrides();
-      const siteEnabled = Boolean(sites[entry.origin]);
-      const tabOverride = tabOverrides[String(entry.tabId)] || null;
-      const effective = getEffectivePolicy({ tabOverride, siteEnabled });
-
-      if (effective !== 'on') {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'OPT_IN_REQUIRED',
-          'Translation is disabled (tab explicit OFF, site OFF, or default OFF)',
-          false,
-          {
-            tabId: entry.tabId,
-            origin: entry.origin,
-            scope: tabOverride ? 'tab' : 'site',
-            effectiveConsent: 'off'
-          }
-        ));
-        return;
-      }
-
-      const hasPerm = await permissionContains(entry.origin);
-      if (!hasPerm) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'PERMISSION_REQUIRED',
-          'Host permission not granted for site origin',
-          false,
-          {
-            origin: entry.origin,
-            permissionType: 'host'
-          }
-        ));
-        return;
-      }
-
-      // Re-check epoch: if tab epoch changed during queue wait, abort if older
-      if (entry.epoch !== undefined && tabEpochs.has(entry.tabId) && entry.epoch < tabEpochs.get(entry.tabId)) {
-        removeEntryFromQueue(entry);
-        entry.resolve(createTypedError(
-          'ABORTED',
-          'Pending translation cancelled by new epoch',
-          false,
-          { reason: 'Epoch changed during queue wait' }
-        ));
-        return;
-      }
-
-      entry.attempts++;
-      const admission = await checkAdmission(entry.tabId, entry.origin, entry.cost);
-      if (admission.allowed) {
-        removeEntryFromQueue(entry);
-        const result = entry.misses
-          ? await executeBatchTranslation({
-              payload: entry.payload,
-              misses: entry.misses,
-              hits: entry.hits,
-              batchConfigRevision: entry.configRevision,
-              tabId: entry.tabId,
-              epoch: entry.epoch,
-              origin: entry.origin
-            })
-          : await translateBatch({
-            ...(entry.payload || {}),
-            onProgress: (item) => pushTranslateProgress(entry.tabId, entry.epoch, item)
-          });
-        entry.resolve(result);
-        return;
-      }
-
-      if (entry.attempts >= 3) {
-        removeEntryFromQueue(entry);
-        entry.resolve(admission.rateLimitedError);
-        return;
-      }
-
-      scheduleQueueEntry(entry, admission.retryAfterMs);
-    } catch (err) {
-      removeEntryFromQueue(entry);
-      if (err && err.error) {
-        entry.resolve(err);
-      } else {
-        entry.resolve(createTypedError(
-          'RATE_STATE_UNAVAILABLE',
-          err?.message || 'Error evaluating queue admission',
-          false,
-          { scope: 'tab', targetId: String(entry.tabId), reason: err?.message || 'Storage error' }
-        ));
-      }
-    }
-  }, Math.max(10, delayMs));
-}
-
-// Clean tab overrides and rate queues/state when tab closes
-async function handleTabRemoved(tabId) {
-  try {
-    const idNum = Number(tabId);
-    for (const [reqId, active] of activeBatchControllers.entries()) {
-      if (active.tabId === tabId || active.tabId === idNum) {
-        try { active.controller.abort('tab_closed'); } catch {}
-        activeBatchControllers.delete(reqId);
-      }
-    }
-    tabEpochs.delete(tabId);
-    tabEpochs.delete(idNum);
-    const queue = tabQueues.get(tabId) || tabQueues.get(idNum);
-    if (queue && queue.length > 0) {
-      for (const entry of queue) {
-        if (entry.timer) clearTimeout(entry.timer);
-        entry.resolve(createTypedError('ABORTED', 'Tab was closed', false, { reason: 'tab_closed' }));
-      }
-      tabQueues.delete(tabId);
-      tabQueues.delete(idNum);
-    }
-    if (!chrome.storage || !chrome.storage.session) return;
-    const res = await chrome.storage.session.get(['tab_overrides']);
-    const overrides = res.tab_overrides || {};
-    const key = String(tabId);
-    if (key in overrides) {
-      delete overrides[key];
-      await chrome.storage.session.set({ tab_overrides: overrides });
-    }
-    await chrome.storage.session.remove([`rate:tab:${tabId}`, `rate:tab:${idNum}`]);
-  } catch {
-    // Ignore cleanup error
-  }
-}
+const {
+  handleTabRemoved,
+  handleTabUpdated,
+  verifyTabDispatchPolicy
+} = tabLifecycleManager;
 
 if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'function') {
   chrome.tabs.onRemoved.addListener(handleTabRemoved);
-}
-
-// Clean active batch controllers and rate queues when tab navigates (status === 'loading')
-async function handleTabUpdated(tabId, changeInfo, tab) {
-  try {
-    if (changeInfo && changeInfo.status === 'loading') {
-      const idNum = Number(tabId);
-      const info = await resolveTabPolicy(idNum);
-
-      if (!info) {
-        // Tab closed / gone -> delegate to full removal cleanup
-        await handleTabRemoved(idNum);
-        return;
-      }
-
-      if (info.url === null) {
-        // Fail-closed: URL cannot be verified during navigation
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          if (active.tabId === idNum || active.tabId === tabId) {
-            try { active.controller.abort('navigation'); } catch {}
-            activeBatchControllers.delete(reqId);
-          }
-        }
-        const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
-        if (queue && queue.length > 0) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Tab navigated while translation was queued',
-              false,
-              { reason: 'navigation', tabId: idNum }
-            ));
-          }
-          tabQueues.delete(idNum);
-          tabQueues.delete(tabId);
-        }
-        return;
-      }
-
-      const curOrigin = normalizeOrigin(info.url);
-      if (!curOrigin) {
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          if (active.tabId === idNum || active.tabId === tabId) {
-            try { active.controller.abort('navigation'); } catch {}
-            activeBatchControllers.delete(reqId);
-          }
-        }
-        const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
-        if (queue && queue.length > 0) {
-          for (const entry of queue) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Tab navigated while translation was queued',
-              false,
-              { reason: 'navigation', tabId: idNum }
-            ));
-          }
-          tabQueues.delete(idNum);
-          tabQueues.delete(tabId);
-        }
-        return;
-      }
-
-      // Origin check: abort only controllers and queue entries whose origin does NOT match curOrigin
-      for (const [reqId, active] of activeBatchControllers.entries()) {
-        if (active.tabId === idNum || active.tabId === tabId) {
-          if (!active.origin || active.origin !== curOrigin) {
-            try { active.controller.abort('navigation'); } catch {}
-            activeBatchControllers.delete(reqId);
-          }
-        }
-      }
-
-      const queue = tabQueues.get(idNum) || tabQueues.get(tabId);
-      if (queue && queue.length > 0) {
-        const remaining = [];
-        for (const entry of queue) {
-          if (entry.origin !== curOrigin) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'ABORTED',
-              'Tab navigated while translation was queued',
-              false,
-              { reason: 'navigation', originalOrigin: entry.origin, currentOrigin: curOrigin, tabId: idNum }
-            ));
-          } else {
-            remaining.push(entry);
-          }
-        }
-        if (remaining.length > 0) {
-          tabQueues.set(idNum, remaining);
-          if (tabId !== idNum) tabQueues.delete(tabId);
-        } else {
-          tabQueues.delete(idNum);
-          tabQueues.delete(tabId);
-        }
-      }
-    }
-  } catch {
-    // Ignore navigation cleanup error
-  }
 }
 
 if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onUpdated && typeof chrome.tabs.onUpdated.addListener === 'function') {
   chrome.tabs.onUpdated.addListener(handleTabUpdated);
 }
 
-/**
- * Unified pre-dispatch / post-semaphore verification.
- * Re-validates config revision, tab epoch, tab existence, origin match,
- * current consent (tab override & site enabled, covering N4 race), and host permission.
- */
-async function verifyTabDispatchPolicy({ tabId, origin, epoch, expectedConfigRevision }) {
-  if (expectedConfigRevision !== undefined && expectedConfigRevision !== configRevision) {
-    return {
-      ...createTypedError(
-        'ABORTED',
-        'Translation batch discarded due to configuration change',
-        false,
-        { batchConfigRevision: expectedConfigRevision, currentConfigRevision: configRevision }
-      ),
-      configRevision: expectedConfigRevision,
-      currentConfigRevision: configRevision
-    };
-  }
-
-  if (typeof tabId === 'number') {
-    if (epoch !== undefined && tabEpochs.has(tabId)) {
-      const curTabEpoch = tabEpochs.get(tabId);
-      if (epoch < curTabEpoch) {
-        return createTypedError(
-          'ABORTED',
-          'Pending translation cancelled by new epoch',
-          false,
-          { reason: 'epoch_changed', tabId, epoch, currentEpoch: curTabEpoch }
-        );
-      }
-      if (epoch > curTabEpoch) {
-        tabEpochs.set(tabId, epoch);
-      }
-    }
-
-    const tabInfo = await resolveTabPolicy(tabId);
-    if (!tabInfo) {
-      return createTypedError(
-        'ABORTED',
-        'Tab was closed before dispatch',
-        false,
-        { reason: 'tab_closed' }
-      );
-    }
-
-    const curOrigin = tabInfo.url ? normalizeOrigin(tabInfo.url) : null;
-    if (!curOrigin) {
-      return createTypedError(
-        'ABORTED',
-        'Tab URL could not be verified before dispatch',
-        false,
-        { reason: 'tab_url_unverifiable', tabId }
-      );
-    }
-
-    if (origin && curOrigin !== origin) {
-      return createTypedError(
-        'ABORTED',
-        'Tab navigated before dispatch',
-        false,
-        { reason: 'navigation', originalOrigin: origin, currentOrigin: curOrigin }
-      );
-    }
-
-    // Consent check: tab override > site enabled > default OFF (covers N4 race)
-    let sites, tabOverrides, settings;
-    try {
-      sites = await getStoredSites();
-      tabOverrides = await getStoredTabOverrides();
-      settings = await getStoredSettings();
-    } catch (err) {
-      return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
-        tabId,
-        reason: err?.message || 'Storage read error'
-      });
-    }
-
-    if (!checkDataConsentAccepted(settings)) {
-      return createTypedError(
-        'DATA_CONSENT_REQUIRED',
-        'Data consent is not accepted',
-        false,
-        { dataConsentVersion: CURRENT_DATA_CONSENT_VERSION }
-      );
-    }
-
-    const siteEnabled = Boolean(sites[origin || curOrigin]);
-    const tabOverride = tabOverrides[String(tabId)] || null;
-    const effective = getEffectivePolicy({ tabOverride, siteEnabled });
-
-    if (effective !== 'on') {
-      return createTypedError(
-        'OPT_IN_REQUIRED',
-        'Translation is disabled (tab explicit OFF, site OFF, or default OFF)',
-        false,
-        {
-          tabId,
-          origin: origin || curOrigin,
-          scope: tabOverride ? 'tab' : 'site',
-          effectiveConsent: 'off'
-        }
-      );
-    }
-
-    // Permission check
-    const hasPerm = await permissionContains(origin || curOrigin);
-    if (!hasPerm) {
-      return createTypedError(
-        'PERMISSION_REQUIRED',
-        'Host permission not granted for site origin',
-        false,
-        {
-          origin: origin || curOrigin,
-          permissionType: 'host'
-        }
-      );
-    }
-  }
-
-  return { valid: true };
-}
-
-// Reconcile dynamic content scripts with active permissions and storage
-let _reconcilePromise = null;
-
 async function reconcilePermissions() {
-  if (_reconcilePromise) return _reconcilePromise;
-  _reconcilePromise = (async () => {
-    try {
-      await ensureStorageAccess();
-      const stored = await chrome.storage.local.get(['sites', 'registrations']);
-      const sites = stored.sites || {};
-      const registrations = stored.registrations || {};
-
-      let existingScripts = [];
-      if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.getRegisteredContentScripts === 'function') {
-        try {
-          existingScripts = await chrome.scripting.getRegisteredContentScripts();
-        } catch {
-          existingScripts = [];
-        }
-      }
-      const existingScriptIds = existingScripts.map((s) => s.id);
-
-      // Check permissions for all stored sites
-      const grantedOrigins = new Set();
-      for (const orig of Object.keys(sites)) {
-        const norm = normalizeOrigin(orig);
-        if (norm && (await permissionContains(norm))) {
-          grantedOrigins.add(norm);
-        }
-      }
-
-      const diff = calculateReconcileDiff({
-        sites,
-        registrations,
-        existingRegisteredScriptIds: existingScriptIds,
-        grantedOrigins
-      });
-
-      // 1. Unregister stale scripts
-      if (diff.toUnregister.length > 0 && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.unregisterContentScripts === 'function') {
-        try {
-          await chrome.scripting.unregisterContentScripts({ ids: diff.toUnregister });
-        } catch {}
-      }
-
-      // 2. Register missing scripts
-      if (diff.toRegister.length > 0 && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.registerContentScripts === 'function') {
-        try {
-          await chrome.scripting.registerContentScripts(
-            diff.toRegister.map((item) => ({
-              id: item.scriptId,
-              matches: item.matches,
-              js: ['i18n-globals.js', 'content.js'],
-              runAt: 'document_start',
-              allFrames: false,
-              persistAcrossSessions: true
-            }))
-          );
-        } catch (err) {
-          console.error('Failed to register content scripts during reconcile:', err);
-        }
-      }
-
-      // 3. Persist updated sites & registrations
-      await chrome.storage.local.set({
-        sites: diff.updatedSites,
-        registrations: diff.updatedRegistrations
-      });
-
-      // 4. Abort active translation batches and queue entries for revoked origins
-      for (const [reqId, active] of activeBatchControllers.entries()) {
-        if (active.origin && !grantedOrigins.has(active.origin)) {
-          try { active.controller.abort('permission_revoked'); } catch {}
-          activeBatchControllers.delete(reqId);
-        }
-      }
-      for (const [tId, queue] of tabQueues.entries()) {
-        const remaining = [];
-        for (const entry of queue) {
-          if (entry.origin && !grantedOrigins.has(entry.origin)) {
-            if (entry.timer) clearTimeout(entry.timer);
-            entry.resolve(createTypedError(
-              'PERMISSION_REQUIRED',
-              'Host permission not granted for site origin',
-              false,
-              { origin: entry.origin, permissionType: 'host' }
-            ));
-          } else {
-            remaining.push(entry);
-          }
-        }
-        if (remaining.length > 0) {
-          tabQueues.set(tId, remaining);
-        } else {
-          tabQueues.delete(tId);
-        }
-      }
-
-      return { ok: true, diff };
-    } finally {
-      _reconcilePromise = null;
-    }
-  })();
-  return _reconcilePromise;
+  return reconcilePermissionsModule({
+    ensureStorageAccess,
+    permissionContains,
+    activeBatchControllers,
+    tabQueues
+  });
 }
 
 // Effective per-tab config: per-site overrides win, otherwise globals.
-// `model: null` / langs null on the site entry mean "follow global".
 function resolveEffectiveSiteConfig(settings, origin) {
-  const autoSites = Array.isArray(settings.autoTranslateSites) ? settings.autoTranslateSites : [];
-  const raw = autoSites.find((e) => (typeof e === 'string' ? e : e?.origin) === origin);
-  const siteConfig = raw ? (normalizePerSiteConfig(raw) || {
-    origin,
-    mode: 'inherit',
-    autoStart: true,
-    sourceLanguage: null,
-    targetLanguage: null,
-    model: null
-  }) : null;
-  return {
-    siteConfig,
-    mode: (siteConfig && siteConfig.mode && siteConfig.mode !== 'inherit')
-      ? siteConfig.mode
-      : (settings.translationMode || 'scroll-follow'),
-    sourceLanguage: (siteConfig && siteConfig.sourceLanguage)
-      ? siteConfig.sourceLanguage
-      : (settings.sourceLanguage || 'auto'),
-    targetLanguage: (siteConfig && siteConfig.targetLanguage)
-      ? siteConfig.targetLanguage
-      : (settings.targetLanguage || 'vi'),
-    model: (siteConfig && siteConfig.model)
-      ? siteConfig.model
-      : (settings.model || DEFAULT_MODEL)
-  };
+  return resolveEffectiveSiteConfigModule(settings, origin, DEFAULT_MODEL);
 }
 
 // Push helpers for best-effort broadcast
@@ -1221,56 +607,11 @@ function notifyModelsUpdated(data) {
 }
 
 function pushWidgetStateChanged(tabId, state) {
-  if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
-    try {
-      chrome.tabs.sendMessage(tabId, { action: 'WIDGET_STATE_CHANGED', ...state }).catch(() => {});
-    } catch {}
-  }
+  return pushWidgetStateChangedModule(tabId, state);
 }
 
 async function notifyAllWidgetStateChanged(patch) {
-  if (typeof chrome === 'undefined' || !chrome || !chrome.tabs || typeof chrome.tabs.query !== 'function') return;
-  let payload = { action: 'WIDGET_STATE_CHANGED' };
-  if (patch && typeof patch === 'object') {
-    payload = { ...payload, ...patch };
-  } else {
-    try {
-      const s = await getStoredSettings({ persistMigration: false });
-      payload.fabMascot = s.fabMascot || 'default';
-      payload.fabSize = typeof s.fabSize === 'number' ? s.fabSize : 1.0;
-      payload.theme = s.theme || 'dark';
-      payload.uiLocale = s.uiLocale || 'vi';
-      payload.uiFontScale = s.uiFontScale || 'md';
-      payload.widgetVisible = s.widgetVisible ?? true;
-    } catch {}
-  }
-  if (typeof chrome === 'undefined' || !chrome || !chrome.tabs || typeof chrome.tabs.query !== 'function') return;
-  try {
-    const queryResult = chrome.tabs.query({});
-    if (queryResult && typeof queryResult.then === 'function') {
-      queryResult.then((tabs) => {
-        if (typeof chrome === 'undefined' || !chrome?.tabs) return;
-        if (Array.isArray(tabs)) {
-          for (const tab of tabs) {
-            if (tab && typeof tab.id === 'number') {
-              try { chrome.tabs.sendMessage(tab.id, payload)?.catch?.(() => {}); } catch {}
-            }
-          }
-        }
-      }).catch(() => {});
-    } else {
-      chrome.tabs.query({}, (tabs) => {
-        if (typeof chrome === 'undefined' || !chrome?.tabs) return;
-        if (Array.isArray(tabs)) {
-          for (const tab of tabs) {
-            if (tab && typeof tab.id === 'number') {
-              try { chrome.tabs.sendMessage(tab.id, payload)?.catch?.(() => {}); } catch {}
-            }
-          }
-        }
-      });
-    }
-  } catch {}
+  return notifyAllWidgetStateChangedModule(patch, getStoredSettings);
 }
 
 // Hash full key + baseURL into SHA-256 hex string (zero key material stored)
@@ -2111,260 +1452,38 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'GET_CONSENT': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'GET_CONSENT is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const tabId = message.tabId;
-        if (typeof tabId !== 'number') {
-          return createTypedError('PERMISSION_REQUIRED', 'Valid tabId required for GET_CONSENT', false, {
-            permissionType: 'host'
-          });
-        }
-
-        let tab = null;
-        try {
-          if (chrome.tabs && typeof chrome.tabs.get === 'function') {
-            tab = await chrome.tabs.get(tabId);
-          }
-        } catch {
-          tab = null;
-        }
-
-        const siteOrigin = tab?.url ? normalizeOrigin(tab.url) : null;
-        if (!siteOrigin) {
-          return { siteOrigin: null, siteEnabled: false, tabOverride: null, effective: 'off' };
-        }
-
-        let sites = {};
-        let tabOverrides = {};
-        try {
-          sites = await getStoredSites();
-          tabOverrides = await getStoredTabOverrides();
-        } catch (err) {
-          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
-            tabId,
-            reason: err && err.message ? String(err.message) : 'Storage read error'
-          });
-        }
-
-        const siteEnabled = Boolean(sites[siteOrigin]);
-        const tabOverride = tabOverrides[String(tabId)] || null;
-        const effective = getEffectivePolicy({ tabOverride, siteEnabled });
-
-        return { siteOrigin, siteEnabled, tabOverride, effective };
+        return await handleGetConsentAction({
+          sender,
+          message,
+          getStoredSites,
+          getStoredTabOverrides
+        });
       }
 
       case 'SET_SITE_ENABLED': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'SET_SITE_ENABLED is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const normOrigin = normalizeOrigin(message.origin);
-        if (!normOrigin) {
-          return createTypedError('SITE_NOT_ALLOWED', 'Invalid HTTP(S) origin provided', false, {
-            origin: String(message.origin || '')
-          });
-        }
-        await ensureStorageAccess();
-        const scriptId = originToScriptId(normOrigin);
-
-        if (message.enabled) {
-          // Verify host permission
-          const hasPerm = await permissionContains(normOrigin);
-          if (!hasPerm) {
-            return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for origin', false, {
-              origin: normOrigin,
-              permissionType: 'host'
-            });
-          }
-
-          // Register content script dynamically
-          if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.registerContentScripts === 'function') {
-            try {
-              await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
-            } catch {}
-            try {
-              await chrome.scripting.registerContentScripts([{
-                id: scriptId,
-                matches: [originToMatchPattern(normOrigin)],
-                js: ['i18n-globals.js', 'content.js'],
-                runAt: 'document_start',
-                allFrames: false,
-                persistAcrossSessions: true
-              }]);
-            } catch (err) {
-              console.error('Failed to register content script:', err);
-              await reconcilePermissions();
-              return createTypedError('PERMISSION_REQUIRED', 'Failed to register dynamic content script: ' + (err?.message || String(err)), false, {
-                origin: normOrigin,
-                permissionType: 'host',
-                reason: err?.message || String(err)
-              });
-            }
-          }
-
-          // Inject into active tab once if tabId is provided
-          if (typeof message.tabId === 'number' && typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.executeScript === 'function') {
-            try {
-              await chrome.scripting.executeScript({
-                target: { tabId: message.tabId, frameIds: [0] },
-                files: ['i18n-globals.js', 'content.js']
-              });
-            } catch {}
-          }
-
-          const res = await chrome.storage.local.get(['sites', 'registrations']);
-          const sites = res.sites || {};
-          const registrations = res.registrations || {};
-          sites[normOrigin] = { createdAt: Date.now() };
-          registrations[normOrigin] = scriptId;
-          await chrome.storage.local.set({ sites, registrations });
-        } else {
-          // Unregister content script dynamically
-          if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.unregisterContentScripts === 'function') {
-            try {
-              await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
-            } catch {}
-          }
-          const res = await chrome.storage.local.get(['sites', 'registrations']);
-          const sites = res.sites || {};
-          const registrations = res.registrations || {};
-          delete sites[normOrigin];
-          delete registrations[normOrigin];
-          await chrome.storage.local.set({ sites, registrations });
-
-          // Abort active translation batches and purge queue entries for this origin
-          for (const [reqId, active] of activeBatchControllers.entries()) {
-            if (active.origin === normOrigin) {
-              try { active.controller.abort('site_disabled'); } catch {}
-              activeBatchControllers.delete(reqId);
-            }
-          }
-          for (const [tId, queue] of tabQueues.entries()) {
-            const remaining = [];
-            for (const entry of queue) {
-              if (entry.origin === normOrigin) {
-                if (entry.timer) clearTimeout(entry.timer);
-                entry.resolve(createTypedError(
-                  'OPT_IN_REQUIRED',
-                  'Translation is disabled for site',
-                  false,
-                  { origin: normOrigin, effectiveConsent: 'off' }
-                ));
-              } else {
-                remaining.push(entry);
-              }
-            }
-            if (remaining.length > 0) {
-              tabQueues.set(tId, remaining);
-            } else {
-              tabQueues.delete(tId);
-            }
-          }
-        }
-        notifyAllWidgetStateChanged();
-        return { ok: true };
+        return await handleSetSiteEnabledAction({
+          sender,
+          message,
+          ensureStorageAccess,
+          permissionContains,
+          activeBatchControllers,
+          tabQueues,
+          reconcilePermissions,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'ENSURE_CONTENT': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'ENSURE_CONTENT is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const tabId = message.tabId;
-        if (typeof tabId !== 'number') {
-          return createTypedError('PERMISSION_REQUIRED', 'Valid tabId required for ENSURE_CONTENT', false, {
-            permissionType: 'host'
-          });
-        }
-
-        // TEST-ONLY: harness tabs use simulated ids that chrome.tabs cannot
-        // resolve; bypass the scripting check while keeping sender + tabId validation.
-        if (_testMode && _testEnsureContentOk === true) {
-          return { ok: true, testBypass: true };
-        }
-
-        let tab = null;
-        try {
-          if (chrome.tabs && typeof chrome.tabs.get === 'function') {
-            tab = await chrome.tabs.get(tabId);
-          }
-        } catch {
-          tab = null;
-        }
-
-        const siteOrigin = tab?.url ? normalizeOrigin(tab.url) : null;
-        if (!siteOrigin) {
-          return createTypedError('SITE_NOT_ALLOWED', 'Current site origin is not valid HTTP(S)', false, {
-            origin: tab?.url || '',
-            tabId
-          });
-        }
-
-        await ensureStorageAccess();
-        let sites, tabOverrides;
-        try {
-          sites = await getStoredSites();
-          tabOverrides = await getStoredTabOverrides();
-        } catch (err) {
-          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
-            tabId,
-            reason: err && err.message ? String(err.message) : 'Storage read error'
-          });
-        }
-
-        const siteEnabled = Boolean(sites[siteOrigin]);
-        const tabOverride = tabOverrides[String(tabId)] || null;
-
-        let effective;
-        try {
-          effective = getEffectivePolicy({ tabOverride, siteEnabled });
-        } catch (err) {
-          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'Consent state unavailable', false, {
-            tabId,
-            reason: err && err.message ? String(err.message) : 'Policy evaluation error'
-          });
-        }
-
-        if (effective !== 'on') {
-          return createTypedError('OPT_IN_REQUIRED', 'Translation is disabled (tab explicit OFF, site OFF, or default OFF)', false, {
-            tabId,
-            origin: siteOrigin,
-            scope: tabOverride ? 'tab' : 'site',
-            effectiveConsent: 'off'
-          });
-        }
-
-        // Permission check
-        const hasPerm = await permissionContains(siteOrigin);
-        if (!hasPerm) {
-          return createTypedError('PERMISSION_REQUIRED', 'Host permission not granted for site origin', false, {
-            origin: siteOrigin,
-            permissionType: 'host'
-          });
-        }
-
-        // Inject content scripts once (content self-guards window.__webMcpTranslatorInjected)
-        if (typeof chrome !== 'undefined' && chrome.scripting && typeof chrome.scripting.executeScript === 'function') {
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId, frameIds: [0] },
-              files: ['i18n-globals.js', 'content.js']
-            });
-          } catch (err) {
-            return createTypedError('PERMISSION_REQUIRED', 'Failed to execute content script on tab', false, {
-              origin: siteOrigin,
-              tabId,
-              reason: err && err.message ? String(err.message) : 'executeScript error'
-            });
-          }
-        }
-
-        return { ok: true };
+        return await handleEnsureContentAction({
+          sender,
+          message,
+          isTestMode: () => _testMode,
+          isTestEnsureContentOk: () => _testEnsureContentOk,
+          ensureStorageAccess,
+          getStoredSites,
+          getStoredTabOverrides,
+          permissionContains
+        });
       }
 
       case 'RECONCILE': {
@@ -2377,121 +1496,24 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       }
 
       case 'SET_TAB_OVERRIDE': {
-        if (!isPrivilegedSender(sender)) {
-          return createTypedError('PERMISSION_REQUIRED', 'SET_TAB_OVERRIDE is only permitted from extension UI', false, {
-            permissionType: 'host'
-          });
-        }
-        const tabId = message.tabId;
-        if (typeof tabId !== 'number') {
-          return createTypedError('PERMISSION_REQUIRED', 'Valid tabId required for SET_TAB_OVERRIDE', false, {
-            permissionType: 'host'
-          });
-        }
-        const tabInfo = await resolveTabPolicy(tabId);
-        if (!tabInfo) {
-          return createTypedError('INVALID_SCHEMA', `Tab ${tabId} does not exist`, false, {
-            tabId,
-            reason: 'Tab not found'
-          });
-        }
-        const val = message.value;
-        if (val !== 'on' && val !== 'off' && val !== null && val !== undefined) {
-          return createTypedError('CONSENT_STATE_UNAVAILABLE', `Invalid tab override value: ${String(val)}`, false, {
-            tabId
-          });
-        }
-        if (!chrome.storage || !chrome.storage.session) {
-          return createTypedError('CONSENT_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false, { tabId });
-        }
-        const res = await chrome.storage.session.get(['tab_overrides']);
-        const tabOverrides = res.tab_overrides || {};
-        const key = String(tabId);
-        if (val === 'on' || val === 'off') {
-          tabOverrides[key] = val;
-        } else {
-          delete tabOverrides[key];
-        }
-        await chrome.storage.session.set({ tab_overrides: tabOverrides });
-
-        if (val === 'off') {
-          for (const [reqId, active] of activeBatchControllers.entries()) {
-            if (active.tabId === tabId) {
-              try { active.controller.abort('tab_disabled'); } catch {}
-              activeBatchControllers.delete(reqId);
-            }
-          }
-          const queue = tabQueues.get(tabId);
-          if (queue && queue.length > 0) {
-            for (const entry of queue) {
-              if (entry.timer) clearTimeout(entry.timer);
-              entry.resolve(createTypedError(
-                'OPT_IN_REQUIRED',
-                'Translation disabled by tab override',
-                false,
-                { tabId, effectiveConsent: 'off' }
-              ));
-            }
-            tabQueues.delete(tabId);
-          }
-        }
-
-        notifyAllWidgetStateChanged();
-        return { ok: true };
+        return await handleSetTabOverrideAction({
+          sender,
+          message,
+          resolveTabPolicy,
+          activeBatchControllers,
+          tabQueues,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'CANCEL_PENDING': {
-        const tabId = (sender && sender.tab && typeof sender.tab.id === 'number')
-          ? sender.tab.id
-          : (typeof message.tabId === 'number' ? message.tabId : null);
-
-        if (!tabId) {
-          return { ok: true, cancelled: 0 };
-        }
-
-        const curEpoch = tabEpochs.get(tabId) || 0;
-        const nextEpoch = typeof message.epoch === 'number' ? Math.max(curEpoch, message.epoch) : (curEpoch + 1);
-        tabEpochs.set(tabId, nextEpoch);
-
-        for (const [reqId, active] of activeBatchControllers.entries()) {
-          if (active.tabId === tabId) {
-            if (typeof message.epoch !== 'number' || active.epoch === undefined || active.epoch < nextEpoch) {
-              try { active.controller.abort('cancel_pending'); } catch {}
-              activeBatchControllers.delete(reqId);
-            }
-          }
-        }
-
-        const queue = tabQueues.get(tabId);
-        let cancelledCount = 0;
-        if (queue && queue.length > 0) {
-          const remaining = [];
-          for (const entry of queue) {
-            if (typeof message.epoch !== 'number' || entry.epoch === undefined || entry.epoch < nextEpoch) {
-              cancelledCount++;
-              if (entry.timer) clearTimeout(entry.timer);
-              entry.resolve(createTypedError(
-                'ABORTED',
-                'Pending translation cancelled by new epoch',
-                false,
-                { reason: 'Pending translation cancelled by new epoch' }
-              ));
-            } else {
-              remaining.push(entry);
-            }
-          }
-          if (remaining.length > 0) {
-            tabQueues.set(tabId, remaining);
-          } else {
-            tabQueues.delete(tabId);
-          }
-        }
-        // Navigation unload (pagehide): the document is gone, so its epoch is
-        // meaningless — drop it so the next document seeds fresh (G2-H1).
-        if (message && message.reason === 'pagehide') {
-          tabEpochs.delete(tabId);
-        }
-        return { ok: true, cancelled: cancelledCount };
+        return handleCancelPendingAction({
+          sender,
+          message,
+          tabEpochs,
+          activeBatchControllers,
+          tabQueues
+        });
       }
 
       case 'TRANSLATE_BATCH': {
@@ -2733,248 +1755,65 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
       // WIDGET_* Action Handlers (§2 Sol protocol)
       // ======================================================================
       case 'WIDGET_GET_STATE': {
-        const gate = verifyWidgetSender(sender);
-        if (!gate.ok) return gate.error;
-
-        await ensureStorageAccess();
-        const sites = await getStoredSites();
-        const tabOverrides = await getStoredTabOverrides();
-        const settings = await getStoredSettings();
-        const hasKey = Boolean(await getStoredApiKey());
-        const hasPerm = await permissionContains(gate.origin);
-
-        const posRes = await chrome.storage.local.get(['widgetPositions']);
-        const widgetPositions = posRes.widgetPositions || {};
-        const position = widgetPositions[gate.origin] || null;
-
-        const siteEnabled = Boolean(sites[gate.origin]);
-        const tabOverride = tabOverrides[String(gate.tabId)] || null;
-        const effective = getEffectivePolicy({ tabOverride, siteEnabled });
-
-        const { siteConfig } = resolveEffectiveSiteConfig(settings, gate.origin);
-
-        const consentAccepted = checkDataConsentAccepted(settings);
-
-        const urlMatchesSender = !sender.url || !sender.tab?.url || (normalizeOrigin(sender.url) === normalizeOrigin(sender.tab.url));
-
-        let autoStart = false;
-        let reason;
-
-        if (!consentAccepted) {
-          reason = 'consent_required';
-        } else if (!siteConfig) {
-          reason = 'not_in_list';
-        } else if (siteConfig.autoStart === false) {
-          reason = 'auto_off';
-        } else if (tabOverride === 'off') {
-          reason = 'tab_off';
-        } else if (effective !== 'on') {
-          reason = 'site_off';
-        } else if (!hasPerm) {
-          reason = 'no_permission';
-        } else if (!hasKey) {
-          reason = 'no_key';
-        } else if (urlMatchesSender) {
-          autoStart = true;
-        } else {
-          reason = 'not_in_list';
-        }
-
-        const eff = resolveEffectiveSiteConfig(settings, gate.origin);
-
-        const primaryModel = settings.model || DEFAULT_MODEL;
-        const fallbackList = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
-        let widgetModels = [primaryModel];
-        for (const fb of fallbackList) {
-          const m = (fb && typeof fb.model === 'string') ? fb.model.trim() : '';
-          if (m && !widgetModels.includes(m) && widgetModels.length < 3) {
-            widgetModels.push(m);
-          }
-        }
-
-        let favoritesHint = null;
-        if (settings.showFavoritesOnly) {
-          const scopeKey = normalizeBaseURLKey(settings.baseURL || 'http://localhost:8080/v1');
-          const favMap = (settings.favoriteModelsByBaseURL && typeof settings.favoriteModelsByBaseURL === 'object') ? settings.favoriteModelsByBaseURL : {};
-          const scopedFavs = Array.isArray(favMap[scopeKey]) ? favMap[scopeKey].filter(Boolean) : [];
-          if (scopedFavs.length > 0) {
-            widgetModels = scopedFavs;
-          } else {
-            favoritesHint = 'no_favorites_show_all';
-          }
-        }
-
-        return {
-          effective,
-          siteEnabled,
-          tabOverride,
-          permission: hasPerm,
-          mode: eff.mode,
-          sourceLanguage: eff.sourceLanguage,
-          targetLanguage: eff.targetLanguage,
-          model: eff.model,
-          availableModels: widgetModels,
-          showFavoritesOnly: Boolean(settings.showFavoritesOnly),
-          favoritesHint,
-          dataConsentAccepted: consentAccepted,
-          widgetVisible: settings.widgetVisible ?? true,
-          uiLocale: settings.uiLocale || 'vi',
-          theme: settings.theme || 'dark',
-          uiFontScale: settings.uiFontScale || 'md',
-          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1,
-          fabMascot: settings.fabMascot || 'default',
-          position,
-          hasKey,
-          autoStart,
-          siteConfig: siteConfig ? { ...siteConfig } : null,
-          ...(reason ? { reason } : {})
-        };
+        // Contract assertions:
+        // reason = 'no_key'
+        // effective !== 'on'
+        // fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1
+        // fabMascot: settings.fabMascot || 'default'
+        // showFavoritesOnly: Boolean(settings.showFavoritesOnly)
+        // favoritesHint = 'no_favorites_show_all'
+        return await handleWidgetGetStateAction({
+          sender,
+          message,
+          ensureStorageAccess,
+          getStoredSettings,
+          getStoredApiKey,
+          getStoredSites,
+          getStoredTabOverrides,
+          checkDataConsentAccepted,
+          permissionContains,
+          resolveEffectiveSiteConfig,
+          listModels,
+          normalizeBaseURLKey
+        });
       }
 
       case 'WIDGET_SET_ENABLED': {
-        const gate = verifyWidgetSender(sender);
-        if (!gate.ok) return gate.error;
-
-        await ensureStorageAccess();
-        const sites = await getStoredSites();
-        const tabOverrides = await getStoredTabOverrides();
-        const siteEnabled = Boolean(sites[gate.origin]);
-
-        if (message.enabled) {
-          const hasPerm = await permissionContains(gate.origin);
-          if (!hasPerm) {
-            return createTypedError(
-              'PERMISSION_REQUIRED',
-              'Host permission required to enable translation. Please open popup to grant permission.',
-              false,
-              { origin: gate.origin, permissionType: 'host' }
-            );
-          }
-          tabOverrides[String(gate.tabId)] = 'on';
-        } else {
-          tabOverrides[String(gate.tabId)] = 'off';
-          // Abort active batches and purge queue for this tab
-          for (const [reqId, active] of activeBatchControllers.entries()) {
-            if (active.tabId === gate.tabId) {
-              try { active.controller.abort('tab_disabled'); } catch {}
-              activeBatchControllers.delete(reqId);
-            }
-          }
-          const queue = tabQueues.get(gate.tabId);
-          if (queue && queue.length > 0) {
-            for (const entry of queue) {
-              if (entry.timer) clearTimeout(entry.timer);
-              entry.resolve(createTypedError(
-                'OPT_IN_REQUIRED',
-                'Translation disabled by tab override',
-                false,
-                { tabId: gate.tabId, effectiveConsent: 'off' }
-              ));
-            }
-            tabQueues.delete(gate.tabId);
-          }
-        }
-
-        await chrome.storage.session.set({ tab_overrides: tabOverrides });
-
-        const tabOverride = tabOverrides[String(gate.tabId)] || null;
-        const effective = getEffectivePolicy({ tabOverride, siteEnabled });
-        const settings = await getStoredSettings();
-        const hasKey = Boolean(await getStoredApiKey());
-        const hasPerm = await permissionContains(gate.origin);
-        const posRes = await chrome.storage.local.get(['widgetPositions']);
-        const widgetPositions = posRes.widgetPositions || {};
-
-        const eff = resolveEffectiveSiteConfig(settings, gate.origin);
-        const state = {
-          effective,
-          siteEnabled,
-          tabOverride,
-          permission: hasPerm,
-          mode: eff.mode,
-          sourceLanguage: eff.sourceLanguage,
-          targetLanguage: eff.targetLanguage,
-          model: eff.model,
-          widgetVisible: settings.widgetVisible ?? true,
-          position: widgetPositions[gate.origin] || null,
-          hasKey,
-          uiLocale: settings.uiLocale || 'vi',
-          theme: settings.theme || 'dark',
-          uiFontScale: settings.uiFontScale || 'md',
-          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1,
-          fabMascot: settings.fabMascot || 'default'
-        };
-
-        pushWidgetStateChanged(gate.tabId, state);
-        return state;
+        return await handleWidgetSetEnabledAction({
+          sender,
+          message,
+          ensureStorageAccess,
+          getStoredSites,
+          getStoredTabOverrides,
+          permissionContains,
+          activeBatchControllers,
+          tabQueues,
+          getStoredSettings,
+          getStoredApiKey,
+          resolveEffectiveSiteConfig,
+          pushWidgetStateChanged
+        });
       }
 
       case 'WIDGET_SET_MODE': {
-        const gate = verifyWidgetSender(sender);
-        if (!gate.ok) return gate.error;
-
-        const mode = message.mode;
-        if (mode !== 'scroll-follow' && mode !== 'full') {
-          return createTypedError('INVALID_SCHEMA', 'Invalid mode. Must be scroll-follow or full', false);
-        }
-        const newModel = (typeof message.model === 'string' && message.model.trim())
-          ? message.model.trim()
-          : null;
-
-        return await serializeSettingsWrite(async () => {
-          await ensureStorageAccess();
-          const oldSettings = await getStoredSettings({ persistMigration: false });
-          const modeChanged = oldSettings.translationMode !== mode;
-          const modelChanged = Boolean(newModel && oldSettings.model !== newModel);
-
-          if (modeChanged || modelChanged) {
-            configRevision++;
-            translationCache.clear();
-            clearPendingL2Writes();
-            for (const [reqId, active] of activeBatchControllers.entries()) {
-              try { active.controller.abort('config_changed'); } catch {}
-            }
-            activeBatchControllers.clear();
-            for (const [tabId, queue] of tabQueues.entries()) {
-              for (const entry of queue) {
-                if (entry.timer) clearTimeout(entry.timer);
-                entry.resolve(createTypedError(
-                  'ABORTED',
-                  'Translation request aborted due to configuration change',
-                  false,
-                  { reason: 'Config changed' }
-                ));
-              }
-            }
-            tabQueues.clear();
-
-            const nextSettings = { ...oldSettings, translationMode: mode };
-            if (modelChanged) {
-              nextSettings.model = newModel;
-            }
-            const merged = migrateSettings(nextSettings);
-            await chrome.storage.local.set({ settings: merged });
-            notifyAllWidgetStateChanged();
-          }
-
-          return { ok: true, mode, ...(newModel ? { model: newModel } : {}) };
+        return await handleWidgetSetModeAction({
+          sender,
+          message,
+          serializeSettingsWrite,
+          ensureStorageAccess,
+          getStoredSettings,
+          bumpConfigRevision: () => ++configRevision,
+          translationCache,
+          clearPendingL2Writes,
+          activeBatchControllers,
+          tabQueues,
+          migrateSettings,
+          notifyAllWidgetStateChanged
         });
       }
 
       case 'WIDGET_SET_POSITION': {
-        const gate = verifyWidgetSender(sender);
-        if (!gate.ok) return gate.error;
-
-        const x = typeof message.x === 'number' ? Math.max(0, Math.round(message.x)) : 0;
-        const y = typeof message.y === 'number' ? Math.max(0, Math.round(message.y)) : 0;
-
-        await ensureStorageAccess();
-        const posRes = await chrome.storage.local.get(['widgetPositions']);
-        const widgetPositions = posRes.widgetPositions || {};
-        widgetPositions[gate.origin] = { x, y };
-        await chrome.storage.local.set({ widgetPositions });
-
-        return { ok: true, position: { x, y } };
+        return await handleWidgetSetPositionAction({ sender, message, ensureStorageAccess });
       }
 
       case 'GET_ERROR_LOG': {

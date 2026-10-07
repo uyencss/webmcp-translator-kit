@@ -102,3 +102,81 @@ export function trapFocusInModal(e, modalOverlay, closeBtn) {
     }
   }
 }
+
+export function configureModalPanels(modalType, { tabPanels, modalTitle, currentUiLocale, t, loadErrorLog, options, closeModal } = {}) {
+  if (modalType === 'config') {
+    if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_config');
+    if (tabPanels['tab-config']) tabPanels['tab-config'].classList.remove('hidden');
+    if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+    if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.add('hidden');
+  } else if (modalType === 'log') {
+    if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'tab_log');
+    if (tabPanels['tab-log']) tabPanels['tab-log'].classList.remove('hidden');
+    if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+    if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.add('hidden');
+    if (typeof loadErrorLog === 'function') loadErrorLog(options);
+  } else if (modalType === 'consent') {
+    if (modalTitle) modalTitle.textContent = t(currentUiLocale, 'consent_modal_title');
+    if (tabPanels['tab-consent']) tabPanels['tab-consent'].classList.remove('hidden');
+    if (tabPanels['tab-config']) tabPanels['tab-config'].classList.add('hidden');
+    if (tabPanels['tab-log']) tabPanels['tab-log'].classList.add('hidden');
+  } else {
+    if (typeof closeModal === 'function') closeModal();
+    return false;
+  }
+  return true;
+}
+
+export function setupModalAndMenuTriggers({
+  btnHeaderMenu,
+  menuBackdrop,
+  menuItemConfig,
+  menuItemLog,
+  menuItemImport,
+  inputImportConfig,
+  menuItemExport,
+  modalBackdrop,
+  modalCloseBtn,
+  btnExportConfigConnect,
+  btnImportConfigConnect,
+  inputImportConfigConnect,
+  toggleMenu,
+  closeMenu,
+  openModal,
+  triggerExportConfig,
+  triggerImportConfig,
+  isModalOpen,
+  closeModal,
+  menuOverlay,
+  handleModalFocusTrap
+} = {}) {
+  if (btnHeaderMenu) {
+    btnHeaderMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMenu();
+    });
+  }
+  if (menuBackdrop) menuBackdrop.addEventListener('click', closeMenu);
+  if (menuItemConfig) menuItemConfig.addEventListener('click', () => openModal('config', { opener: btnHeaderMenu }));
+  if (menuItemLog) menuItemLog.addEventListener('click', () => openModal('log', { opener: btnHeaderMenu }));
+  if (menuItemImport && inputImportConfig) {
+    menuItemImport.addEventListener('click', () => {
+      closeMenu();
+      inputImportConfig.click();
+    });
+    inputImportConfig.addEventListener('change', () => triggerImportConfig(inputImportConfig.files?.[0]));
+  }
+  if (menuItemExport) {
+    menuItemExport.addEventListener('click', () => {
+      closeMenu();
+      triggerExportConfig();
+    });
+  }
+  if (modalBackdrop) modalBackdrop.addEventListener('click', closeModal);
+  if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeModal);
+  if (btnExportConfigConnect) btnExportConfigConnect.addEventListener('click', triggerExportConfig);
+  if (btnImportConfigConnect && inputImportConfigConnect) {
+    btnImportConfigConnect.addEventListener('click', () => inputImportConfigConnect.click());
+    inputImportConfigConnect.addEventListener('change', () => triggerImportConfig(inputImportConfigConnect.files?.[0]));
+  }
+}

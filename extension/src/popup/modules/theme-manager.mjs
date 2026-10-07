@@ -33,3 +33,39 @@ export function applyUiLocale(locale, selectUiLocale, onLocaleChange) {
   }
   return loc;
 }
+
+export function renderLocalizedElements(doc, loc, t, { selectUiLocale, modalTitle, activeModal } = {}) {
+  if (!doc) return;
+  doc.querySelectorAll('[data-i18n]').forEach((el) => {
+    const k = el.getAttribute('data-i18n');
+    if (k) el.textContent = t(loc, k);
+  });
+  doc.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-title');
+    if (k) el.title = t(loc, k);
+  });
+  doc.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-aria-label');
+    if (k) el.setAttribute('aria-label', t(loc, k));
+  });
+  doc.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-placeholder');
+    if (k) {
+      el.placeholder = t(loc, k);
+      el.setAttribute('placeholder', t(loc, k));
+    }
+  });
+  doc.querySelectorAll('[data-i18n-label]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-label');
+    if (k) el.label = t(loc, k);
+  });
+  if (selectUiLocale) {
+    for (const opt of selectUiLocale.options) {
+      opt.textContent = t(loc, `config_ui_locale_${opt.value}`);
+    }
+  }
+  if (modalTitle) {
+    if (activeModal === 'config') modalTitle.textContent = t(loc, 'tab_config');
+    else if (activeModal === 'log') modalTitle.textContent = t(loc, 'tab_log');
+  }
+}

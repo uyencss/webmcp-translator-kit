@@ -38,3 +38,28 @@ export function buildRateLimitsConfig({
     }
   };
 }
+
+export function collectCleanFallbacks({
+  fallbacks = [],
+  doc = typeof document !== 'undefined' ? document : null,
+  isSecureOrLoopbackBaseURL,
+  currentUiLocale,
+  t,
+  DEFAULT_MODEL = 'ag/gemini-3.1-pro-low'
+} = {}) {
+  const out = [];
+  for (let i = 0; i < fallbacks.length; i++) {
+    const fb = fallbacks[i];
+    const fbUrlInput = doc ? doc.getElementById(`input-fallback-url-${i}`) : null;
+    const fbModelSelect = doc ? doc.getElementById(`select-fallback-${i}`) : null;
+    const fbUrl = fbUrlInput ? fbUrlInput.value.trim() : (fb.baseURL || '');
+    const fbModel = fbModelSelect ? fbModelSelect.value : (fb.model || DEFAULT_MODEL);
+    if (fbUrl) {
+      if (!/^https?:\/\/.+/i.test(fbUrl) || (isSecureOrLoopbackBaseURL && !isSecureOrLoopbackBaseURL(fbUrl))) {
+        return { fallbacks: null, error: t(currentUiLocale, 'err_fallback_base_url_invalid', { index: i + 1 }) };
+      }
+    }
+    out.push({ id: fb.id || `fb${i + 1}`, model: fbModel, baseURL: fbUrl || undefined });
+  }
+  return { fallbacks: out, error: null };
+}
