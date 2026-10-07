@@ -35,7 +35,7 @@ export function isDataConsentAccepted(settings) {
 
 export const FAB_SIZE_BOUNDS = Object.freeze({
   min: 0.75,
-  max: 1.5,
+  max: 2.0,
   default: 1.0
 });
 
@@ -44,6 +44,22 @@ export function clampFabSize(val) {
   if (!Number.isFinite(num)) return FAB_SIZE_BOUNDS.default;
   const clamped = Math.max(FAB_SIZE_BOUNDS.min, Math.min(FAB_SIZE_BOUNDS.max, num));
   return Math.round(clamped * 100) / 100;
+}
+
+export const VALID_FAB_MASCOTS = Object.freeze([
+  'default',
+  'polyglot-owl',
+  'babel-cat',
+  'globe-fox',
+  'lingo-parrot',
+  'robo-babel'
+]);
+
+export function normalizeFabMascot(val) {
+  if (typeof val === 'string' && VALID_FAB_MASCOTS.includes(val)) {
+    return val;
+  }
+  return 'default';
 }
 
 export const VALID_PER_SITE_MODES = Object.freeze(['inherit', 'scroll-follow', 'full']);
@@ -146,6 +162,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark',
   uiFontScale: 'md',
   fabSize: 1.0,
+  fabMascot: 'default',
   showFavoritesOnly: false,
   cacheEnabled: true,
   sourceLanguage: 'auto',
@@ -288,6 +305,9 @@ export function migrateSettings(raw) {
 
   // v9: fabSize (number 0.75..1.5, default 1.0)
   res.fabSize = clampFabSize(res.fabSize);
+
+  // v9 extension (WI-52): fabMascot (string enum, default 'default')
+  res.fabMascot = normalizeFabMascot(res.fabMascot);
 
   // cacheEnabled (boolean)
   if (typeof res.cacheEnabled !== 'boolean') {
@@ -573,6 +593,13 @@ export function validateSettings(settings) {
   if (settings.fabSize !== undefined) {
     if (typeof settings.fabSize !== 'number' || Number.isNaN(settings.fabSize) || settings.fabSize < FAB_SIZE_BOUNDS.min || settings.fabSize > FAB_SIZE_BOUNDS.max) {
       errors.push(`fabSize must be a number between ${FAB_SIZE_BOUNDS.min} and ${FAB_SIZE_BOUNDS.max}`);
+    }
+  }
+
+  // Check fabMascot (v9 extension - WI-52)
+  if (settings.fabMascot !== undefined) {
+    if (typeof settings.fabMascot !== 'string' || !VALID_FAB_MASCOTS.includes(settings.fabMascot)) {
+      errors.push(`fabMascot must be one of: ${VALID_FAB_MASCOTS.join(', ')}`);
     }
   }
 
@@ -883,6 +910,7 @@ export function buildExportConfig({ settings, fallbackKeyPresence = {}, hasStore
     theme: s.theme,
     uiFontScale: s.uiFontScale,
     fabSize: s.fabSize,
+    fabMascot: s.fabMascot || 'default',
     widgetVisible: s.widgetVisible,
     showFavoritesOnly: s.showFavoritesOnly,
     rateLimits: s.rateLimits,
@@ -896,7 +924,7 @@ export function buildExportConfig({ settings, fallbackKeyPresence = {}, hasStore
 const IMPORTABLE_SETTING_KEYS = Object.freeze([
   'version', 'baseURL', 'model', 'fallbacks', 'autoTranslateSites',
   'translationMode', 'sourceLanguage', 'targetLanguage', 'uiLocale', 'theme',
-  'uiFontScale', 'fabSize', 'widgetVisible', 'showFavoritesOnly', 'rateLimits', 'providerConcurrency',
+  'uiFontScale', 'fabSize', 'fabMascot', 'widgetVisible', 'showFavoritesOnly', 'rateLimits', 'providerConcurrency',
   'favoriteModelsByBaseURL', 'favoriteModels', 'cacheEnabled'
 ]);
 

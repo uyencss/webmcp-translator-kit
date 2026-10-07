@@ -2666,6 +2666,207 @@
         width: calc(22px * var(--wmt-fab-scale, 1));
         height: calc(22px * var(--wmt-fab-scale, 1));
       }
+      .wmt-mascot-img {
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+        object-fit: contain;
+        pointer-events: none;
+        user-select: none;
+        transition: transform 0.15s ease;
+        filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.28));
+      }
+      .wmt-btn.has-mascot {
+        background: transparent !important;
+        box-shadow: none !important;
+        border: none !important;
+        border-radius: 0 !important;
+        width: calc(52px * var(--wmt-fab-scale, 1));
+        height: calc(52px * var(--wmt-fab-scale, 1));
+      }
+      .wmt-btn.has-mascot .wmt-badge {
+        display: none !important;
+      }
+      .wmt-btn.has-mascot:hover {
+        background: transparent !important;
+      }
+      .wmt-btn.has-mascot:hover .wmt-mascot-img {
+        transform: scale(1.08);
+        filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.38));
+      }
+      .wmt-btn.has-mascot:focus-visible {
+        outline: none !important;
+      }
+      .wmt-btn.has-mascot:active {
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      .wmt-btn.has-mascot:active .wmt-mascot-img {
+        transform: scale(0.95);
+      }
+      .wmt-btn.busy .wmt-mascot-img,
+      .wmt-btn.state-thinking .wmt-mascot-img {
+        animation: wmtMascotThinking 1.1s ease-in-out infinite;
+      }
+      .wmt-btn.state-idle .wmt-mascot-img {
+        animation: wmtMascotIdle 3.5s ease-in-out infinite;
+      }
+      .wmt-btn.state-done .wmt-mascot-img {
+        animation: wmtMascotDone 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      }
+
+      /* Halo Orbit Ring with Animated Dot */
+      .wmt-halo {
+        position: absolute;
+        top: -8px;
+        left: -8px;
+        right: -8px;
+        bottom: -8px;
+        border-radius: 50%;
+        pointer-events: none;
+        display: none;
+        transition: all 0.3s ease;
+      }
+      .wmt-btn.has-mascot .wmt-halo {
+        display: block;
+      }
+      .wmt-halo-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 1.5px solid rgba(139, 92, 246, 0.35);
+        box-shadow: 0 0 12px rgba(139, 92, 246, 0.2);
+        transition: border-color 0.3s, box-shadow 0.3s;
+      }
+      .wmt-halo-orbit {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        animation: wmtHaloOrbit 3.5s linear infinite;
+        transform-origin: center center;
+      }
+      .wmt-halo-dot {
+        position: absolute;
+        top: -4px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #a78bfa;
+        box-shadow: 0 0 8px #a78bfa, 0 0 14px #8b5cf6;
+        transition: background 0.3s, box-shadow 0.3s;
+      }
+
+      /* Halo State Variations */
+      .wmt-btn.has-mascot.state-idle .wmt-halo-ring {
+        border-color: rgba(167, 139, 250, 0.4);
+        box-shadow: 0 0 10px rgba(167, 139, 250, 0.25);
+      }
+      .wmt-btn.has-mascot.state-idle .wmt-halo-dot {
+        background: #c4b5fd;
+        box-shadow: 0 0 8px #c4b5fd, 0 0 14px #a78bfa;
+      }
+      .wmt-btn.has-mascot.busy .wmt-halo-ring,
+      .wmt-btn.has-mascot.state-thinking .wmt-halo-ring {
+        border-color: rgba(56, 189, 248, 0.85);
+        box-shadow: 0 0 18px rgba(56, 189, 248, 0.5);
+      }
+      .wmt-btn.has-mascot.busy .wmt-halo-orbit,
+      .wmt-btn.has-mascot.state-thinking .wmt-halo-orbit {
+        animation-duration: 1.1s;
+      }
+      .wmt-btn.has-mascot.busy .wmt-halo-dot,
+      .wmt-btn.has-mascot.state-thinking .wmt-halo-dot {
+        background: #38bdf8;
+        box-shadow: 0 0 10px #38bdf8, 0 0 20px #0ea5e9;
+      }
+      .wmt-btn.has-mascot.state-done .wmt-halo-ring {
+        border-color: rgba(16, 185, 129, 0.85);
+        box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+      }
+      .wmt-btn.has-mascot.state-done .wmt-halo-orbit {
+        animation-duration: 0.8s;
+      }
+      .wmt-btn.has-mascot.state-done .wmt-halo-dot {
+        background: #10b981;
+        box-shadow: 0 0 12px #34d399, 0 0 22px #059669;
+      }
+
+      /* Floating Animated Zzz for Idle Sleep State */
+      .wmt-mascot-zzz {
+        display: none;
+        position: absolute;
+        top: -18px;
+        right: -2px;
+        pointer-events: none;
+        user-select: none;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-weight: 800;
+        color: #c4b5fd;
+        text-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
+        align-items: flex-end;
+        gap: 2px;
+      }
+      .wmt-btn.has-mascot.state-idle .wmt-mascot-zzz {
+        display: flex;
+      }
+      .wmt-mascot-zzz span {
+        display: inline-block;
+        opacity: 0;
+        animation: wmtFloatZzz 2.6s ease-in-out infinite;
+      }
+      .wmt-mascot-zzz span:nth-child(1) {
+        font-size: 11px;
+        animation-delay: 0s;
+      }
+      .wmt-mascot-zzz span:nth-child(2) {
+        font-size: 14px;
+        animation-delay: 0.6s;
+      }
+      .wmt-mascot-zzz span:nth-child(3) {
+        font-size: 18px;
+        animation-delay: 1.2s;
+      }
+
+      @keyframes wmtHaloOrbit {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes wmtFloatZzz {
+        0% {
+          transform: translate(0, 6px) scale(0.6);
+          opacity: 0;
+        }
+        25% {
+          opacity: 0.95;
+        }
+        70% {
+          opacity: 0.85;
+        }
+        100% {
+          transform: translate(8px, -20px) scale(1.15);
+          opacity: 0;
+        }
+      }
+      @keyframes wmtMascotPulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.12); }
+      }
+      @keyframes wmtMascotIdle {
+        0%, 100% { transform: translateY(0px) scale(1); }
+        50% { transform: translateY(-2px) scale(1.03); }
+      }
+      @keyframes wmtMascotThinking {
+        0%, 100% { transform: scale(1) rotate(0deg); }
+        25% { transform: scale(1.08) rotate(-3deg); }
+        75% { transform: scale(1.08) rotate(3deg); }
+      }
+      @keyframes wmtMascotDone {
+        0% { transform: scale(0.9); }
+        50% { transform: scale(1.18); }
+        100% { transform: scale(1); }
+      }
       .wmt-btn:hover {
         background: #2563eb;
       }
@@ -2692,6 +2893,10 @@
       .wmt-badge.busy {
         background: #f59e0b;
         animation: wmtPulse 1s ease-in-out infinite;
+      }
+      .wmt-badge.done {
+        background: #10b981;
+        box-shadow: 0 0 6px rgba(16, 185, 129, 0.8);
       }
       @keyframes wmtPulse {
         0%, 100% { opacity: 0.5; }
@@ -2889,7 +3094,17 @@
     const container = document.createElement('div');
     container.innerHTML = `
       <button class="wmt-btn" id="wmt-fab" aria-label="WebMCP Translator" title="WebMCP Translator" tabindex="0">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <div class="wmt-halo" id="wmt-halo" aria-hidden="true">
+          <div class="wmt-halo-ring"></div>
+          <div class="wmt-halo-orbit">
+            <div class="wmt-halo-dot"></div>
+          </div>
+        </div>
+        <div class="wmt-mascot-zzz" id="wmt-mascot-zzz" aria-hidden="true">
+          <span>z</span><span>z</span><span>Z</span>
+        </div>
+        <img class="wmt-mascot-img" id="wmt-mascot-img" alt="Mascot" style="display: none;" />
+        <svg class="wmt-default-svg" id="wmt-default-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m5 8 6 6"/>
           <path d="m4 14 6-6 2-3"/>
           <path d="M2 5h12"/>
@@ -2936,11 +3151,106 @@
     shadow.appendChild(style);
     shadow.appendChild(container);
 
+    let currentMascotState = 'idle'; // 'idle' | 'thinking' | 'done'
+    let doneStateTimer = null;
+    let prevBusyState = false;
+
+    const MASCOT_MAP = {
+      'polyglot-owl': 'icons/mascots/polyglot-owl.png',
+      'babel-cat': 'icons/mascots/babel-cat.png',
+      'globe-fox': 'icons/mascots/globe-fox.png',
+      'lingo-parrot': 'icons/mascots/lingo-parrot.png',
+      'robo-babel': 'icons/mascots/robo-babel.png'
+    };
+
+    function updateMascotVisual(stateOverride) {
+      if (stateOverride) currentMascotState = stateOverride;
+      const mascotImg = container.querySelector('#wmt-mascot-img');
+      const defaultSvg = container.querySelector('#wmt-default-svg');
+      const fabBtn = container.querySelector('#wmt-fab');
+      const badgeEl = container.querySelector('#wmt-badge');
+      if (!mascotImg || !defaultSvg || !fabBtn) return;
+
+      const mascotTheme = (typeof widgetState.fabMascot === 'string' && widgetState.fabMascot) ? widgetState.fabMascot : 'default';
+      const VALID_THEMES = ['polyglot-owl', 'babel-cat', 'globe-fox', 'lingo-parrot', 'robo-babel'];
+
+      fabBtn.classList.remove('state-idle', 'state-thinking', 'state-done');
+      fabBtn.classList.add(`state-${currentMascotState}`);
+
+      if (badgeEl) {
+        badgeEl.classList.toggle('busy', currentMascotState === 'thinking');
+        badgeEl.classList.toggle('done', currentMascotState === 'done');
+      }
+
+      if (mascotTheme !== 'default' && VALID_THEMES.includes(mascotTheme)) {
+        fabBtn.classList.add('has-mascot');
+        const stateName = (currentMascotState === 'thinking') ? 'thinking'
+                        : (currentMascotState === 'done') ? 'done'
+                        : 'idle';
+        const subfolderPath = `icons/mascots/${mascotTheme}/${stateName}.png`;
+        const flatPath = (currentMascotState === 'thinking') ? `icons/mascots/${mascotTheme}-thinking.png`
+                       : (currentMascotState === 'done') ? `icons/mascots/${mascotTheme}-done.png`
+                       : `icons/mascots/${mascotTheme}.png`;
+
+        try {
+          const getUrl = (p) => (typeof chrome !== 'undefined' && chrome.runtime?.getURL)
+            ? chrome.runtime.getURL(p)
+            : p;
+          const targetUrl = getUrl(subfolderPath);
+          if (mascotImg.src !== targetUrl) {
+            mascotImg.src = targetUrl;
+          }
+          mascotImg.style.display = 'block';
+          defaultSvg.style.display = 'none';
+          mascotImg.onerror = () => {
+            try {
+              const flatUrl = getUrl(flatPath);
+              if (mascotImg.src !== flatUrl) {
+                mascotImg.src = flatUrl;
+                return;
+              }
+              const fallbackUrl = getUrl(`icons/mascots/${mascotTheme}.png`);
+              if (mascotImg.src !== fallbackUrl) {
+                mascotImg.src = fallbackUrl;
+                return;
+              }
+            } catch {}
+            fabBtn.classList.remove('has-mascot');
+            mascotImg.style.display = 'none';
+            defaultSvg.style.display = 'block';
+          };
+        } catch {
+          fabBtn.classList.remove('has-mascot');
+          mascotImg.style.display = 'none';
+          defaultSvg.style.display = 'block';
+        }
+      } else {
+        fabBtn.classList.remove('has-mascot');
+        mascotImg.style.display = 'none';
+        defaultSvg.style.display = 'block';
+      }
+    }
+
     fabBusySetter = (busy) => {
       const f = container.querySelector('#wmt-fab');
       const b = container.querySelector('#wmt-badge');
       if (f) f.classList.toggle('busy', busy);
       if (b) b.classList.toggle('busy', busy);
+
+      if (busy) {
+        if (doneStateTimer) { clearTimeout(doneStateTimer); doneStateTimer = null; }
+        updateMascotVisual('thinking');
+      } else if (prevBusyState && !busy) {
+        updateMascotVisual('done');
+        if (doneStateTimer) clearTimeout(doneStateTimer);
+        doneStateTimer = setTimeout(() => {
+          updateMascotVisual('idle');
+          doneStateTimer = null;
+        }, 3000);
+      } else if (!doneStateTimer) {
+        updateMascotVisual('idle');
+      }
+      prevBusyState = Boolean(busy);
     };
     updateFabBusy();
 
@@ -3033,9 +3343,18 @@
       }
     }
 
+    let lastPresentationTime = 0;
+
     function applyState(st) {
       if (!st) return;
-      widgetState = { ...widgetState, ...st };
+      if (st.isPresentation) {
+        lastPresentationTime = Date.now();
+      }
+      const isStaleQuery = (Date.now() - lastPresentationTime < 3000) && !st.isPresentation && (st.fabMascot !== undefined || st.fabSize !== undefined);
+      const effectiveSt = isStaleQuery
+        ? { ...st, fabMascot: widgetState.fabMascot, fabSize: widgetState.fabSize }
+        : st;
+      widgetState = { ...widgetState, ...effectiveSt };
 
       if (modelSelect) {
         const curModel = st.model || widgetState.model || '';
@@ -3097,20 +3416,39 @@
         host.style.setProperty('--wmt-fab-scale', String(clampedFabSize));
       }
 
-      // Effective Consent
-      const dataConsentAccepted = widgetState.dataConsentAccepted === true;
-      const isEffectiveOn = widgetState.effective === 'on' && dataConsentAccepted;
-      if (!dataConsentAccepted || !isEffectiveOn || widgetState.permission !== true || widgetState.hasKey !== true) {
-        if (autoStartTimer) {
-          clearTimeout(autoStartTimer);
-          autoStartTimer = null;
+      // Mascot Icon (WI-52)
+      updateMascotVisual();
+
+      // Effective Consent & Auto-Start Gates (only evaluated on non-presentation updates)
+      if (!st.isPresentation) {
+        const dataConsentAccepted = widgetState.dataConsentAccepted === true;
+        const isEffectiveOn = widgetState.effective === 'on' && dataConsentAccepted;
+        if (!dataConsentAccepted || !isEffectiveOn || widgetState.permission !== true || widgetState.hasKey !== true) {
+          if (autoStartTimer) {
+            clearTimeout(autoStartTimer);
+            autoStartTimer = null;
+          }
+          autoStartAttempted = false;
+          autoStarting = false;
+          updateFabBusy();
+          if (isTranslating || scrollSession.active || scrollSession.watching || scrollSession.inFlight > 0) {
+            cancelActiveTranslation();
+          }
         }
-        autoStartAttempted = false;
-        autoStarting = false;
-        updateFabBusy();
-        if (isTranslating || scrollSession.active || scrollSession.watching || scrollSession.inFlight > 0) {
-          cancelActiveTranslation();
-        }
+
+        badge.classList.toggle('active', isEffectiveOn);
+        statusTag.textContent = isEffectiveOn ? wmtT('widget_status_on') : wmtT('widget_status_off');
+        statusTag.classList.toggle('on', isEffectiveOn);
+
+        toggleTabBtn.textContent = isEffectiveOn ? wmtT('widget_toggle_tab_on') : wmtT('widget_toggle_tab_off');
+        toggleTabBtn.classList.toggle('active', isEffectiveOn);
+
+        // Mode
+        const activeMode = widgetState.mode || 'scroll-follow';
+        currentMode = activeMode;
+        modeRadios.forEach((r) => {
+          r.checked = r.value === activeMode;
+        });
       }
 
       // Visibility
@@ -3119,20 +3457,6 @@
         return;
       }
       host.style.display = 'block';
-
-      badge.classList.toggle('active', isEffectiveOn);
-      statusTag.textContent = isEffectiveOn ? wmtT('widget_status_on') : wmtT('widget_status_off');
-      statusTag.classList.toggle('on', isEffectiveOn);
-
-      toggleTabBtn.textContent = isEffectiveOn ? wmtT('widget_toggle_tab_on') : wmtT('widget_toggle_tab_off');
-      toggleTabBtn.classList.toggle('active', isEffectiveOn);
-
-      // Mode
-      const activeMode = widgetState.mode || 'scroll-follow';
-      currentMode = activeMode;
-      modeRadios.forEach((r) => {
-        r.checked = r.value === activeMode;
-      });
 
       // Position
       if (widgetState.position && typeof widgetState.position.x === 'number' && typeof widgetState.position.y === 'number') {
@@ -3551,7 +3875,20 @@
     // permission arrives after load; queryState bounds retries internally)
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
-        // Newer pushed state supersedes any in-flight queryState() reply.
+        // Presentation-only pushes (mascot, size) apply visually without
+        // interrupting or cancelling a pending auto-start session or triggering a roundtrip query.
+        if (msg.isPresentation) {
+          try {
+            const { action, isPresentation, ...pushedState } = msg;
+            void action;
+            if (Object.keys(pushedState).length > 0) {
+              applyState({ ...pushedState, isPresentation: true });
+            }
+          } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
+          return;
+        }
+
+        // Full state push: newer pushed state supersedes any in-flight queryState() reply.
         widgetQuerySeq++;
         try {
           if (autoStartTimer) {
@@ -3575,6 +3912,26 @@
         } catch (e) { if (__wmtInvalidatedErr(e)) __wmtHaltStale(); }
       }
     });
+
+    // Real-time presentation updates via storage changes
+    if (typeof chrome !== 'undefined' && chrome?.storage?.onChanged) {
+      try {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          if (areaName === 'local' && changes.settings?.newValue) {
+            const s = changes.settings.newValue;
+            applyState({
+              fabMascot: s.fabMascot,
+              fabSize: s.fabSize,
+              theme: s.theme,
+              uiLocale: s.uiLocale,
+              uiFontScale: s.uiFontScale,
+              widgetVisible: s.widgetVisible,
+              isPresentation: true
+            });
+          }
+        });
+      } catch {}
+    }
   }
 
   // ============================================================================
@@ -3771,6 +4128,11 @@
       busy: Boolean(autoStarting || isTranslating || scrollSession.inFlight > 0)
     }),
     isAutoStarting: () => autoStarting,
+    hasAutoStartTimer: () => Boolean(autoStartTimer),
+    setAutoStartTimerForTest: (t) => {
+      autoStartTimer = t;
+      if (t) autoStarting = true;
+    },
     isFabBusy: () => Boolean(autoStarting || isTranslating || scrollSession.inFlight > 0),
     _getWidgetHost: () => document.getElementById('__wmt-widget-host'),
     _wmtT: (k, p) => widgetTHook(k, p),

@@ -777,7 +777,7 @@ test('settings: migrateSettings converts v8 to canonical v9 with fabSize default
 
   // Out of bounds clamped
   assert.equal(migrateSettings({ ...v8Settings, fabSize: 0.2 }).fabSize, 0.75);
-  assert.equal(migrateSettings({ ...v8Settings, fabSize: 2.5 }).fabSize, 1.5);
+  assert.equal(migrateSettings({ ...v8Settings, fabSize: 2.5 }).fabSize, 2.0);
 
   // Invalid types fall back to default
   assert.equal(migrateSettings({ ...v8Settings, fabSize: 'large' }).fabSize, 1.0);
@@ -815,7 +815,7 @@ test('settings: validateSettings accepts valid v9 settings and rejects invalid f
   assert.ok(tooLow.errors.some((e) => e.includes('fabSize')));
 
   // Above max
-  const tooHigh = validateSettings({ ...baseValid, fabSize: 1.8 });
+  const tooHigh = validateSettings({ ...baseValid, fabSize: 2.5 });
   assert.equal(tooHigh.valid, false);
   assert.ok(tooHigh.errors.some((e) => e.includes('fabSize')));
 

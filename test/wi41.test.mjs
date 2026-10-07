@@ -126,7 +126,7 @@ test('WI-41: fabSize slider exists in Appearance subpanel', () => {
   assert.ok(popupHtml.includes('id="input-fab-size"'), '#input-fab-size slider must exist');
   assert.ok(popupHtml.includes('id="fab-size-value"'), '#fab-size-value badge must exist');
   assert.ok(popupHtml.includes('min="0.75"'), 'fab-size slider min must be 0.75');
-  assert.ok(popupHtml.includes('max="1.5"'), 'fab-size slider max must be 1.5');
+  assert.ok(popupHtml.includes('max="2.0"'), 'fab-size slider max must be 2.0');
 });
 
 test('WI-41: All WI-41 i18n keys are present in all 7 locales with identical parameter signatures', () => {
@@ -332,12 +332,13 @@ test('WI-41: buildExportConfig produces complete configuration snapshot without 
 
 test('WI-41: fabSize bounds [0.75, 1.5] and clampFabSize function', () => {
   assert.equal(FAB_SIZE_BOUNDS.min, 0.75);
-  assert.equal(FAB_SIZE_BOUNDS.max, 1.5);
+  assert.equal(FAB_SIZE_BOUNDS.max, 2.0);
   assert.equal(FAB_SIZE_BOUNDS.default, 1.0);
 
   // Exact bounds
   assert.equal(clampFabSize(0.75), 0.75);
   assert.equal(clampFabSize(1.5), 1.5);
+  assert.equal(clampFabSize(2.0), 2.0);
   assert.equal(clampFabSize(1.0), 1.0);
   assert.equal(clampFabSize(1.25), 1.25);
 
@@ -345,13 +346,13 @@ test('WI-41: fabSize bounds [0.75, 1.5] and clampFabSize function', () => {
   assert.equal(clampFabSize(0.5), 0.75);
   assert.equal(clampFabSize(0), 0.75);
   assert.equal(clampFabSize(-1), 0.75);
-  assert.equal(clampFabSize(2.0), 1.5);
-  assert.equal(clampFabSize(10), 1.5);
+  assert.equal(clampFabSize(2.5), 2.0);
+  assert.equal(clampFabSize(10), 2.0);
 
   // Numeric string parsing
   assert.equal(clampFabSize('1.35'), 1.35);
   assert.equal(clampFabSize('0.2'), 0.75);
-  assert.equal(clampFabSize('3.5'), 1.5);
+  assert.equal(clampFabSize('3.5'), 2.0);
 
   // Invalid types fallback to default 1.0
   assert.equal(clampFabSize(NaN), 1.0);

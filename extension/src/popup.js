@@ -8,6 +8,7 @@ import {
   clampSiteMaxBatches,
   clampProviderConcurrency,
   clampFabSize,
+  normalizeFabMascot,
   buildExportConfig,
   parseImportConfig,
   isDataConsentAccepted,
@@ -142,6 +143,7 @@ if (typeof document !== 'undefined') {
   const menuItemConfig = document.getElementById('menu-item-config');
   const menuItemLog = document.getElementById('menu-item-log');
   const menuItemExport = document.getElementById('menu-item-export');
+  const menuItemImport = document.getElementById('menu-item-import');
 
   // Modal Dialog Elements
   const modalOverlay = document.getElementById('modal-overlay');
@@ -153,9 +155,13 @@ if (typeof document !== 'undefined') {
   const btnExportConfigConnect = document.getElementById('btn-export-config-connect');
   const btnImportConfigConnect = document.getElementById('btn-import-config-connect');
   const inputImportConfigConnect = document.getElementById('input-import-config-connect');
+  const inputImportConfig = document.getElementById('input-import-config') || inputImportConfigConnect;
   const checkboxExportKeys = document.getElementById('checkbox-export-keys');
   const inputFabSize = document.getElementById('input-fab-size');
   const fabSizeValue = document.getElementById('fab-size-value');
+  const btnResetFabSize = document.getElementById('btn-reset-fab-size');
+  const mascotSelectorGrid = document.getElementById('mascot-selector-grid');
+  const selectFabMascot = document.getElementById('select-fab-mascot');
 
   // Tab 1 Elements ("Translate")
   const selectSrcLang = document.getElementById('select-src-lang');
@@ -571,6 +577,7 @@ if (typeof document !== 'undefined') {
       theme: selectTheme ? selectTheme.value : (savedSettings.theme || 'dark'),
       uiFontScale: selectUiFontScale ? selectUiFontScale.value : (savedSettings.uiFontScale || 'md'),
       fabSize: inputFabSize ? clampFabSize(inputFabSize.value) : (savedSettings.fabSize ?? 1.0),
+      fabMascot: selectFabMascot ? selectFabMascot.value : (savedSettings.fabMascot || 'default'),
       showFavoritesOnly: checkboxFavoritesOnly ? Boolean(checkboxFavoritesOnly.checked) : false,
       exportIncludeKeys: checkboxExportKeys ? Boolean(checkboxExportKeys.checked) : (typeof savedSettings.exportIncludeKeys === 'boolean' ? savedSettings.exportIncludeKeys : true),
       model: selectModel && selectModel.value ? selectModel.value : (savedSettings.model || DEFAULT_MODEL),
@@ -1153,10 +1160,63 @@ if (typeof document !== 'undefined') {
     window.triggerImportConfig = triggerImportConfig;
   }
 
-  function updateFabSizeDisplay(val) {
+  function broadcastWidgetPresentation(patch = {}) {
+    const currentMascot = selectFabMascot?.value || 'default';
+    const currentSize = parseFloat(inputFabSize?.value) || 1.0;
+    const fullPatch = {
+      isPresentation: true,
+      fabMascot: currentMascot,
+      fabSize: currentSize,
+      theme: selectTheme?.value || 'dark',
+      uiLocale: currentUiLocale,
+      ...patch
+    };
+    if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
+      try {
+        chrome.tabs.query({}, (tabs) => {
+          if (Array.isArray(tabs)) {
+            for (const tab of tabs) {
+              if (tab && typeof tab.id === 'number') {
+                try {
+                  chrome.tabs.sendMessage(tab.id, {
+                    action: 'WIDGET_STATE_CHANGED',
+                    ...fullPatch
+                  }).catch(() => {});
+                } catch {}
+              }
+            }
+          }
+        });
+      } catch {}
+    }
+  }
+
+  function updateFabSizeDisplay(val, options = {}) {
     const clamped = clampFabSize(val);
     if (inputFabSize) inputFabSize.value = String(clamped);
     if (fabSizeValue) fabSizeValue.textContent = `${clamped.toFixed(2)}x`;
+    const currentMascot = selectFabMascot?.value || 'default';
+    if (!options || options.broadcast !== false) {
+      broadcastWidgetPresentation({ fabSize: clamped, fabMascot: currentMascot, isPresentation: true });
+    }
+  }
+
+  function applyFabMascot(mascot, options = {}) {
+    const target = normalizeFabMascot(mascot);
+    if (selectFabMascot) selectFabMascot.value = target;
+    if (mascotSelectorGrid) {
+      const chips = mascotSelectorGrid.querySelectorAll('.mascot-chip');
+      chips.forEach((chip) => {
+        const isSelected = chip.dataset.mascot === target;
+        chip.classList.toggle('active', isSelected);
+        chip.setAttribute('aria-checked', String(isSelected));
+        chip.setAttribute('tabindex', isSelected ? '0' : '-1');
+      });
+    }
+    const currentSize = parseFloat(inputFabSize?.value) || 1.0;
+    if (!options || options.broadcast !== false) {
+      broadcastWidgetPresentation({ fabMascot: target, fabSize: currentSize, isPresentation: true });
+    }
   }
 
   // Tab Navigation Controller (with roving tabindex & sessionStorage memory)
@@ -2574,6 +2634,7 @@ if (typeof document !== 'undefined') {
           } else {
             updateFabSizeDisplay(1.0);
           }
+          applyFabMascot(resp.settings.fabMascot || 'default');
 
           favoriteModelsByBaseURL = (resp.settings.favoriteModelsByBaseURL && typeof resp.settings.favoriteModelsByBaseURL === 'object' && !Array.isArray(resp.settings.favoriteModelsByBaseURL))
             ? JSON.parse(JSON.stringify(resp.settings.favoriteModelsByBaseURL))
@@ -3072,6 +3133,54 @@ if (typeof document !== 'undefined') {
       markDirty();
     });
   }
+  if (btnResetFabSize) {
+    btnResetFabSize.addEventListener('click', () => {
+      updateFabSizeDisplay(1.0);
+      markDirty();
+    });
+  }
+  if (mascotSelectorGrid) {
+    mascotSelectorGrid.addEventListener('click', (e) => {
+      const chip = e.target.closest('.mascot-chip');
+      if (chip && chip.dataset.mascot) {
+        applyFabMascot(chip.dataset.mascot);
+        flushAutosave();
+        markDirty();
+      }
+    });
+    mascotSelectorGrid.addEventListener('keydown', (e) => {
+      const chips = Array.from(mascotSelectorGrid.querySelectorAll('.mascot-chip'));
+      if (chips.length === 0) return;
+      const activeIdx = chips.findIndex((c) => c.classList.contains('active'));
+      let nextIdx = -1;
+
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        nextIdx = activeIdx >= 0 ? (activeIdx + 1) % chips.length : 0;
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        nextIdx = activeIdx >= 0 ? (activeIdx - 1 + chips.length) % chips.length : chips.length - 1;
+      } else if (e.key === ' ' || e.key === 'Enter') {
+        const chip = e.target.closest('.mascot-chip');
+        if (chip && chip.dataset.mascot) {
+          e.preventDefault();
+          applyFabMascot(chip.dataset.mascot);
+          flushAutosave();
+          markDirty();
+        }
+      }
+
+      if (nextIdx >= 0) {
+        const targetChip = chips[nextIdx];
+        if (targetChip && targetChip.dataset.mascot) {
+          applyFabMascot(targetChip.dataset.mascot);
+          targetChip.focus();
+          flushAutosave();
+          markDirty();
+        }
+      }
+    });
+  }
 
   // Header Settings Menu & Modal Triggers
   if (btnHeaderMenu) {
@@ -3092,6 +3201,13 @@ if (typeof document !== 'undefined') {
     menuItemLog.addEventListener('click', () => {
       openModal('log', { opener: btnHeaderMenu });
     });
+  }
+  if (menuItemImport && inputImportConfig) {
+    menuItemImport.addEventListener('click', () => {
+      closeMenu();
+      inputImportConfig.click();
+    });
+    inputImportConfig.addEventListener('change', () => triggerImportConfig(inputImportConfig.files?.[0]));
   }
   if (menuItemExport) {
     menuItemExport.addEventListener('click', () => {
@@ -3923,6 +4039,7 @@ if (typeof document !== 'undefined') {
   applyTheme('dark');
   applyFontScale('md');
   updateFabSizeDisplay(1.0);
+  applyFabMascot('default');
   if (typeof updatePrivacyNote === 'function') updatePrivacyNote();
 
   // Initial Sequence (writes stay blocked until settings load succeeds)

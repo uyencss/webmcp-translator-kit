@@ -1719,18 +1719,49 @@ function pushWidgetStateChanged(tabId, state) {
   }
 }
 
-function notifyAllWidgetStateChanged() {
-  if (typeof chrome !== 'undefined' && chrome.tabs && typeof chrome.tabs.query === 'function') {
-    chrome.tabs.query({}).then((tabs) => {
-      if (Array.isArray(tabs)) {
-        for (const tab of tabs) {
-          if (tab && typeof tab.id === 'number') {
-            chrome.tabs.sendMessage(tab.id, { action: 'WIDGET_STATE_CHANGED' }).catch(() => {});
+async function notifyAllWidgetStateChanged(patch) {
+  if (typeof chrome === 'undefined' || !chrome || !chrome.tabs || typeof chrome.tabs.query !== 'function') return;
+  let payload = { action: 'WIDGET_STATE_CHANGED' };
+  if (patch && typeof patch === 'object') {
+    payload = { ...payload, ...patch };
+  } else {
+    try {
+      const s = await getStoredSettings({ persistMigration: false });
+      payload.fabMascot = s.fabMascot || 'default';
+      payload.fabSize = typeof s.fabSize === 'number' ? s.fabSize : 1.0;
+      payload.theme = s.theme || 'dark';
+      payload.uiLocale = s.uiLocale || 'vi';
+      payload.uiFontScale = s.uiFontScale || 'md';
+      payload.widgetVisible = s.widgetVisible ?? true;
+    } catch {}
+  }
+  if (typeof chrome === 'undefined' || !chrome || !chrome.tabs || typeof chrome.tabs.query !== 'function') return;
+  try {
+    const queryResult = chrome.tabs.query({});
+    if (queryResult && typeof queryResult.then === 'function') {
+      queryResult.then((tabs) => {
+        if (typeof chrome === 'undefined' || !chrome?.tabs) return;
+        if (Array.isArray(tabs)) {
+          for (const tab of tabs) {
+            if (tab && typeof tab.id === 'number') {
+              try { chrome.tabs.sendMessage(tab.id, payload)?.catch?.(() => {}); } catch {}
+            }
           }
         }
-      }
-    }).catch(() => {});
-  }
+      }).catch(() => {});
+    } else {
+      chrome.tabs.query({}, (tabs) => {
+        if (typeof chrome === 'undefined' || !chrome?.tabs) return;
+        if (Array.isArray(tabs)) {
+          for (const tab of tabs) {
+            if (tab && typeof tab.id === 'number') {
+              try { chrome.tabs.sendMessage(tab.id, payload)?.catch?.(() => {}); } catch {}
+            }
+          }
+        }
+      });
+    }
+  } catch {}
 }
 
 // Hash full key + baseURL into SHA-256 hex string (zero key material stored)
@@ -2658,17 +2689,30 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
         }
 
         // Refresh open widgets when presentation settings, enabled sites, or global data consent changes.
-        if (
+        const functionalChanged = Boolean(
           dataConsentChanged ||
           oldSettings.translationMode !== migrated.translationMode ||
+          JSON.stringify(oldSettings.autoTranslateSites) !== JSON.stringify(migrated.autoTranslateSites)
+        );
+        const presentationChanged = Boolean(
           oldSettings.widgetVisible !== migrated.widgetVisible ||
           oldSettings.uiLocale !== migrated.uiLocale ||
           oldSettings.theme !== migrated.theme ||
           oldSettings.uiFontScale !== migrated.uiFontScale ||
           oldSettings.fabSize !== migrated.fabSize ||
-          JSON.stringify(oldSettings.autoTranslateSites) !== JSON.stringify(migrated.autoTranslateSites)
-        ) {
-          notifyAllWidgetStateChanged();
+          oldSettings.fabMascot !== migrated.fabMascot
+        );
+
+        if (functionalChanged || presentationChanged) {
+          notifyAllWidgetStateChanged({
+            fabMascot: migrated.fabMascot || 'default',
+            fabSize: typeof migrated.fabSize === 'number' ? migrated.fabSize : 1.0,
+            theme: migrated.theme || 'dark',
+            uiLocale: migrated.uiLocale || 'vi',
+            uiFontScale: migrated.uiFontScale || 'md',
+            widgetVisible: migrated.widgetVisible ?? true,
+            isPresentation: !functionalChanged
+          });
         }
 
         return { ok: true, configRevision, ...(favoriteToggleResult ? { favoriteToggle: favoriteToggleResult } : {}) };
@@ -3617,6 +3661,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           theme: settings.theme || 'dark',
           uiFontScale: settings.uiFontScale || 'md',
           fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1,
+          fabMascot: settings.fabMascot || 'default',
           position,
           hasKey,
           autoStart,
@@ -3695,7 +3740,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           uiLocale: settings.uiLocale || 'vi',
           theme: settings.theme || 'dark',
           uiFontScale: settings.uiFontScale || 'md',
-          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1
+          fabSize: typeof settings.fabSize === 'number' ? settings.fabSize : 1,
+          fabMascot: settings.fabMascot || 'default'
         };
 
         pushWidgetStateChanged(gate.tabId, state);

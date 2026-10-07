@@ -54,6 +54,15 @@
           <span data-i18n="tab_log">Nhật ký</span>
         </button>
         <div class="menu-separator"></div>
+        <input type="file" id="input-import-config" accept="application/json,.json" hidden />
+        <button type="button" class="menu-item" id="menu-item-import" role="menuitem">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" />
+            <polyline points="7 8 12 3 17 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <span data-i18n="settings_import_json">Nhập cấu hình JSON</span>
+        </button>
         <button type="button" class="menu-item" id="menu-item-export" role="menuitem">
           <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/>
@@ -335,31 +344,13 @@
           <div class="rate-limits-warning" data-i18n="conn_rate_warning">Lưu ý: Tăng giá trị quá cao có thể khiến provider trả lỗi rate limit hoặc khoá tài khoản.</div>
         </div>
 
-        <div class="export-config-row" style="margin-top: 10px;">
-          <div class="form-group-checkbox export-keys-checkbox-wrap" style="margin-bottom: 8px;">
-            <label class="toggle-switch-label" for="checkbox-export-keys">
-              <input type="checkbox" id="checkbox-export-keys" checked />
-              <span class="toggle-slider"></span>
-              <span class="toggle-text" id="label-export-keys" data-i18n="export_include_keys_label">Kèm API keys</span>
-            </label>
-          </div>
-          <input type="file" id="input-import-config-connect" accept="application/json,.json" hidden />
-          <button type="button" id="btn-import-config-connect" class="btn btn-secondary w-full" title="Nhập cấu hình JSON" aria-label="Nhập cấu hình JSON" data-i18n-title="settings_import_json" data-i18n-aria-label="settings_import_json">
-            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" />
-              <polyline points="7 8 12 3 17 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-            <span data-i18n="settings_import_json">Nhập cấu hình JSON</span>
-          </button>
-          <button type="button" id="btn-export-config-connect" class="btn btn-secondary w-full" title="Xuất cấu hình JSON" aria-label="Xuất cấu hình JSON" data-i18n-title="menu_export_json" data-i18n-aria-label="menu_export_json">
-            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/>
-              <polyline points="7 11 12 16 17 11"/>
-              <line x1="12" y1="4" x2="12" y2="16"/>
-            </svg>
-            <span data-i18n="menu_export_json">Xuất cấu hình JSON</span>
-          </button>
+        <!-- Legacy hidden compatibility targets for export/import (UI moved to header settings-menu) -->
+        <div class="sr-only" style="display: none;" aria-hidden="true">
+          <input type="checkbox" id="checkbox-export-keys" checked />
+          <span data-i18n="export_include_keys_label">Kèm API keys</span>
+          <input type="file" id="input-import-config-connect" accept="application/json,.json" />
+          <button type="button" id="btn-import-config-connect"></button>
+          <button type="button" id="btn-export-config-connect"></button>
         </div>
 
         <div id="config-message-connect" class="config-message" aria-live="polite"></div>
@@ -407,12 +398,55 @@
           </div>
 
           <div class="form-group">
+            <label id="label-fab-mascot" data-i18n="config_fab_mascot_label">Icon mascot nổi</label>
+            <div class="mascot-selector-grid" id="mascot-selector-grid" role="radiogroup" aria-labelledby="label-fab-mascot">
+              <button type="button" class="mascot-chip active" data-mascot="default" role="radio" aria-checked="true" tabindex="0">
+                <span class="mascot-thumb mascot-thumb-default" aria-hidden="true">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+                </span>
+                <span class="mascot-name" data-i18n="mascot_default">Chuẩn</span>
+              </button>
+              <button type="button" class="mascot-chip" data-mascot="polyglot-owl" role="radio" aria-checked="false" tabindex="-1">
+                <img class="mascot-thumb" src="icons/mascots/polyglot-owl/idle.png" alt="Owl" />
+                <span class="mascot-name" data-i18n="mascot_polyglot_owl">Cú Đa Ngữ</span>
+              </button>
+              <button type="button" class="mascot-chip" data-mascot="babel-cat" role="radio" aria-checked="false" tabindex="-1">
+                <img class="mascot-thumb" src="icons/mascots/babel-cat/idle.png" alt="Cat" />
+                <span class="mascot-name" data-i18n="mascot_babel_cat">Mèo Dịch</span>
+              </button>
+              <button type="button" class="mascot-chip" data-mascot="globe-fox" role="radio" aria-checked="false" tabindex="-1">
+                <img class="mascot-thumb" src="icons/mascots/globe-fox/idle.png" alt="Fox" />
+                <span class="mascot-name" data-i18n="mascot_globe_fox">Cáo Địa Cầu</span>
+              </button>
+              <button type="button" class="mascot-chip" data-mascot="lingo-parrot" role="radio" aria-checked="false" tabindex="-1">
+                <img class="mascot-thumb" src="icons/mascots/lingo-parrot/idle.png" alt="Parrot" />
+                <span class="mascot-name" data-i18n="mascot_lingo_parrot">Vẹt Lingo</span>
+              </button>
+              <button type="button" class="mascot-chip" data-mascot="robo-babel" role="radio" aria-checked="false" tabindex="-1">
+                <img class="mascot-thumb" src="icons/mascots/robo-babel/idle.png" alt="Robot" />
+                <span class="mascot-name" data-i18n="mascot_robo_babel">Robot Chibi</span>
+              </button>
+            </div>
+            <select id="select-fab-mascot" class="sr-only" aria-hidden="true" tabindex="-1">
+              <option value="default" data-i18n="mascot_default">Chuẩn</option>
+              <option value="polyglot-owl" data-i18n="mascot_polyglot_owl">Cú Đa Ngữ</option>
+              <option value="babel-cat" data-i18n="mascot_babel_cat">Mèo Dịch</option>
+              <option value="globe-fox" data-i18n="mascot_globe_fox">Cáo Địa Cầu</option>
+              <option value="lingo-parrot" data-i18n="mascot_lingo_parrot">Vẹt Lingo</option>
+              <option value="robo-babel" data-i18n="mascot_robo_babel">Robot Chibi</option>
+            </select>
+          </div>
+
+          <div class="form-group">
             <div class="slider-header-row">
               <label for="input-fab-size" id="label-fab-size" data-i18n="config_fab_size_label">Cỡ icon nổi</label>
-              <span class="slider-value-badge" id="fab-size-value">1.00x</span>
+              <div class="slider-value-group">
+                <button type="button" id="btn-reset-fab-size" class="btn-reset-size" data-i18n="config_fab_size_reset_btn" data-i18n-title="config_fab_size_reset_title" title="Đặt lại cỡ mặc định (1.00x)">Mặc định</button>
+                <span class="slider-value-badge" id="fab-size-value">1.00x</span>
+              </div>
             </div>
             <div class="slider-control-row">
-              <input type="range" id="input-fab-size" min="0.75" max="1.5" step="0.05" value="1.0" class="fab-size-slider" aria-label="Cỡ icon nổi" data-i18n-aria-label="config_fab_size_label" />
+              <input type="range" id="input-fab-size" min="0.75" max="2.0" step="0.05" value="1.0" class="fab-size-slider" aria-label="Cỡ icon nổi" data-i18n-aria-label="config_fab_size_label" />
             </div>
           </div>
 
