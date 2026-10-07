@@ -1,0 +1,91 @@
+/* ==========================================================================
+   WebMCP Translator — Taste-Skill Frontend Theme
+   Design Read: Dark-Tech Minimal / Precision Devtool (Linear & Raycast Vibe)
+   Dials: DESIGN_VARIANCE: 5 | MOTION_INTENSITY: 3 | VISUAL_DENSITY: 5
+   ========================================================================== */
+
+:root {
+  --bg-root: #09090b;
+  --bg-gradient: radial-gradient(120% 60% at 50% -10%, rgba(59, 130, 246, 0.12) 0%, rgba(9, 9, 11, 1) 100%);
+  --surface-card: #121318;
+  --surface-card-hover: #161820;
+  --surface-input: #0c0d12;
+  --surface-subtle: rgba(255, 255, 255, 0.03);
+
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --border-hairline-hover: rgba(255, 255, 255, 0.16);
+  --border-active: #3b82f6;
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+  --accent-ring: rgba(59, 130, 246, 0.4);
+  --accent-cyan: #38bdf8;
+
+  --status-green: #10b981;
+  --status-blue: #3b82f6;
+  --status-amber: #f59e0b;
+  --status-red: #ef4444;
+
+  --card-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --card-inner-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --fs-scale: 1;
+}
+
+:root[data-fontscale="sm"],
+html[data-fontscale="sm"] {
+  --fs-scale: 0.9;
+  font-size: 11.5px;
+}
+
+:root[data-fontscale="md"],
+html[data-fontscale="md"] {
+  --fs-scale: 1;
+  font-size: 13px;
+}
+
+:root[data-fontscale="lg"],
+html[data-fontscale="lg"] {
+  --fs-scale: 1.15;
+  font-size: 15px;
+}
+
+[data-theme="light"] {
+  --bg-root: #f8fafc;
+  --bg-gradient: radial-gradient(120% 60% at 50% -10%, rgba(59, 130, 246, 0.08) 0%, rgba(248, 250, 252, 1) 100%);
+  --surface-card: #ffffff;
+  --surface-card-hover: #f1f5f9;
+  --surface-input: #f8fafc;
+  --surface-subtle: rgba(0, 0, 0, 0.03);
+
+  --border-hairline: rgba(0, 0, 0, 0.1);
+  --border-hairline-hover: rgba(0, 0, 0, 0.2);
+  --border-active: #3b82f6;
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+
+  --accent-blue: #2563eb;
+  --accent-blue-hover: #1d4ed8;
+  --accent-ring: rgba(37, 99, 235, 0.3);
+  --accent-cyan: #0284c7;
+
+  --status-green: #059669;
+  --status-blue: #2563eb;
+  --status-amber: #d97706;
+  --status-red: #dc2626;
+
+  --card-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --card-inner-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Base Reset & Typography */

@@ -16,18 +16,34 @@ const distDir = path.join(rootDir, 'extension', 'dist');
 
 assert(fs.existsSync(srcDir), `Source directory does not exist: ${srcDir}`);
 
+import { execFileSync } from 'node:child_process';
+
+// 0. Ensure i18n-globals.js, popup.css, and content.js are synced from their modular components
+execFileSync(process.execPath, [path.join(rootDir, 'scripts', 'sync-i18n.mjs')], { stdio: 'inherit' });
+execFileSync(process.execPath, [path.join(rootDir, 'scripts', 'sync-styles.mjs')], { stdio: 'inherit' });
+execFileSync(process.execPath, [path.join(rootDir, 'scripts', 'sync-content.mjs')], { stdio: 'inherit' });
+
 // 1. Clean extension/dist
 if (fs.existsSync(distDir)) {
   fs.rmSync(distDir, { recursive: true, force: true });
 }
 fs.mkdirSync(distDir, { recursive: true });
 
-// 2. Copy extension/src/** -> extension/dist
+// 2. Copy extension/src/** -> extension/dist (excluding build-time fragment directories)
 function copyRecursive(src, dst) {
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
     const dstPath = path.join(dst, entry.name);
+
+    // Exclude build-time only fragment sources that are pre-compiled into runtime bundles
+    if (
+      srcPath.endsWith(path.join('src', 'content')) ||
+      srcPath.endsWith(path.join('src', 'popup', 'styles'))
+    ) {
+      continue;
+    }
+
     if (entry.isDirectory()) {
       fs.mkdirSync(dstPath, { recursive: true });
       copyRecursive(srcPath, dstPath);

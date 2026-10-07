@@ -70,313 +70,68 @@ const translationCache = createTranslationCache({
   maxSizeBytes: 2097152
 });
 
-// L2 Persistent Cache (chrome.storage.local key 'trCache')
-let pendingL2Writes = new Map();
-let l2WriteTimer = null;
-let l2Epoch = 0;
-let isClearingL2 = false;
-let clearingL2Count = 0;
-let l2MemoryOnly = false;
+import {
+  MAX_ERROR_LOG_ENTRIES,
+  initErrorLog,
+  getErrorLog,
+  clearErrorLog,
+  recordErrorLog,
+  getL2Epoch,
+  isL2MemoryOnly,
+  _setL2MemoryOnlyForTest,
+  isL2Clearing,
+  enqueueL2Cache,
+  clearL2Cache,
+  flushL2Cache,
+  clearPendingL2Writes
+} from './sw/modules/cache.mjs';
 
-// L2 Storage Mutex: serializes clearL2Cache and flushL2Cache to prevent race conditions
-let l2StorageChain = Promise.resolve();
+export {
+  getL2Epoch,
+  isL2MemoryOnly,
+  _setL2MemoryOnlyForTest,
+  isL2Clearing,
+  enqueueL2Cache,
+  clearL2Cache,
+  flushL2Cache,
+  clearPendingL2Writes
+};
 
-function runInL2StorageChain(fn) {
-  const next = l2StorageChain.then(fn, fn);
-  l2StorageChain = next.catch(() => {});
-  return next;
-}
+import {
+  reconcileWatchdog
+} from './sw/modules/queue.mjs';
 
-export function getL2Epoch() {
-  return l2Epoch;
-}
+import {
+  createTypedError,
+  isPrivilegedSender,
+  verifyWidgetSender
+} from './sw/modules/security.mjs';
 
-export function isL2MemoryOnly() {
-  return l2MemoryOnly;
-}
+import {
+  resolveAttemptCache,
+  checkL2CacheForMisses,
+  commitTranslatedCache,
+  mergeBatchResults
+} from './sw/modules/batch-executor.mjs';
 
-export function _setL2MemoryOnlyForTest(val) {
-  l2MemoryOnly = Boolean(val);
-}
+export {
+  resolveAttemptCache,
+  checkL2CacheForMisses,
+  commitTranslatedCache,
+  mergeBatchResults
+};
 
-export function isL2Clearing() {
-  return isClearingL2;
-}
-
-export function enqueueL2Cache(key, text) {
-  if (!key || typeof text !== 'string') return;
-  if (isClearingL2 || l2MemoryOnly) return;
-  const l2Key = /^[0-9a-f]{8}$/i.test(key) ? key : hashText(key);
-  const entryEpoch = l2Epoch;
-  pendingL2Writes.set(l2Key, { keyHash: hashText(key), text, savedAt: Date.now(), epoch: entryEpoch });
-  if (l2WriteTimer) clearTimeout(l2WriteTimer);
-  l2WriteTimer = setTimeout(() => {
-    flushL2Cache().catch(() => {});
-  }, 2000);
-}
-
-export async function clearL2Cache() {
-  l2Epoch++;
-  if (l2WriteTimer) {
-    clearTimeout(l2WriteTimer);
-    l2WriteTimer = null;
-  }
-  pendingL2Writes.clear();
-  clearingL2Count++;
-  isClearingL2 = true;
-
-  return runInL2StorageChain(async () => {
-    try {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        l2MemoryOnly = false;
-        return;
-      }
-
-      let removeSucceeded = false;
-      // Attempt 1: remove
-      try {
-        await chrome.storage.local.remove([L2_CACHE_KEY]);
-        removeSucceeded = true;
-      } catch (e1) {
-        // Retry 1 lần
-        try {
-          await chrome.storage.local.remove([L2_CACHE_KEY]);
-          removeSucceeded = true;
-        } catch (e2) {
-          removeSucceeded = false;
-        }
-      }
-
-      if (removeSucceeded) {
-        l2MemoryOnly = false;
-        return;
-      }
-
-      // Vẫn fail → set trCache = {} thay vì remove, đọc-verify lại
-      try {
-        await chrome.storage.local.set({ [L2_CACHE_KEY]: {} });
-        const verify = await chrome.storage.local.get([L2_CACHE_KEY]);
-        const cacheObj = verify?.[L2_CACHE_KEY];
-        const isClean = !cacheObj || (typeof cacheObj === 'object' && Object.keys(cacheObj).length === 0);
-        if (isClean) {
-          l2MemoryOnly = false;
-        } else {
-          l2MemoryOnly = true;
-        }
-      } catch (setErr) {
-        l2MemoryOnly = true;
-      }
-    } catch (outerErr) {
-      l2MemoryOnly = true;
-    } finally {
-      clearingL2Count = Math.max(0, clearingL2Count - 1);
-      if (clearingL2Count === 0) {
-        isClearingL2 = false;
-      }
-      pendingL2Writes.clear();
-      if (l2WriteTimer) {
-        clearTimeout(l2WriteTimer);
-        l2WriteTimer = null;
-      }
-    }
-  });
-}
-
-export async function flushL2Cache() {
-  if (l2MemoryOnly || isClearingL2) return;
-  const currentEpoch = l2Epoch;
-  if (l2WriteTimer) {
-    clearTimeout(l2WriteTimer);
-    l2WriteTimer = null;
-  }
-  if (pendingL2Writes.size === 0) return;
-  const toWrite = new Map(pendingL2Writes);
-  pendingL2Writes.clear();
-
-  return runInL2StorageChain(async () => {
-    if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
-    try {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
-      const res = await chrome.storage.local.get([L2_CACHE_KEY]);
-      if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
-      const rawCache = (res && res[L2_CACHE_KEY] && typeof res[L2_CACHE_KEY] === 'object')
-        ? res[L2_CACHE_KEY]
-        : {};
-      const trCache = {};
-      for (const [k, v] of Object.entries(rawCache)) {
-        if (v && typeof v === 'object' && typeof v.keyHash === 'string' && !('key' in v)) {
-          trCache[k] = {
-            keyHash: v.keyHash,
-            text: v.text,
-            savedAt: v.savedAt
-          };
-        }
-      }
-      for (const [k, v] of toWrite.entries()) {
-        if (v && (v.epoch === undefined || v.epoch === currentEpoch)) {
-          trCache[k] = {
-            keyHash: v.keyHash,
-            text: v.text,
-            savedAt: v.savedAt
-          };
-        }
-      }
-      pruneL2Cache(trCache, 0, { ttlMs: L2_CACHE_TTL_MS, maxSizeBytes: L2_MAX_SIZE_BYTES });
-      if (l2Epoch !== currentEpoch || l2MemoryOnly || isClearingL2) return;
-      await chrome.storage.local.set({ [L2_CACHE_KEY]: trCache });
-    } catch (e) {
-      // Quota or storage write failures ignored silently per WI-15 spec
-    }
-  });
-}
-
-export const MAX_ERROR_LOG_ENTRIES = 50;
-let errorLog = [];
-
-export async function initErrorLog() {
-  try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      const res = await chrome.storage.session.get(['errorLog']);
-      if (Array.isArray(res?.errorLog)) {
-        errorLog = res.errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
-      }
-    }
-  } catch {}
-}
-initErrorLog().catch(() => {});
-
-export async function getErrorLog() {
-  return [...errorLog];
-}
-
-export async function clearErrorLog() {
-  errorLog = [];
-  try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      await chrome.storage.session.remove(['errorLog']);
-    }
-  } catch {}
-  return { ok: true };
-}
-
-export async function recordErrorLog(err, { model = '', tabId = null, isTerminal = false } = {}) {
-  if (!err) return null;
-  const entry = {
-    time: new Date().toISOString(),
-    code: err.code || err.name || 'ERROR',
-    message: err.message || (typeof err === 'string' ? err : 'Unknown error'),
-    model: model || err.model || '',
-    tabId: tabId ?? null
-  };
-  errorLog.unshift(entry);
-  if (errorLog.length > MAX_ERROR_LOG_ENTRIES) {
-    errorLog = errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
-  }
-  try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      await chrome.storage.session.set({ errorLog });
-    }
-  } catch {}
-
-  if (isTerminal) {
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({
-          action: 'TRANSLATE_TERMINAL_ERROR',
-          error: entry,
-          tabId
-        }).catch(() => {});
-      }
-    } catch {}
-  }
-  return entry;
-}
-
-export function reconcileWatchdog(state = {}) {
-  const {
-    queue = [],
-    queueLength = Array.isArray(queue) ? queue.length : (typeof queue === 'number' ? queue : 0),
-    inFlight = 0,
-    watching = false,
-    collected = 0,
-    applied = 0,
-    failed = 0,
-    runToken = 0,
-    rounds = 0,
-    lastApplied = 0
-  } = state;
-
-  // khi queue rỗng + hết in-flight + watching mà còn items collected-chưa-applied (ngoài failed đã chốt)
-  if (queueLength > 0 || inFlight > 0 || !watching) {
-    return {
-      action: 'none',
-      shouldRequeue: false,
-      stable: false,
-      rounds,
-      failed,
-      applied,
-      collected,
-      runToken
-    };
-  }
-
-  const unapplied = Math.max(0, collected - applied - failed);
-
-  if (unapplied === 0) {
-    return {
-      action: 'stable',
-      shouldRequeue: false,
-      stable: true,
-      rounds,
-      failed,
-      applied,
-      collected,
-      runToken,
-      unappliedRemainder: 0
-    };
-  }
-
-  // Không vòng lặp vô hạn: đếm vòng/run-token, dừng khi không tiến triển (applied không tăng giữa 2 vòng).
-  // Tối đa 2 vòng/run:
-  if (rounds >= 2 || (rounds > 0 && applied <= lastApplied)) {
-    // Dừng: số dư cuối vào footer failed-count + Log entry + nút Thử lại hiện có
-    const finalFailed = failed + unapplied;
-    return {
-      action: 'finalize',
-      shouldRequeue: false,
-      stable: true,
-      rounds,
-      failed: finalFailed,
-      applied,
-      collected,
-      runToken,
-      unappliedRemainder: unapplied,
-      logEntry: {
-        code: 'WATCHDOG_UNAPPLIED',
-        message: `Watchdog reconciliation: ${unapplied} item(s) unapplied after retry`,
-        details: { unappliedRemainder: unapplied, finalFailed }
-      },
-      stoppedReason: rounds >= 2 ? 'max_rounds' : 'no_progress'
-    };
-  }
-
-  // Tự re-queue 1 vòng (tối đa 2 vòng/run, backoff)
-  const nextRound = rounds + 1;
-  const backoffMs = nextRound * 500;
-  return {
-    action: 'requeue',
-    shouldRequeue: true,
-    stable: false,
-    rounds: nextRound,
-    lastApplied: applied,
-    backoffMs,
-    unappliedCount: unapplied,
-    failed,
-    applied,
-    collected,
-    runToken
-  };
-}
+export {
+  MAX_ERROR_LOG_ENTRIES,
+  initErrorLog,
+  getErrorLog,
+  clearErrorLog,
+  recordErrorLog,
+  reconcileWatchdog,
+  createTypedError,
+  isPrivilegedSender,
+  verifyWidgetSender
+};
 
 // Provider concurrency semaphore = 2 (default, updated dynamically from settings)
 const providerSemaphore = createSemaphore({
@@ -437,236 +192,23 @@ function _setTestEnsureContentOk(enabled) {
 // ============================================================================
 // Fallback Plan Pure Decision Engine (§6 Sol)
 // ============================================================================
-export const STOP_ERROR_CODES = Object.freeze([
-  'HTTP_401',
-  'HTTP_403',
-  'HTTP_404',
-  'HTTP_429',
-  'DATA_CONSENT_REQUIRED',
-  'INSECURE_ENDPOINT_BLOCKED',
-  'ENDPOINT_REDIRECT_UNSUPPORTED',
-  'MISSING_CONFIG',
-  'MODEL_NOT_ALLOWED',
-  'PERMISSION_REQUIRED',
-  'OPT_IN_REQUIRED',
-  'SITE_NOT_ALLOWED',
-  'RATE_LIMITED',
-  'RATE_STATE_UNAVAILABLE',
-  'CAP_EXCEEDED',
-  'INVALID_SCHEMA',
-  'ABORTED',
-  'DROPPED_ON_RESTART'
-]);
+import {
+  STOP_ERROR_CODES,
+  FALLBACK_ELIGIBLE_CODES,
+  resolveFallbackPlan,
+  extractHost,
+  resolveFallbackChain,
+  fallbacksEqual
+} from './sw/modules/queue.mjs';
 
-export const FALLBACK_ELIGIBLE_CODES = Object.freeze([
-  'NETWORK',
-  'TIMEOUT',
-  'HTTP_5xx'
-]);
-
-/**
- * Pure helper function to determine if a failed attempt should fall back to next model.
- *
- * @param {any} err - The error envelope { error: { code } } or Error with code property
- * @param {string[]} chain - Array of models to try [primary, ...fallbacks] (max 3)
- * @param {number} attemptIndex - 0-based index of current attempt
- * @returns {{ shouldFallback: boolean, nextIndex?: number, nextModel?: string, reason?: string, terminalError?: any }}
- */
-export function resolveFallbackPlan(err, chain, attemptIndex = 0, options = {}) {
-  if (!err) {
-    return { shouldFallback: false, reason: 'NO_ERROR' };
-  }
-
-  const code = (typeof err === 'object' && err !== null)
-    ? (err.error?.code || err.code || '')
-    : '';
-
-  const details = (typeof err === 'object' && err !== null)
-    ? (err.error?.details || err.details || {})
-    : {};
-
-  const rawHead = details?.rawHead || '';
-  const isErrJson = Boolean(details?.isErrorJson) || (
-    typeof rawHead === 'string' &&
-    /["']?error["']?\s*:/i.test(rawHead) &&
-    !(/["']?results["']?\s*:/i.test(rawHead) || /["']results["']/i.test(rawHead) || /\{\s*["']?id["']?/i.test(rawHead))
-  );
-
-  const isExhaustedZeroItem = code === 'INVALID_SCHEMA' &&
-    !isErrJson &&
-    Boolean(details?.exhausted || err?.exhausted || err?.error?.exhausted);
-
-  // INVALID_SCHEMA giữ nguyên là STOP cho mọi case khác.
-  // Ngoại lệ DUY NHẤT: zero-item/truncated-zero đã cạn bisect + watchdog
-  // (adapter đánh dấu exhausted: true trong error details, KHÔNG đánh cho các INVALID_SCHEMA khác)
-  // → được leo fallback đúng 1 lần sang model kế tiếp trong chain [primary, ...fallbacks].
-  if (STOP_ERROR_CODES.includes(code)) {
-    if (!isExhaustedZeroItem) {
-      return {
-        shouldFallback: false,
-        reason: 'STOP_LIST',
-        terminalError: err,
-        attemptIndex
-      };
-    }
-  }
-
-  if (!FALLBACK_ELIGIBLE_CODES.includes(code) && !isExhaustedZeroItem) {
-    return {
-      shouldFallback: false,
-      reason: 'NOT_ELIGIBLE',
-      terminalError: err,
-      attemptIndex
-    };
-  }
-
-  // Fallback chain rỗng → behavior cũ (terminal ngay)
-  if (!Array.isArray(chain) || chain.length <= 1) {
-    return {
-      shouldFallback: false,
-      reason: 'NO_FALLBACK_MODELS',
-      terminalError: err,
-      attemptIndex
-    };
-  }
-
-  // Chống loop: batch origin đã leo fallback thì gắn fallbackConsumed: true;
-  // model fallback mà vẫn zero-item → terminal error (không ping-pong về primary, không leo tiếp vòng 2).
-  if (options?.fallbackConsumed || details.fallbackConsumed || (isExhaustedZeroItem && attemptIndex > 0)) {
-    return {
-      shouldFallback: false,
-      reason: 'FALLBACK_CONSUMED',
-      terminalError: err,
-      attemptIndex
-    };
-  }
-
-  const nextIndex = attemptIndex + 1;
-  if (nextIndex >= chain.length || nextIndex >= 3) {
-    return {
-      shouldFallback: false,
-      reason: 'CHAIN_EXHAUSTED',
-      terminalError: err,
-      attemptIndex
-    };
-  }
-
-  const nextItem = chain[nextIndex];
-  const nextModel = typeof nextItem === 'string'
-    ? nextItem.trim()
-    : (nextItem && typeof nextItem.model === 'string' ? nextItem.model.trim() : '');
-
-  if (!nextModel) {
-    return {
-      shouldFallback: false,
-      reason: 'INVALID_NEXT_MODEL',
-      terminalError: err,
-      attemptIndex
-    };
-  }
-
-  return {
-    shouldFallback: true,
-    nextIndex,
-    nextModel,
-    nextConfig: typeof nextItem === 'object' ? nextItem : undefined
-  };
-}
-
-// Extract hostname/host (no protocol, no key, no path)
-export function extractHost(urlStr) {
-  try {
-    return new URL(urlStr).host;
-  } catch {
-    return '';
-  }
-}
-
-// Pure helper to resolve the full provider chain with inheritance rules
-export function resolveFallbackChain(settings = {}, fallbackApiKeys = {}, primaryKey = '') {
-  const primaryModel = settings.model || DEFAULT_MODEL;
-  const configuredFallbacks = Array.isArray(settings.fallbacks) ? settings.fallbacks : [];
-  const match = settings.fallbackConsumed && configuredFallbacks.find((fb) => fb && fb.model && fb.model.trim() === primaryModel);
-  let primaryBaseURL = settings.baseURL || '';
-  let primaryApiKey = primaryKey || '';
-  if (match) {
-    const fbId = typeof match.id === 'string' && match.id.trim() ? match.id.trim() : 'fb1';
-    if (match.baseURL && typeof match.baseURL === 'string') primaryBaseURL = match.baseURL.trim();
-    if (fbId && fallbackApiKeys && fallbackApiKeys[fbId]) {
-      primaryApiKey = fallbackApiKeys[fbId];
-    }
-  }
-  const primaryConfig = {
-    id: 'primary',
-    baseURL: primaryBaseURL,
-    apiKey: primaryApiKey,
-    model: primaryModel
-  };
-
-  const primaryOrigin = primaryConfig.baseURL ? normalizeOrigin(primaryConfig.baseURL) : null;
-  const fallbackConfigs = [];
-  const skippedFallbacks = [];
-
-  for (const fb of configuredFallbacks) {
-    if (fb && typeof fb === 'object' && fb.model) {
-      const fbId = typeof fb.id === 'string' && fb.id.trim() ? fb.id.trim() : 'fb1';
-      const fbBaseURL = (typeof fb.baseURL === 'string' && fb.baseURL.trim()) ? fb.baseURL.trim() : primaryConfig.baseURL;
-      const fbOrigin = fbBaseURL ? normalizeOrigin(fbBaseURL) : primaryOrigin;
-      const hasDedicatedKey = Boolean(fbId && fallbackApiKeys && fallbackApiKeys[fbId]);
-
-      if (hasDedicatedKey) {
-        fallbackConfigs.push({
-          id: fbId,
-          baseURL: fbBaseURL,
-          apiKey: fallbackApiKeys[fbId],
-          model: fb.model.trim()
-        });
-      } else if (fbOrigin && primaryOrigin && fbOrigin === primaryOrigin) {
-        fallbackConfigs.push({
-          id: fbId,
-          baseURL: fbBaseURL,
-          apiKey: primaryKey || '',
-          model: fb.model.trim()
-        });
-      } else {
-        skippedFallbacks.push({
-          id: fbId,
-          reason: 'missing_key_for_origin'
-        });
-      }
-    }
-  }
-
-  const chain = [primaryConfig, ...fallbackConfigs].slice(0, 3);
-  chain.skippedFallbacks = skippedFallbacks;
-  return chain;
-}
-
-// Utility to compare arrays of strings
-function arraysEqual(a, b) {
-  if (a === b) return true;
-  if (!Array.isArray(a) || !Array.isArray(b)) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-// Deep comparison for fallbacks array to detect config changes
-export function fallbacksEqual(a, b) {
-  if (a === b) return true;
-  if (!Array.isArray(a) || !Array.isArray(b)) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const itemA = a[i] || {};
-    const itemB = b[i] || {};
-    if (itemA.id !== itemB.id) return false;
-    if ((itemA.baseURL || '') !== (itemB.baseURL || '')) return false;
-    if (itemA.model !== itemB.model) return false;
-  }
-  return true;
-}
+export {
+  STOP_ERROR_CODES,
+  FALLBACK_ELIGIBLE_CODES,
+  resolveFallbackPlan,
+  extractHost,
+  resolveFallbackChain,
+  fallbacksEqual
+};
 
 // ============================================================================
 // TEST-ONLY State & Hooks (Dormant and unread in production)
@@ -817,21 +359,7 @@ async function permissionContains(origin) {
   return false;
 }
 
-// Helper to create typed errors strictly conforming to schemas/error.schema.json
-function createTypedError(code, message, retryable, details = {}) {
-  const err = new Error(message);
-  err.code = code;
-  err.retryable = Boolean(retryable);
-  err.details = details;
-  return {
-    error: {
-      code,
-      message,
-      retryable: Boolean(retryable),
-      details
-    }
-  };
-}
+
 
 // 4.1 Storage Access Level: TRUSTED_CONTEXTS fail-closed gate
 async function ensureStorageAccess() {
@@ -1630,26 +1158,6 @@ async function reconcilePermissions() {
   return _reconcilePromise;
 }
 
-// Sender verification helpers
-function isPrivilegedSender(sender) {
-  if (!sender) return false;
-  // Our own extension pages (popup window, or the same page opened as a tab
-  // in tests/automation) are trusted: pages cannot spoof this URL.
-  const extPrefix = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id)
-    ? `chrome-extension://${chrome.runtime.id}`
-    : 'chrome-extension://';
-  if (typeof sender.url === 'string' && sender.url.startsWith(extPrefix)) {
-    return true;
-  }
-  // Content scripts always have sender.tab
-  if (sender.tab) return false;
-  // Internal extension background / test dispatch
-  if (sender.id && typeof chrome !== 'undefined' && chrome.runtime && sender.id === chrome.runtime.id && !sender.tab) {
-    return true;
-  }
-  return false;
-}
-
 // Effective per-tab config: per-site overrides win, otherwise globals.
 // `model: null` / langs null on the site entry mean "follow global".
 function resolveEffectiveSiteConfig(settings, origin) {
@@ -1678,28 +1186,6 @@ function resolveEffectiveSiteConfig(settings, origin) {
       ? siteConfig.model
       : (settings.model || DEFAULT_MODEL)
   };
-}
-
-function verifyWidgetSender(sender) {
-  if (!sender || !sender.tab || typeof sender.tab.id !== 'number' || sender.frameId !== 0) {
-    return {
-      ok: false,
-      error: createTypedError('PERMISSION_REQUIRED', 'Widget actions require top frame tab sender', false, {
-        permissionType: 'host'
-      })
-    };
-  }
-  const senderRawUrl = sender.url || (sender.tab && sender.tab.url) || sender.origin;
-  const origin = normalizeOrigin(senderRawUrl);
-  if (!origin) {
-    return {
-      ok: false,
-      error: createTypedError('SITE_NOT_ALLOWED', 'Invalid HTTP(S) origin for widget', false, {
-        origin: senderRawUrl || ''
-      })
-    };
-  }
-  return { ok: true, tabId: sender.tab.id, origin, url: senderRawUrl };
 }
 
 // Push helpers for best-effort broadcast
@@ -2123,74 +1609,34 @@ export async function executeBatchTranslation({
 
       // Check cache for this specific attempt
       if (attemptIndex > 0) {
-        const attemptCacheContext = {
-          baseURL: currentBaseURL || '',
-          model: currentModel,
-          sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
-          targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
-          promptVersion: PROMPT_VERSION
-        };
-        const remainingMisses = [];
-        for (const m of currentMisses) {
-          const normText = normalizeSourceText(m.item?.text);
-          const k = cacheKey(m.item, attemptCacheContext);
-          const cachedText = translationCache.get(k, normText);
-          if (cachedText !== undefined) {
-            currentHits.push({
-              index: m.index,
-              result: {
-                id: m.item.id,
-                revision: m.item.revision,
-                text: cachedText
-              }
-            });
-          } else {
-            remainingMisses.push({
-              ...m,
-              key: k
-            });
-          }
-        }
-        currentMisses = remainingMisses;
+        const attemptCache = resolveAttemptCache({
+          misses: currentMisses,
+          currentHits,
+          currentBaseURL,
+          currentModel,
+          payload,
+          storedSettings,
+          translationCache,
+          PROMPT_VERSION,
+          cacheKey,
+          normalizeSourceText
+        });
+        currentMisses = attemptCache.remainingMisses;
 
-        if (storedSettings.cacheEnabled !== false && !l2MemoryOnly && !isClearingL2 && remainingMisses.length > 0) {
-          try {
-            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-              const readEpoch = l2Epoch;
-              const l2Res = await chrome.storage.local.get([L2_CACHE_KEY]);
-              if (!l2MemoryOnly && !isClearingL2 && l2Epoch === readEpoch) {
-                const trCache = l2Res?.[L2_CACHE_KEY];
-                if (trCache && typeof trCache === 'object') {
-                  const now = Date.now();
-                  const afterL2Misses = [];
-                  for (const m of remainingMisses) {
-                    const l2Key = /^[0-9a-f]{8}$/i.test(m.key) ? m.key : hashText(m.key);
-                    const entry = trCache[l2Key];
-                    const reqHash = hashText(m.key);
-                    const isValidShape = entry && typeof entry === 'object' && typeof entry.text === 'string' && typeof entry.keyHash === 'string' && !('key' in entry);
-                    const isMatch = isValidShape && entry.keyHash === reqHash;
-                    if (isMatch && (now - (entry.savedAt || 0) < L2_CACHE_TTL_MS)) {
-                      const normText = normalizeSourceText(m.item?.text);
-                      translationCache.set(m.key, entry.text, normText);
-                      currentHits.push({
-                        index: m.index,
-                        result: {
-                          id: m.item.id,
-                          revision: m.item.revision,
-                          text: entry.text
-                        }
-                      });
-                    } else {
-                      afterL2Misses.push(m);
-                    }
-                  }
-                  remainingMisses.length = 0;
-                  remainingMisses.push(...afterL2Misses);
-                }
-              }
-            }
-          } catch {}
-        }
+        currentMisses = await checkL2CacheForMisses({
+          remainingMisses: currentMisses,
+          currentHits,
+          storedSettings,
+          isL2MemoryOnly,
+          isL2Clearing,
+          getL2Epoch,
+          chromeStorageLocal: typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local ? chrome.storage.local : null,
+          L2_CACHE_KEY,
+          L2_CACHE_TTL_MS,
+          normalizeSourceText,
+          hashText,
+          translationCache
+        });
 
         // If all misses hit cache for this fallback model, complete without provider call
         if (currentMisses.length === 0) {
@@ -2347,36 +1793,20 @@ export async function executeBatchTranslation({
   }
 
   // Populate cache strictly under actualModel and actualBaseURL only after config & epoch checks pass
-  if (newlyTranslatedItems.length > 0) {
-    const actualCacheContext = {
-      baseURL: actualBaseURL || '',
-      model: actualModel,
-      sourceLanguage: payload.sourceLanguage || storedSettings.sourceLanguage || 'auto',
-      targetLanguage: payload.targetLanguage || storedSettings.targetLanguage || 'vi',
-      promptVersion: PROMPT_VERSION
-    };
+  commitTranslatedCache({
+    newlyTranslatedItems,
+    actualBaseURL,
+    actualModel,
+    payload,
+    storedSettings,
+    PROMPT_VERSION,
+    cacheKey,
+    normalizeSourceText,
+    translationCache,
+    enqueueL2Cache,
+    isL2MemoryOnly
+  });
 
-    for (const { item, text } of newlyTranslatedItems) {
-      const k = cacheKey(item, actualCacheContext);
-      translationCache.set(k, text, normalizeSourceText(item?.text));
-      if (storedSettings.cacheEnabled !== false && !l2MemoryOnly) {
-        enqueueL2Cache(k, text);
-      }
-    }
-  }
-
-  // Merge hits and misses preserving the exact original order
-  const totalCount = hits.length + misses.length;
-  const merged = new Array(totalCount);
-
-  for (const h of currentHits) {
-    if (h && typeof h.index === 'number') {
-      merged[h.index] = h.result;
-    }
-  }
-
-  const cleanResults = merged.filter(Boolean);
-  const actualBaseURLHost = extractHost(actualBaseURL);
   const missingIds = Array.isArray(finalProviderRes?.missingIds) ? finalProviderRes.missingIds : [];
 
   if (missingIds.length > 0) {
@@ -2386,26 +1816,35 @@ export async function executeBatchTranslation({
         message: `Batch partially completed: ${missingIds.length} item(s) missing`,
         details: { missingIds }
       }, {
-        model: actualModel || currentModel,
+        model: actualModel || lastAttemptedModel,
         tabId,
         isTerminal: false
       });
     } catch {}
   }
 
+  const batchOutcome = await mergeBatchResults({
+    hits,
+    misses,
+    currentHits,
+    finalProviderRes,
+    payload,
+    requestedModel,
+    actualModel,
+    currentModel: lastAttemptedModel,
+    fallbackIndex,
+    actualBaseURL,
+    batchConfigRevision,
+    currentConfigRevision: configRevision,
+    tabId,
+    extractHost
+  });
+
   return {
-    ...finalProviderRes,
-    results: cleanResults,
+    ...batchOutcome,
     partial: Boolean(finalProviderRes?.partial || missingIds.length > 0),
     missingIds,
-    failed: missingIds.length,
-    requestedModel,
-    actualModel: actualModel || requestedModel,
-    fallbackIndex,
-    fallbackConsumed: Boolean(payload?.fallbackConsumed || (typeof fallbackIndex === 'number' && fallbackIndex > 0)),
-    actualBaseURLHost,
-    configRevision: batchConfigRevision,
-    currentConfigRevision: configRevision
+    failed: missingIds.length
   };
 }
 
@@ -2629,11 +2068,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             : 'Translation request aborted because settings changed';
           configRevision++;
           translationCache.clear();
-          pendingL2Writes.clear();
-          if (l2WriteTimer) {
-            clearTimeout(l2WriteTimer);
-            l2WriteTimer = null;
-          }
+          clearPendingL2Writes();
           // Abort active in-flight requests across all tabs
           for (const [reqId, active] of activeBatchControllers.entries()) {
             try { active.controller.abort(abortReason); } catch {}
@@ -3417,7 +2852,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
         const items = message.payload?.items || [];
         const hits = [];
-        const misses = [];
+        let misses = [];
 
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
@@ -3442,44 +2877,20 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           }
         }
 
-        if (storedSettings.cacheEnabled !== false && !l2MemoryOnly && !isClearingL2 && misses.length > 0) {
-          try {
-            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-              const readEpoch = l2Epoch;
-              const l2Res = await chrome.storage.local.get([L2_CACHE_KEY]);
-              if (!l2MemoryOnly && !isClearingL2 && l2Epoch === readEpoch) {
-                const trCache = l2Res?.[L2_CACHE_KEY];
-                if (trCache && typeof trCache === 'object') {
-                  const now = Date.now();
-                  const afterL2Misses = [];
-                  for (const m of misses) {
-                    const l2Key = /^[0-9a-f]{8}$/i.test(m.key) ? m.key : hashText(m.key);
-                    const entry = trCache[l2Key];
-                    const reqHash = hashText(m.key);
-                    const isValidShape = entry && typeof entry === 'object' && typeof entry.text === 'string' && typeof entry.keyHash === 'string' && !('key' in entry);
-                    const isMatch = isValidShape && entry.keyHash === reqHash;
-                    if (isMatch && (now - (entry.savedAt || 0) < L2_CACHE_TTL_MS)) {
-                      const normText = normalizeSourceText(m.item?.text);
-                      translationCache.set(m.key, entry.text, normText);
-                      hits.push({
-                        index: m.index,
-                        result: {
-                          id: m.item.id,
-                          revision: m.item.revision,
-                          text: entry.text
-                        }
-                      });
-                    } else {
-                      afterL2Misses.push(m);
-                    }
-                  }
-                  misses.length = 0;
-                  misses.push(...afterL2Misses);
-                }
-              }
-            }
-          } catch {}
-        }
+        misses = await checkL2CacheForMisses({
+          remainingMisses: misses,
+          currentHits: hits,
+          storedSettings,
+          isL2MemoryOnly,
+          isL2Clearing,
+          getL2Epoch,
+          chromeStorageLocal: typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local ? chrome.storage.local : null,
+          L2_CACHE_KEY,
+          L2_CACHE_TTL_MS,
+          normalizeSourceText,
+          hashText,
+          translationCache
+        });
 
         // Fast path: full cache hit bypasses rate admission & provider calls completely
         if (misses.length === 0) {
@@ -3769,11 +3180,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
           if (modeChanged || modelChanged) {
             configRevision++;
             translationCache.clear();
-            pendingL2Writes.clear();
-            if (l2WriteTimer) {
-              clearTimeout(l2WriteTimer);
-              l2WriteTimer = null;
-            }
+            clearPendingL2Writes();
             for (const [reqId, active] of activeBatchControllers.entries()) {
               try { active.controller.abort('config_changed'); } catch {}
             }
@@ -3961,11 +3368,11 @@ globalScope.__translatorSw = {
   enqueueL2Cache,
   flushL2Cache,
   clearL2Cache,
-  getL2Epoch: () => l2Epoch,
-  isL2MemoryOnly: () => l2MemoryOnly,
-  _setL2MemoryOnlyForTest: (v) => { l2MemoryOnly = Boolean(v); },
-  isClearingL2: () => isClearingL2,
-  isL2Clearing: () => isClearingL2,
+  getL2Epoch,
+  isL2MemoryOnly,
+  _setL2MemoryOnlyForTest,
+  isClearingL2: isL2Clearing,
+  isL2Clearing,
   L2_CACHE_KEY,
   L2_CACHE_TTL_MS,
   L2_MAX_SIZE_BYTES,

@@ -1,11 +1,14 @@
-// WebMCP Translator Kit — Classic i18n Globals for Content Scripts
-// Contract: Exposes window.__wmtI18n with { SUPPORTED_UI_LOCALES, DEFAULT_UI_LOCALE, MESSAGES, t }
-
+// WebMCP Translator Kit — Classic Content-Script Global i18n Bundle
+// AUTO-GENERATED from extension/src/locales/*.mjs via scripts/sync-i18n.mjs. DO NOT EDIT DIRECTLY.
 (function () {
-  const SUPPORTED_UI_LOCALES = ["vi","en","ja","ko","zh","es","ru"];
+  'use strict';
+  const target = (typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : self));
+  if (target.__wmtI18n) return;
+
+  const SUPPORTED_UI_LOCALES = Object.freeze(["vi","en","ja","ko","zh","es","ru"]);
   const DEFAULT_UI_LOCALE = "vi";
 
-  const MESSAGES = {
+  const MESSAGES = Object.freeze({
   "vi": {
     "tab_translate": "Dịch",
     "tab_auto": "Tự động",
@@ -268,15 +271,15 @@
     "btn_close_menu": "Đóng menu",
     "btn_close_modal": "Đóng cửa sổ",
     "config_fab_size_label": "Cỡ icon nổi",
-      "config_fab_mascot_label": "Icon mascot nổi",
-      "config_fab_size_reset_btn": "Mặc định",
-      "config_fab_size_reset_title": "Đặt lại cỡ mặc định (1.00x)",
-      "mascot_default": "Chuẩn",
-      "mascot_polyglot_owl": "Cú Đa Ngữ",
-      "mascot_babel_cat": "Mèo Dịch",
-      "mascot_globe_fox": "Cáo Địa Cầu",
-      "mascot_lingo_parrot": "Vẹt Lingo",
-      "mascot_robo_babel": "Robot Chibi",
+    "config_fab_mascot_label": "Icon mascot nổi",
+    "config_fab_size_reset_btn": "Mặc định",
+    "config_fab_size_reset_title": "Đặt lại cỡ mặc định (1.00x)",
+    "mascot_default": "Chuẩn",
+    "mascot_polyglot_owl": "Cú Đa Ngữ",
+    "mascot_babel_cat": "Mèo Dịch",
+    "mascot_globe_fox": "Cáo Địa Cầu",
+    "mascot_lingo_parrot": "Vẹt Lingo",
+    "mascot_robo_babel": "Robot Chibi",
     "export_json_success": "Đã xuất cấu hình JSON",
     "export_include_keys_label": "Kèm API keys",
     "export_keys_warning_confirm": "Cảnh báo: Tệp xuất sẽ chứa API keys (secret). Không chia sẻ hoặc tải lên nơi công cộng. Bạn có chắc muốn xuất kèm keys?",
@@ -572,15 +575,15 @@
     "btn_close_menu": "Close menu",
     "btn_close_modal": "Close modal",
     "config_fab_size_label": "Floating icon size",
-      "config_fab_mascot_label": "Floating mascot icon",
-      "config_fab_size_reset_btn": "Default",
-      "config_fab_size_reset_title": "Reset to default size (1.00x)",
-      "mascot_default": "Classic",
-      "mascot_polyglot_owl": "Polyglot Owl",
-      "mascot_babel_cat": "Babel Cat",
-      "mascot_globe_fox": "Globe Fox",
-      "mascot_lingo_parrot": "Lingo Parrot",
-      "mascot_robo_babel": "Robo Babel",
+    "config_fab_mascot_label": "Floating mascot icon",
+    "config_fab_size_reset_btn": "Default",
+    "config_fab_size_reset_title": "Reset to default size (1.00x)",
+    "mascot_default": "Classic",
+    "mascot_polyglot_owl": "Polyglot Owl",
+    "mascot_babel_cat": "Babel Cat",
+    "mascot_globe_fox": "Globe Fox",
+    "mascot_lingo_parrot": "Lingo Parrot",
+    "mascot_robo_babel": "Robo Babel",
     "export_json_success": "Config JSON exported",
     "export_include_keys_label": "Include API keys",
     "export_keys_warning_confirm": "Warning: The exported file will contain secret API keys. Do not share or upload publicly. Are you sure you want to export with keys?",
@@ -876,15 +879,15 @@
     "btn_close_menu": "メニューを閉じる",
     "btn_close_modal": "モーダルを閉じる",
     "config_fab_size_label": "フローティングアイコンのサイズ",
-      "config_fab_mascot_label": "フローティングマスコット",
-      "config_fab_size_reset_btn": "初期値",
-      "config_fab_size_reset_title": "初期サイズに戻す (1.00x)",
-      "mascot_default": "クラシック",
-      "mascot_polyglot_owl": "フクロウ博士",
-      "mascot_babel_cat": "バベルキャット",
-      "mascot_globe_fox": "グローブフォックス",
-      "mascot_lingo_parrot": "リンゴオウム",
-      "mascot_robo_babel": "ロボバベル",
+    "config_fab_mascot_label": "フローティングマスコット",
+    "config_fab_size_reset_btn": "初期値",
+    "config_fab_size_reset_title": "初期サイズに戻す (1.00x)",
+    "mascot_default": "クラシック",
+    "mascot_polyglot_owl": "フクロウ博士",
+    "mascot_babel_cat": "バベルキャット",
+    "mascot_globe_fox": "グローブフォックス",
+    "mascot_lingo_parrot": "リンゴオウム",
+    "mascot_robo_babel": "ロボバベル",
     "export_json_success": "設定JSONをエクスポートしました",
     "export_include_keys_label": "APIキーを含める",
     "export_keys_warning_confirm": "警告: エクスポートファイルにはシークレットAPIキーが含まれます。共有や公開アップロードをしないでください。キーを含めてエクスポートしますか？",
@@ -1180,15 +1183,15 @@
     "btn_close_menu": "메뉴 닫기",
     "btn_close_modal": "모달 닫기",
     "config_fab_size_label": "플로팅 아이콘 크기",
-      "config_fab_mascot_label": "플로팅 마스코트 아이콘",
-      "config_fab_size_reset_btn": "기본값",
-      "config_fab_size_reset_title": "기본 크기로 초기화 (1.00x)",
-      "mascot_default": "클래식",
-      "mascot_polyglot_owl": "다국어 부엉이",
-      "mascot_babel_cat": "바벨 고양이",
-      "mascot_globe_fox": "지구본 여우",
-      "mascot_lingo_parrot": "링고 앵무새",
-      "mascot_robo_babel": "로보 바벨",
+    "config_fab_mascot_label": "플로팅 마스코트 아이콘",
+    "config_fab_size_reset_btn": "기본값",
+    "config_fab_size_reset_title": "기본 크기로 초기화 (1.00x)",
+    "mascot_default": "클래식",
+    "mascot_polyglot_owl": "다국어 부엉이",
+    "mascot_babel_cat": "바벨 고양이",
+    "mascot_globe_fox": "지구본 여우",
+    "mascot_lingo_parrot": "링고 앵무새",
+    "mascot_robo_babel": "로보 바벨",
     "export_json_success": "설정 JSON을 내보냈습니다",
     "export_include_keys_label": "API 키 포함",
     "export_keys_warning_confirm": "경고: 내보낸 파일에 비밀 API 키(secret)가 포함됩니다. 공개적으로 공유하거나 업로드하지 마십시오. 키를 포함하여 내보내시겠습니까?",
@@ -1484,15 +1487,15 @@
     "btn_close_menu": "关闭菜单",
     "btn_close_modal": "关闭弹窗",
     "config_fab_size_label": "悬浮图标大小",
-      "config_fab_mascot_label": "悬浮吉祥物图标",
-      "config_fab_size_reset_btn": "默认",
-      "config_fab_size_reset_title": "重置为默认大小 (1.00x)",
-      "mascot_default": "经典",
-      "mascot_polyglot_owl": "博学猫头鹰",
-      "mascot_babel_cat": "通天猫",
-      "mascot_globe_fox": "环球狐",
-      "mascot_lingo_parrot": "灵哥鹦鹉",
-      "mascot_robo_babel": "巴别机甲",
+    "config_fab_mascot_label": "悬浮吉祥物图标",
+    "config_fab_size_reset_btn": "默认",
+    "config_fab_size_reset_title": "重置为默认大小 (1.00x)",
+    "mascot_default": "经典",
+    "mascot_polyglot_owl": "博学猫头鹰",
+    "mascot_babel_cat": "通天猫",
+    "mascot_globe_fox": "环球狐",
+    "mascot_lingo_parrot": "灵哥鹦鹉",
+    "mascot_robo_babel": "巴别机甲",
     "export_json_success": "已导出配置 JSON",
     "export_include_keys_label": "包含 API 密钥",
     "export_keys_warning_confirm": "警告：导出文件将包含机密 API 密钥（secret）。请勿公开发布或上传。确定要包含密钥导出吗？",
@@ -1788,15 +1791,15 @@
     "btn_close_menu": "Cerrar menú",
     "btn_close_modal": "Cerrar ventana modal",
     "config_fab_size_label": "Tamaño del icono flotante",
-      "config_fab_mascot_label": "Icono de mascota flotante",
-      "config_fab_size_reset_btn": "Por defecto",
-      "config_fab_size_reset_title": "Restablecer tamaño predeterminado (1.00x)",
-      "mascot_default": "Clásico",
-      "mascot_polyglot_owl": "Búho Políglota",
-      "mascot_babel_cat": "Gato Babel",
-      "mascot_globe_fox": "Zorro Global",
-      "mascot_lingo_parrot": "Loro Lingo",
-      "mascot_robo_babel": "Robot Babel",
+    "config_fab_mascot_label": "Icono de mascota flotante",
+    "config_fab_size_reset_btn": "Por defecto",
+    "config_fab_size_reset_title": "Restablecer tamaño predeterminado (1.00x)",
+    "mascot_default": "Clásico",
+    "mascot_polyglot_owl": "Búho Políglota",
+    "mascot_babel_cat": "Gato Babel",
+    "mascot_globe_fox": "Zorro Global",
+    "mascot_lingo_parrot": "Loro Lingo",
+    "mascot_robo_babel": "Robot Babel",
     "export_json_success": "Configuración JSON exportada",
     "export_include_keys_label": "Incluir claves API",
     "export_keys_warning_confirm": "Advertencia: El archivo exportado contendrá claves API secretas. No compartir ni subir públicamente. ¿Está seguro de exportar con claves?",
@@ -2092,15 +2095,15 @@
     "btn_close_menu": "Закрыть меню",
     "btn_close_modal": "Закрыть окно",
     "config_fab_size_label": "Размер плавающей иконки",
-      "config_fab_mascot_label": "Иконка маскота",
-      "config_fab_size_reset_btn": "По умолчанию",
-      "config_fab_size_reset_title": "Сбросить размер по умолчанию (1.00x)",
-      "mascot_default": "Классика",
-      "mascot_polyglot_owl": "Сова-полиглот",
-      "mascot_babel_cat": "Кот Вавилон",
-      "mascot_globe_fox": "Лис-глобус",
-      "mascot_lingo_parrot": "Попугай Линго",
-      "mascot_robo_babel": "Робот Вавилон",
+    "config_fab_mascot_label": "Иконка маскота",
+    "config_fab_size_reset_btn": "По умолчанию",
+    "config_fab_size_reset_title": "Сбросить размер по умолчанию (1.00x)",
+    "mascot_default": "Классика",
+    "mascot_polyglot_owl": "Сова-полиглот",
+    "mascot_babel_cat": "Кот Вавилон",
+    "mascot_globe_fox": "Лис-глобус",
+    "mascot_lingo_parrot": "Попугай Линго",
+    "mascot_robo_babel": "Робот Вавилон",
     "export_json_success": "Конфигурация JSON экспортирована",
     "export_include_keys_label": "Включить API-ключи",
     "export_keys_warning_confirm": "Внимание: экспортируемый файл будет содержать секретные API-ключи (secret). Не передавайте и не загружайте его публично. Экспортировать с ключами?",
@@ -2134,11 +2137,11 @@
     "err_data_consent_required": "Требуется согласие на передачу данных — примите условия для перевода.",
     "consent_state_unknown": "Статус согласия неизвестен, повторите попытку"
   }
-};
+});
 
   function t(locale, key, params) {
     const loc = (locale && SUPPORTED_UI_LOCALES.includes(locale)) ? locale : DEFAULT_UI_LOCALE;
-    const msg = (MESSAGES[loc] && MESSAGES[loc][key]) || (MESSAGES[DEFAULT_UI_LOCALE] && MESSAGES[DEFAULT_UI_LOCALE][key]) || key;
+    const msg = MESSAGES[loc]?.[key] ?? MESSAGES[DEFAULT_UI_LOCALE]?.[key] ?? key;
     if (typeof msg !== 'string') return key;
     if (!params || typeof params !== 'object') return msg;
     return msg.replace(/\{(\w+)\}/g, function (_, k) {
@@ -2146,12 +2149,10 @@
     });
   }
 
-  if (typeof window !== 'undefined') {
-    window.__wmtI18n = {
-      SUPPORTED_UI_LOCALES,
-      DEFAULT_UI_LOCALE,
-      MESSAGES,
-      t
-    };
-  }
+  target.__wmtI18n = Object.freeze({
+    SUPPORTED_UI_LOCALES,
+    DEFAULT_UI_LOCALE,
+    MESSAGES,
+    t
+  });
 })();

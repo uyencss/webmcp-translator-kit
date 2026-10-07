@@ -1,0 +1,389 @@
+/* ==========================================================================
+   Form Controls & Inputs
+   ========================================================================== */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.flex-1 {
+  flex: 1;
+  min-width: 0;
+}
+
+label,
+.field-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ba1a9;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sub-label {
+  font-size: 10.5px;
+  color: #858b94;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sub-hint {
+  font-size: 10px;
+  color: #858b94;
+  cursor: help;
+}
+
+input[type="text"],
+input[type="password"],
+select {
+  width: 100%;
+  height: 32px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  border: 1px solid var(--border-hairline);
+  border-radius: 8px;
+  background-color: var(--surface-input);
+  box-shadow: var(--card-inner-shadow);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input::placeholder {
+  color: #757b84;
+  font-family: var(--font-sans);
+}
+
+input:hover,
+select:hover {
+  border-color: var(--border-hairline-hover);
+}
+
+input:focus,
+select:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px var(--accent-ring), var(--card-inner-shadow);
+}
+
+/* Custom Styled Select */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%23a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
+
+select option {
+  background-color: #121318;
+  color: #f4f4f5;
+}
+
+select optgroup {
+  background-color: #09090b;
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.input-with-button {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.input-with-button input,
+.input-with-button select {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.input-with-button .field-icon,
+.input-with-button .btn-icon {
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Icon Buttons
+   ========================================================================== */
+.btn-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--border-hairline-hover);
+  color: #ffffff;
+}
+
+.btn-icon:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.btn-icon:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+.btn-star {
+  color: var(--text-secondary);
+}
+
+.btn-star:hover {
+  color: #f59e0b;
+}
+
+.btn-star.favorited {
+  color: #f59e0b;
+  fill: #f59e0b;
+}
+
+.btn-danger-icon:hover {
+  color: var(--status-red);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.btn-xs {
+  padding: 2px 7px;
+  font-size: 10.5px;
+  height: 22px;
+  border-radius: 5px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  height: 28px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.btn-outline {
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: var(--accent-cyan);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.btn-success {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.3);
+}
+
+.btn-success:hover:not(:disabled) {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 3px 12px rgba(16, 185, 129, 0.4);
+}
+
+/* ==========================================================================
+   Segmented Control (Mode Switch: Scroll / Full)
+   ========================================================================== */
+.segmented-control {
+  display: flex;
+  background: var(--surface-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 3px;
+}
+
+.segmented-btn {
+  flex: 1;
+  display: flex;
+  cursor: pointer;
+}
+
+.segmented-content {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+}
+
+.segmented-btn:hover .segmented-content {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.segmented-btn input[type="radio"]:checked + .segmented-content {
+  background: rgba(59, 130, 246, 0.18);
+  color: #ffffff;
+  font-weight: 600;
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* ==========================================================================
+   Toggle Switch (iOS/Linear minimalist switch)
+   ========================================================================== */
+.toggle-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.toggle-switch-label input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 16px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-hairline);
+  border-radius: 9999px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 12px;
+  width: 12px;
+  left: 1px;
+  top: 1px;
+  background-color: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.toggle-switch-label input:checked + .toggle-slider {
+  background-color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.toggle-switch-label input:checked + .toggle-slider::before {
+  transform: translateX(12px);
+  background-color: #ffffff;
+}
+
+.toggle-switch-label,
+.toggle-switch-label .toggle-text,
+.segmented-btn,
+.segmented-btn .segmented-content {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.toggle-switch-label input:focus-visible + .toggle-slider {
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+/* Site Consent Badges & Overrides */
+.site-origin-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-origin-badge.unsupported {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-hairline);
+}
+
+.tab-override-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-group-override {
+  display: flex;
+  background: var(--surface-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: 6px;
+  padding: 1px;
+  gap: 2px;
+  flex: 1;
+}
+
+.btn-override {
+  flex: 1;
+  padding: 3px 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+  outline: none;
+}
+
+.btn-override:hover:not(:disabled) {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.btn-override.active {
+  background: rgba(59, 130, 246, 0.25);
+  color: #ffffff;
+  font-weight: 600;
+  border-color: rgba(59, 130, 246, 0.4);
+}

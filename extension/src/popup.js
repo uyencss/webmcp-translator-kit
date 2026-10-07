@@ -25,42 +25,33 @@ export const RECOMMENDED_MODELS = [
   'ag/gemini-3.8-flash'
 ];
 
-export function buildExportPayload({
-  settings,
-  fallbackKeyPresence = {},
-  hasStoredKey = false,
-  includeKeys = false,
-  apiKey = '',
-  fallbackApiKeys = {},
-  exportedAt
-} = {}) {
-  const baseConfig = buildExportConfig({
-    settings,
-    fallbackKeyPresence,
-    hasStoredKey,
-    exportedAt
-  });
+import { buildExportPayload } from './popup/modules/config-io.mjs';
+import { computePrivacyNoteState, evaluateAutoConsentWarningBranch } from './popup/modules/consent-banner.mjs';
+import { setBackgroundInertState, isElementVisibleAndInteractable, trapFocusInModal, getFocusableElementsWithin } from './popup/modules/modal.mjs';
+import { resolveFavKey, getScopedFavorites, filterAvailableModelsToAdd, MAX_FAVORITES_PER_SCOPE } from './popup/modules/models-manager.mjs';
+import { setupMascotPicker } from './popup/modules/mascot-picker.mjs';
+import { buildRateLimitsConfig, clampRateLimitTunables } from './popup/modules/state.mjs';
+import { renderFallbackList } from './popup/modules/fallback-rows.mjs';
+import { renderAutoSitesList } from './popup/modules/rules-manager.mjs';
 
-  if (!includeKeys) {
-    return {
-      filename: 'translator-config.json',
-      data: baseConfig
-    };
-  }
-
-  const withKeysData = {
-    ...baseConfig,
-    apiKey: typeof apiKey === 'string' ? apiKey : '',
-    fallbackApiKeys: (fallbackApiKeys && typeof fallbackApiKeys === 'object' && !Array.isArray(fallbackApiKeys))
-      ? { ...fallbackApiKeys }
-      : {}
-  };
-
-  return {
-    filename: 'translator-config.with-keys.json',
-    data: withKeysData
-  };
-}
+export {
+  buildExportPayload,
+  computePrivacyNoteState,
+  evaluateAutoConsentWarningBranch,
+  setBackgroundInertState,
+  isElementVisibleAndInteractable,
+  trapFocusInModal,
+  getFocusableElementsWithin,
+  resolveFavKey,
+  getScopedFavorites,
+  filterAvailableModelsToAdd,
+  MAX_FAVORITES_PER_SCOPE,
+  setupMascotPicker,
+  buildRateLimitsConfig,
+  clampRateLimitTunables,
+  renderFallbackList,
+  renderAutoSitesList
+};
 
 if (typeof window !== 'undefined') {
   window.DEFAULT_MODEL = DEFAULT_MODEL;
@@ -342,10 +333,14 @@ if (typeof document !== 'undefined') {
   }
 
   function currentFavKey() {
-    return normalizeBaseURLKey(inputBaseUrl ? inputBaseUrl.value : (savedSettings.baseURL || ''));
+    const raw = inputBaseUrl ? inputBaseUrl.value : (savedSettings.baseURL || '');
+    return (typeof resolveFavKey === 'function') ? resolveFavKey(raw) : normalizeBaseURLKey(raw);
   }
 
   function getFavoritesForKey(key) {
+    if (typeof getScopedFavorites === 'function') {
+      return getScopedFavorites(favoriteModelsByBaseURL, key);
+    }
     const list = key ? favoriteModelsByBaseURL[key] : null;
     return Array.isArray(list) ? [...list] : [];
   }
@@ -587,22 +582,14 @@ if (typeof document !== 'undefined') {
     if (rawUrl) patch.baseURL = rawUrl;
 
     if (inputRateTab || inputRateSite || inputRateConcurrency) {
-      const tabBatches = inputRateTab ? clampTabMaxBatches(inputRateTab.value) : (savedSettings.rateLimits?.tab?.maxBatches || 4);
-      const siteBatches = inputRateSite ? clampSiteMaxBatches(inputRateSite.value) : (savedSettings.rateLimits?.site?.maxBatches || 12);
-      const concurrency = inputRateConcurrency ? clampProviderConcurrency(inputRateConcurrency.value) : (savedSettings.providerConcurrency || 2);
-
-      patch.providerConcurrency = concurrency;
-      patch.rateLimits = {
-        windowSeconds: 60,
-        tab: {
-          maxBatches: tabBatches,
-          maxSourceCodePoints: savedSettings.rateLimits?.tab?.maxSourceCodePoints || 12000
-        },
-        site: {
-          maxBatches: siteBatches,
-          maxSourceCodePoints: savedSettings.rateLimits?.site?.maxSourceCodePoints || 36000
-        }
-      };
+      const rlConfig = buildRateLimitsConfig({
+        tabBatches: inputRateTab ? inputRateTab.value : (savedSettings.rateLimits?.tab?.maxBatches || 4),
+        siteBatches: inputRateSite ? inputRateSite.value : (savedSettings.rateLimits?.site?.maxBatches || 12),
+        concurrency: inputRateConcurrency ? inputRateConcurrency.value : (savedSettings.providerConcurrency || 2),
+        savedLimits: savedSettings.rateLimits
+      });
+      patch.providerConcurrency = rlConfig.providerConcurrency;
+      patch.rateLimits = rlConfig.rateLimits;
     }
 
     return { patch, error: null };
@@ -788,51 +775,14 @@ if (typeof document !== 'undefined') {
       document.getElementById('tabpanel-auto'),
       document.querySelector('.footer')
     ].filter(Boolean);
-
-    for (const el of backgroundElements) {
-      if (inert) {
-        el.setAttribute('inert', '');
-        if ('inert' in el) el.inert = true;
-      } else {
-        el.removeAttribute('inert');
-        if ('inert' in el) el.inert = false;
-      }
-    }
+    setBackgroundInertState(inert, backgroundElements);
   }
 
   function isElementVisibleAndEnabled(el) {
-    if (!el || typeof el.focus !== 'function') return false;
-    if (typeof document !== 'undefined' && document.body && typeof document.body.contains === 'function' && !document.body.contains(el)) return false;
-    if (el.disabled) return false;
-    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
-    if (typeof el.closest === 'function') {
-      if (el.closest('[aria-hidden="true"]')) return false;
-      if (el.closest('.hidden')) return false;
-    }
     if (modalOverlay && (el === modalOverlay || (typeof modalOverlay.contains === 'function' && modalOverlay.contains(el)))) {
       return false;
     }
-    if (menuOverlay && (el === menuOverlay || (typeof menuOverlay.contains === 'function' && menuOverlay.contains(el)))) {
-      return false;
-    }
-
-    let cur = el;
-    while (cur && cur !== (typeof document !== 'undefined' ? document.body : null)) {
-      if (cur.style && cur.style.display === 'none') return false;
-      if (cur === modalOverlay || cur === menuOverlay) return false;
-      if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
-      if (cur.classList && cur.classList.contains && cur.classList.contains('hidden')) return false;
-      cur = cur.parentElement || cur.parentNode;
-    }
-
-    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
-      try {
-        const cs = window.getComputedStyle(el);
-        if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return false;
-      } catch {}
-    }
-
-    return true;
+    return isElementVisibleAndInteractable(el, [modalOverlay, menuOverlay]);
   }
 
   function restoreFocusAfterModal() {
@@ -862,53 +812,11 @@ if (typeof document !== 'undefined') {
   }
 
   function getModalFocusableElements() {
-    if (!isModalOpen()) return [];
-    const focusableSelectors = [
-      'button:not([disabled])',
-      '[href]',
-      'input:not([disabled]):not([type="hidden"])',
-      'select:not([disabled])',
-      'textarea:not([disabled])',
-      '[tabindex]:not([tabindex="-1"])'
-    ].join(', ');
-
-    const nodes = Array.from(modalOverlay.querySelectorAll(focusableSelectors));
-    return nodes.filter((el) => {
-      if (el.disabled) return false;
-      if (el.getAttribute('aria-hidden') === 'true') return false;
-      if (el.closest('.hidden')) return false;
-      if (el.closest('[aria-hidden="true"]')) return false;
-      if (el.style.display === 'none') return false;
-      return true;
-    });
+    return isModalOpen() ? getFocusableElementsWithin(modalOverlay) : [];
   }
 
   function handleModalFocusTrap(e) {
-    if (!isModalOpen()) return;
-    if (e.key !== 'Tab') return;
-
-    const focusables = getModalFocusableElements();
-    if (focusables.length === 0) {
-      e.preventDefault();
-      if (modalCloseBtn) modalCloseBtn.focus();
-      return;
-    }
-
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    const active = document.activeElement;
-
-    if (e.shiftKey) {
-      if (active === first || !modalOverlay.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else {
-      if (active === last || !modalOverlay.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
+    trapFocusInModal(e, modalOverlay, modalCloseBtn);
   }
 
   function openMenu() {
@@ -1191,32 +1099,26 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  const mascotPicker = setupMascotPicker({
+    mascotSelectorGrid,
+    selectFabMascot,
+    inputFabSize,
+    fabSizeValue,
+    btnResetFabSize,
+    onPresentationChange: (opts) => broadcastWidgetPresentation(opts),
+    onDirty: () => {
+      flushAutosave();
+      markDirty();
+    },
+    attachListeners: false
+  });
+
   function updateFabSizeDisplay(val, options = {}) {
-    const clamped = clampFabSize(val);
-    if (inputFabSize) inputFabSize.value = String(clamped);
-    if (fabSizeValue) fabSizeValue.textContent = `${clamped.toFixed(2)}x`;
-    const currentMascot = selectFabMascot?.value || 'default';
-    if (!options || options.broadcast !== false) {
-      broadcastWidgetPresentation({ fabSize: clamped, fabMascot: currentMascot, isPresentation: true });
-    }
+    mascotPicker.updateFabSizeDisplay(val, options);
   }
 
   function applyFabMascot(mascot, options = {}) {
-    const target = normalizeFabMascot(mascot);
-    if (selectFabMascot) selectFabMascot.value = target;
-    if (mascotSelectorGrid) {
-      const chips = mascotSelectorGrid.querySelectorAll('.mascot-chip');
-      chips.forEach((chip) => {
-        const isSelected = chip.dataset.mascot === target;
-        chip.classList.toggle('active', isSelected);
-        chip.setAttribute('aria-checked', String(isSelected));
-        chip.setAttribute('tabindex', isSelected ? '0' : '-1');
-      });
-    }
-    const currentSize = parseFloat(inputFabSize?.value) || 1.0;
-    if (!options || options.broadcast !== false) {
-      broadcastWidgetPresentation({ fabMascot: target, fabSize: currentSize, isPresentation: true });
-    }
+    mascotPicker.applyFabMascot(mascot, options);
   }
 
   // Tab Navigation Controller (with roving tabindex & sessionStorage memory)
@@ -1461,28 +1363,12 @@ if (typeof document !== 'undefined') {
   }
 
   function getAvailableModelsToAdd(scopeKey) {
-    const currentFavs = new Set(getFavoritesForKey(scopeKey));
-    const seen = new Set();
-    const allModels = [];
-
-    // Recommended models first
-    for (const mId of RECOMMENDED_MODELS) {
-      if (mId && !seen.has(mId)) {
-        seen.add(mId);
-        allModels.push(mId);
-      }
-    }
-
-    // Discovered models from server / cache
-    for (const m of discoveredModels) {
-      const mId = typeof m === 'string' ? m : m?.id;
-      if (mId && !seen.has(mId)) {
-        seen.add(mId);
-        allModels.push(mId);
-      }
-    }
-
-    return allModels.filter(mId => !currentFavs.has(mId));
+    return filterAvailableModelsToAdd({
+      scopeKey,
+      favoriteModelsByBaseURL,
+      recommendedModels: RECOMMENDED_MODELS,
+      discoveredModels
+    });
   }
 
   function renderFavoritesSection() {
@@ -2231,152 +2117,7 @@ if (typeof document !== 'undefined') {
   }
 
   // Fallbacks v2 UI Dynamic Rendering
-  function renderFallbackRows() {
-    if (!fallbackListEl) return;
-    fallbackListEl.innerHTML = '';
-
-    if (!Array.isArray(fallbacks) || fallbacks.length === 0) {
-      const emptyEl = document.createElement('div');
-      emptyEl.className = 'auto-sites-empty';
-      emptyEl.textContent = t(currentUiLocale, 'conn_fallback_empty');
-      fallbackListEl.appendChild(emptyEl);
-      if (btnAddFallback) btnAddFallback.disabled = false;
-      return;
-    }
-
-    fallbacks.forEach((fb, idx) => {
-      const row = document.createElement('div');
-      row.className = 'fallback-row';
-      row.id = `fallback-row-${idx}`;
-
-      const rowHeader = document.createElement('div');
-      rowHeader.className = 'fallback-row-header';
-
-      const rowTitle = document.createElement('span');
-      rowTitle.className = 'fallback-row-title';
-      rowTitle.textContent = t(currentUiLocale, 'conn_fallback_row_title', { index: idx + 1, id: fb.id });
-
-      const btnRemove = document.createElement('button');
-      btnRemove.type = 'button';
-      btnRemove.id = `btn-remove-fallback-${idx}`;
-      btnRemove.className = 'btn-icon btn-danger-icon btn-sm';
-      btnRemove.title = t(currentUiLocale, 'conn_fallback_remove_title', { index: idx + 1 });
-      btnRemove.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_remove_title', { index: idx + 1 }));
-      btnRemove.innerHTML = SVG_ICONS.trash;
-
-      btnRemove.addEventListener('click', async () => {
-        // If row has an existing id, call DELETE_FALLBACK_KEY
-        if (fb.id) {
-          try {
-            await new Promise((resolve) => {
-              chrome.runtime.sendMessage({ action: 'DELETE_FALLBACK_KEY', id: fb.id }, resolve);
-            });
-            delete fallbackKeyPresence[fb.id];
-          } catch {}
-        }
-        if (!settingsLoaded) {
-          setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
-          return;
-        }
-        fallbacks.splice(idx, 1);
-        renderFallbackRows();
-        renderAllModelDropdowns();
-        flushAutosave();
-      });
-
-      rowHeader.appendChild(rowTitle);
-      rowHeader.appendChild(btnRemove);
-      row.appendChild(rowHeader);
-
-      const inputsGrid = document.createElement('div');
-      inputsGrid.className = 'fallback-inputs-grid';
-
-      // Base URL input
-      const urlGroup = document.createElement('div');
-      urlGroup.className = 'form-group';
-      const urlInput = document.createElement('input');
-      urlInput.type = 'text';
-      urlInput.id = `input-fallback-url-${idx}`;
-      urlInput.placeholder = t(currentUiLocale, 'conn_fallback_url_placeholder');
-      urlInput.title = t(currentUiLocale, 'conn_fallback_url_title');
-      urlInput.autocomplete = 'off';
-      urlInput.value = fb.baseURL || '';
-      urlInput.addEventListener('input', () => {
-        const previousScope = favKeyForFallback(fb);
-        fb.baseURL = urlInput.value.trim();
-        const select = document.getElementById(`select-fallback-${idx}`);
-        if (favKeyForFallback(fb) !== previousScope) {
-          populateSelect(select, select?.value || fb.model, {
-            favs: getFavoritesForKey(favKeyForFallback(fb))
-          });
-        }
-        updateFallbackStar(document.getElementById(`btn-fallback-fav-${idx}`), fb, select);
-        markDirty();
-      });
-      urlGroup.appendChild(urlInput);
-      inputsGrid.appendChild(urlGroup);
-
-      // Key input with eye toggle
-      const keyGroup = document.createElement('div');
-      keyGroup.className = 'form-group';
-      const keyWrapper = document.createElement('div');
-      keyWrapper.className = 'input-with-button';
-
-      const keyInput = document.createElement('input');
-      keyInput.type = 'password';
-      keyInput.id = `input-fallback-key-${idx}`;
-      const hasKey = Boolean(fallbackKeyPresence[fb.id]);
-      keyInput.placeholder = hasKey ? t(currentUiLocale, 'conn_key_placeholder_saved') : t(currentUiLocale, 'conn_fallback_key_placeholder');
-      keyInput.autocomplete = 'off';
-      keyInput.addEventListener('change', () => {
-        markDirty();
-      });
-
-      const btnToggleRowKey = document.createElement('button');
-      btnToggleRowKey.type = 'button';
-      btnToggleRowKey.id = `btn-toggle-fallback-key-${idx}`;
-      btnToggleRowKey.className = 'btn-icon';
-      btnToggleRowKey.title = t(currentUiLocale, 'conn_btn_toggle_key_title');
-      btnToggleRowKey.innerHTML = SVG_ICONS.eye;
-      btnToggleRowKey.addEventListener('click', () => {
-        if (keyInput.type === 'password') {
-          keyInput.type = 'text';
-          btnToggleRowKey.innerHTML = SVG_ICONS.eyeOff;
-        } else {
-          keyInput.type = 'password';
-          btnToggleRowKey.innerHTML = SVG_ICONS.eye;
-        }
-      });
-
-      keyWrapper.appendChild(keyInput);
-      keyWrapper.appendChild(btnToggleRowKey);
-      keyGroup.appendChild(keyWrapper);
-      inputsGrid.appendChild(keyGroup);
-
-      // Model selector + per-provider favorite star (scoped to this row's
-      // Base URL, else primary — same scope rule as favKeyForFallback)
-      const modelGroup = document.createElement('div');
-      modelGroup.className = 'form-group';
-      const modelWrap = document.createElement('div');
-      modelWrap.className = 'input-with-button';
-      const modelSelect = document.createElement('select');
-      modelSelect.id = `select-fallback-${idx}`;
-      // Also provide alias id select-fallback-1 / select-fallback-2 for backward compat
-      modelSelect.setAttribute('data-index', String(idx));
-      modelSelect.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_model_aria', { index: idx + 1 }));
-      modelSelect.addEventListener('change', () => {
-        fb.model = modelSelect.value;
-        updateFallbackStar(btnFallbackFav, fb, modelSelect);
-        markDirty();
-      });
-
-      const btnFallbackFav = document.createElement('button');
-      btnFallbackFav.type = 'button';
-      btnFallbackFav.id = `btn-fallback-fav-${idx}`;
-      btnFallbackFav.className = 'btn-icon btn-star';
-      btnFallbackFav.title = t(currentUiLocale, 'conn_fallback_fav_title');
-      btnFallbackFav.setAttribute('aria-label', t(currentUiLocale, 'conn_fallback_fav_aria', { index: idx + 1 }));
-      btnFallbackFav.innerHTML = SVG_ICONS.star;
+  function wireFallbackFavButton(btnFallbackFav, fb, idx, modelSelect, modelWrap) {
       btnFallbackFav.addEventListener('click', async () => {
         if (!settingsLoaded) {
           setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
@@ -2403,17 +2144,46 @@ if (typeof document !== 'undefined') {
 
       modelWrap.appendChild(modelSelect);
       modelWrap.appendChild(btnFallbackFav);
-      modelGroup.appendChild(modelWrap);
-      inputsGrid.appendChild(modelGroup);
+  }
 
-      row.appendChild(inputsGrid);
-      fallbackListEl.appendChild(row);
-      updateFallbackStar(btnFallbackFav, fb, modelSelect);
+  function renderFallbackRows() {
+    renderFallbackList({
+      container: fallbackListEl,
+      fallbacks,
+      btnAddFallback,
+      currentUiLocale,
+      SVG_ICONS,
+      fallbackKeyPresence,
+      favKeyForFallback,
+      getFavoritesForKey,
+      updateFallbackStar,
+      populateSelect,
+      t,
+      wireFavButton: wireFallbackFavButton,
+      callbacks: {
+        onRemove: async (fb, idx) => {
+          if (fb.id) {
+            try {
+              await new Promise((resolve) => {
+                chrome.runtime.sendMessage({ action: 'DELETE_FALLBACK_KEY', id: fb.id }, resolve);
+              });
+              delete fallbackKeyPresence[fb.id];
+            } catch {}
+          }
+          if (!settingsLoaded) {
+            setConfigMsg(configMessageConnect, getSettingsNotLoadedMsg(), true);
+            return;
+          }
+          fallbacks.splice(idx, 1);
+          renderFallbackRows();
+          renderAllModelDropdowns();
+          flushAutosave();
+        },
+        onUrlInput: () => markDirty(),
+        onKeyChange: () => markDirty(),
+        onModelChange: () => markDirty()
+      }
     });
-
-    if (btnAddFallback) {
-      btnAddFallback.disabled = fallbacks.length >= 2;
-    }
   }
 
   if (btnAddFallback) {
@@ -3245,40 +3015,15 @@ if (typeof document !== 'undefined') {
   function updatePrivacyNote(baseURL) {
     if (!privacyNote) return;
     const urlToCheck = baseURL || (inputBaseUrl ? inputBaseUrl.value.trim() : '') || savedSettings?.baseURL || 'http://localhost:8080/v1';
-    const isSecure = isSecureOrLoopbackBaseURL(urlToCheck);
-    let isLoopbackHttp = false;
-    let isTailscaleHttp = false;
-    try {
-      const parsed = new URL(urlToCheck);
-      if (parsed.protocol === 'http:') {
-        if (isLoopbackHost(parsed.hostname)) {
-          isLoopbackHttp = true;
-        } else if (isTailscaleHost(parsed.hostname)) {
-          isTailscaleHttp = true;
-        }
-      }
-    } catch {}
+    const state = computePrivacyNoteState(urlToCheck);
+    const msg = t(currentUiLocale, state.noteKey);
+    privacyNote.title = msg;
+    privacyNote.setAttribute('aria-label', msg);
     const svgIcon = privacyNote.querySelector('svg');
-    if (isSecure) {
-      const noteKey = isLoopbackHttp
-        ? 'privacy_note_loopback'
-        : (isTailscaleHttp ? 'privacy_note_tailscale' : 'privacy_note_secure');
-      const msg = t(currentUiLocale, noteKey);
-      privacyNote.title = msg;
-      privacyNote.setAttribute('aria-label', msg);
-      if (svgIcon) {
-        svgIcon.classList.remove('text-warning', 'text-danger');
-        svgIcon.classList.toggle('text-muted', !isLoopbackHttp && !isTailscaleHttp);
-        svgIcon.classList.toggle('text-warning', isLoopbackHttp || isTailscaleHttp);
-      }
-    } else {
-      const msg = t(currentUiLocale, 'privacy_note_insecure');
-      privacyNote.title = msg;
-      privacyNote.setAttribute('aria-label', msg);
-      if (svgIcon) {
-        svgIcon.classList.remove('text-muted');
-        svgIcon.classList.add('text-warning');
-      }
+    if (svgIcon) {
+      svgIcon.classList.remove('text-warning', 'text-danger');
+      svgIcon.classList.toggle('text-muted', state.isMuted);
+      svgIcon.classList.toggle('text-warning', state.isWarning);
     }
   }
 
@@ -3363,42 +3108,30 @@ if (typeof document !== 'undefined') {
   // WI-50 Auto-Start Warning Banner
   function updateAutoConsentWarningBanner() {
     if (!bannerAutoConsentWarning) return;
-    if (!currentConsent || currentConsent.authoritative !== true) {
-      bannerAutoConsentWarning.classList.add('hidden');
-      return;
-    }
-    const origin = currentConsent.siteOrigin;
-    if (!origin) {
+    const branchInfo = evaluateAutoConsentWarningBranch(currentConsent, autoTranslateSites);
+    if (!branchInfo.show) {
       bannerAutoConsentWarning.classList.add('hidden');
       return;
     }
 
-    const matchingSite = autoTranslateSites.find((s) => (s.origin || s) === origin);
-    const hasAutoEntry = Boolean(matchingSite && (matchingSite.autoStart !== false));
-    const effective = currentConsent.effective || 'off';
-
-    if (hasAutoEntry && effective === 'off') {
-      bannerAutoConsentWarning.classList.remove('hidden');
-      if (currentConsent.tabOverride === 'off') {
-        if (bannerAutoWarningText) {
-          bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_tab_override_off');
-        }
-        if (btnBannerEnableSite) {
-          btnBannerEnableSite.classList.add('hidden');
-        }
-      } else {
-        if (bannerAutoWarningText) {
-          bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_site_off');
-        }
-        if (btnBannerEnableSite) {
-          btnBannerEnableSite.classList.remove('hidden');
-          if (btnBannerEnableSiteText) {
-            btnBannerEnableSiteText.textContent = t(currentUiLocale, 'btn_enable_site_format', { origin });
-          }
-        }
+    bannerAutoConsentWarning.classList.remove('hidden');
+    if (branchInfo.branch === 'tab_override_off') {
+      if (bannerAutoWarningText) {
+        bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_tab_override_off');
+      }
+      if (btnBannerEnableSite) {
+        btnBannerEnableSite.classList.add('hidden');
       }
     } else {
-      bannerAutoConsentWarning.classList.add('hidden');
+      if (bannerAutoWarningText) {
+        bannerAutoWarningText.textContent = t(currentUiLocale, 'banner_auto_site_off');
+      }
+      if (btnBannerEnableSite) {
+        btnBannerEnableSite.classList.remove('hidden');
+        if (btnBannerEnableSiteText) {
+          btnBannerEnableSiteText.textContent = t(currentUiLocale, 'btn_enable_site_format', { origin: branchInfo.origin });
+        }
+      }
     }
   }
 
@@ -3495,229 +3228,71 @@ if (typeof document !== 'undefined') {
   }
 
   function renderAutoSites() {
-    if (!autoSitesList) return;
-    autoSitesList.innerHTML = '';
+    renderAutoSitesList({
+      container: autoSitesList,
+      autoTranslateSites,
+      currentUiLocale,
+      SVG_ICONS,
+      SOURCE_LANGS,
+      TARGET_LANGS,
+      getLanguageLabel,
+      populateSelect,
+      primaryFavorites,
+      t,
+      refreshSiteDots,
+      callbacks: {
+        onEnable: async (site, enableBtn) => {
+          hideAutoSiteError();
+          enableBtn.disabled = true;
+          const res = await enableSiteForOrigin(site.origin);
+          enableBtn.disabled = false;
+          if (!res.ok) {
+            showAutoSiteError(res.reason === 'permission'
+              ? t(currentUiLocale, 'err_perm_site_needed', { origin: site.origin })
+              : t(currentUiLocale, 'err_enable_site_failed', { origin: site.origin, error: (res.error && res.error.message) || t(currentUiLocale, 'err_cannot_save') }));
+          }
+          if (site.origin === currentConsent.siteOrigin) {
+            await loadConsent();
+          }
+          refreshSiteDots();
+        },
+        onModeChange: () => markDirty(),
+        onAutoStartChange: () => {
+          markDirty();
+          refreshSiteDots();
+        },
+        onDelete: async (site, deleteBtn) => {
+          hideAutoSiteError();
+          if (!settingsLoaded) {
+            showAutoSiteError(getSettingsNotLoadedMsg());
+            return;
+          }
+          const updatedList = autoTranslateSites.filter((s) => (s.origin || s) !== site.origin);
+          deleteBtn.disabled = true;
 
-    if (!autoTranslateSites || autoTranslateSites.length === 0) {
-      const emptyEl = document.createElement('div');
-      emptyEl.className = 'auto-sites-empty';
-      emptyEl.textContent = t(currentUiLocale, 'auto_site_empty');
-      autoSitesList.appendChild(emptyEl);
-      return;
-    }
+          const saveResp = await new Promise((resolve) => {
+            chrome.runtime.sendMessage({
+              action: 'SAVE_SETTINGS',
+              settings: { autoTranslateSites: updatedList }
+            }, resolve);
+          });
 
-    autoTranslateSites.forEach((siteObj, idx) => {
-      const site = typeof siteObj === 'string'
-        ? { origin: siteObj, mode: 'inherit', autoStart: true, sourceLanguage: null, targetLanguage: null }
-        : siteObj;
+          if (chrome.runtime.lastError || !saveResp || saveResp.error) {
+            const err = saveResp?.error || chrome.runtime.lastError;
+            showAutoSiteError(t(currentUiLocale, 'err_delete_site_failed', { error: err?.message || t(currentUiLocale, 'err_cannot_save') }));
+            deleteBtn.disabled = false;
+            return;
+          }
 
-      const card = document.createElement('div');
-      card.className = 'auto-site-card';
-      card.setAttribute('role', 'listitem');
-      card.dataset.origin = site.origin;
-
-      // Row 1: Status dot + origin + controls (enable, mode, autostart, delete)
-      const mainRow = document.createElement('div');
-      mainRow.className = 'auto-site-row-main';
-
-      const statusDot = document.createElement('span');
-      statusDot.className = 'site-dot';
-      statusDot.dataset.state = 'off';
-      statusDot.title = t(currentUiLocale, 'site_checking_perm');
-      statusDot.setAttribute('aria-hidden', 'true');
-
-      const originSpan = document.createElement('span');
-      originSpan.className = 'chip-origin';
-      originSpan.title = site.origin;
-      originSpan.textContent = site.origin;
-
-      const controlsDiv = document.createElement('div');
-      controlsDiv.className = 'auto-site-controls';
-
-      // Enable button: grants host permission + enables site consent in one
-      // gesture (required for auto-translate gate: list alone is not enough)
-      const enableBtn = document.createElement('button');
-      enableBtn.type = 'button';
-      enableBtn.className = 'btn-icon btn-sm btn-site-enable';
-      enableBtn.id = `btn-enable-site-${idx}`;
-      enableBtn.title = t(currentUiLocale, 'site_btn_enable', { origin: site.origin });
-      enableBtn.setAttribute('aria-label', t(currentUiLocale, 'site_btn_enable', { origin: site.origin }));
-      enableBtn.innerHTML = SVG_ICONS.power;
-      enableBtn.addEventListener('click', async () => {
-        hideAutoSiteError();
-        enableBtn.disabled = true;
-        const res = await enableSiteForOrigin(site.origin);
-        enableBtn.disabled = false;
-        if (!res.ok) {
-          showAutoSiteError(res.reason === 'permission'
-            ? t(currentUiLocale, 'err_perm_site_needed', { origin: site.origin })
-            : t(currentUiLocale, 'err_enable_site_failed', { origin: site.origin, error: (res.error && res.error.message) || t(currentUiLocale, 'err_cannot_save') }));
-        }
-        if (site.origin === currentConsent.siteOrigin) {
-          await loadConsent();
-        }
-        refreshSiteDots();
-      });
-
-      // Mini Mode Select
-      const modeSelect = document.createElement('select');
-      modeSelect.className = 'select-mini auto-site-mode';
-      modeSelect.id = `select-site-mode-${idx}`;
-      modeSelect.setAttribute('aria-label', t(currentUiLocale, 'site_mode_aria', { origin: site.origin }));
-      modeSelect.title = t(currentUiLocale, 'site_mode_title');
-      modeSelect.innerHTML = `
-        <option value="inherit">${t(currentUiLocale, 'auto_site_inherit')}</option>
-        <option value="scroll-follow">${t(currentUiLocale, 'mode_scroll')}</option>
-        <option value="full">${t(currentUiLocale, 'mode_full')}</option>
-      `;
-      modeSelect.value = site.mode || 'inherit';
-      modeSelect.addEventListener('change', () => {
-        site.mode = modeSelect.value;
-        markDirty();
-      });
-
-      // AutoStart Toggle
-      const toggleLabel = document.createElement('label');
-      toggleLabel.className = 'mini-toggle';
-      toggleLabel.title = t(currentUiLocale, 'site_autostart_title');
-      toggleLabel.setAttribute('aria-label', t(currentUiLocale, 'site_autostart_aria', { origin: site.origin }));
-
-      const toggleInput = document.createElement('input');
-      toggleInput.type = 'checkbox';
-      toggleInput.id = `toggle-site-autostart-${idx}`;
-      toggleInput.checked = site.autoStart !== false;
-      toggleInput.addEventListener('change', () => {
-        site.autoStart = toggleInput.checked;
-        markDirty();
-        refreshSiteDots();
-      });
-
-      const toggleSlider = document.createElement('span');
-      toggleSlider.className = 'mini-toggle-slider';
-      toggleLabel.appendChild(toggleInput);
-      toggleLabel.appendChild(toggleSlider);
-
-      // Delete Button
-      const deleteBtn = document.createElement('button');
-      deleteBtn.type = 'button';
-      deleteBtn.className = 'btn-site-delete';
-      deleteBtn.id = `btn-delete-site-${idx}`;
-      deleteBtn.title = t(currentUiLocale, 'site_delete_title', { origin: site.origin });
-      deleteBtn.setAttribute('aria-label', t(currentUiLocale, 'site_delete_aria', { origin: site.origin }));
-      deleteBtn.innerHTML = SVG_ICONS.trash;
-
-      deleteBtn.addEventListener('click', async () => {
-        hideAutoSiteError();
-        if (!settingsLoaded) {
-          showAutoSiteError(getSettingsNotLoadedMsg());
-          return;
-        }
-        const updatedList = autoTranslateSites.filter((s) => (s.origin || s) !== site.origin);
-        deleteBtn.disabled = true;
-
-        const saveResp = await new Promise((resolve) => {
-          chrome.runtime.sendMessage({
-            action: 'SAVE_SETTINGS',
-            settings: { autoTranslateSites: updatedList }
-          }, resolve);
-        });
-
-        if (chrome.runtime.lastError || !saveResp || saveResp.error) {
-          const err = saveResp?.error || chrome.runtime.lastError;
-          showAutoSiteError(t(currentUiLocale, 'err_delete_site_failed', { error: err?.message || t(currentUiLocale, 'err_cannot_save') }));
-          deleteBtn.disabled = false;
-          return;
-        }
-
-        autoTranslateSites = updatedList;
-        savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
-        renderAutoSites();
-      });
-
-      controlsDiv.appendChild(modeSelect);
-      controlsDiv.appendChild(toggleLabel);
-      controlsDiv.appendChild(enableBtn);
-      controlsDiv.appendChild(deleteBtn);
-
-      mainRow.appendChild(statusDot);
-      mainRow.appendChild(originSpan);
-      mainRow.appendChild(controlsDiv);
-
-      // Row 2: Per-site language override
-      const subRow = document.createElement('div');
-      subRow.className = 'auto-site-row-sub';
-
-      const langIcon = document.createElement('span');
-      langIcon.className = 'field-icon field-icon-xs';
-      langIcon.title = t(currentUiLocale, 'site_lang_icon_title');
-      langIcon.setAttribute('aria-hidden', 'true');
-      langIcon.innerHTML = '<svg class="icon icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7M9 3v2c0 4.418 -2.239 8 -5 8"/><path d="M5 9c0 2.144 2.952 3.908 6.7 4"/><path d="M12 20l4 -9l4 9"/><path d="M19.1 18h-6.2"/></svg>';
-
-      const srcSelect = document.createElement('select');
-      srcSelect.className = 'select-mini auto-site-lang-src';
-      srcSelect.id = `select-site-src-${idx}`;
-      srcSelect.setAttribute('aria-label', t(currentUiLocale, 'site_src_aria', { origin: site.origin }));
-      const inheritText = t(currentUiLocale, 'auto_site_inherit');
-      srcSelect.innerHTML = `<option value="">${inheritText}</option>` +
-        SOURCE_LANGS.map(l => `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`).join('');
-      srcSelect.value = site.sourceLanguage || '';
-      srcSelect.addEventListener('change', () => {
-        site.sourceLanguage = srcSelect.value || null;
-        markDirty();
-      });
-
-      const arrowSpan = document.createElement('span');
-      arrowSpan.textContent = '→';
-
-      const tgtSelect = document.createElement('select');
-      tgtSelect.className = 'select-mini auto-site-lang-tgt';
-      tgtSelect.id = `select-site-tgt-${idx}`;
-      tgtSelect.setAttribute('aria-label', t(currentUiLocale, 'site_tgt_aria', { origin: site.origin }));
-      tgtSelect.title = t(currentUiLocale, 'tgt_lang_label');
-      tgtSelect.innerHTML = `<option value="">${inheritText}</option>` +
-        TARGET_LANGS.map(l => `<option value="${l.code}">${getLanguageLabel(l, currentUiLocale)}</option>`).join('');
-      tgtSelect.value = site.targetLanguage || '';
-      tgtSelect.addEventListener('change', () => {
-        site.targetLanguage = tgtSelect.value || null;
-        markDirty();
-      });
-
-      const modelSelect = document.createElement('select');
-      modelSelect.className = 'select-mini auto-site-model';
-      modelSelect.id = `select-site-model-${idx}`;
-      modelSelect.setAttribute('aria-label', t(currentUiLocale, 'site_model_aria', { origin: site.origin }));
-      modelSelect.title = t(currentUiLocale, 'site_model_title');
-      populateSelect(modelSelect, site.model || '', {
-        allowEmpty: true,
-        emptyLabel: t(currentUiLocale, 'site_model_inherit'),
-        favs: primaryFavorites()
-      });
-      // Unknown stored model (renamed upstream): keep visible, don't silently drop
-      if (site.model && modelSelect.value !== site.model) {
-        const opt = document.createElement('option');
-        opt.value = site.model;
-        opt.textContent = site.model;
-        modelSelect.appendChild(opt);
-        modelSelect.value = site.model;
+          autoTranslateSites = updatedList;
+          savedSettings.autoTranslateSites = JSON.parse(JSON.stringify(updatedList));
+          renderAutoSites();
+        },
+        onSourceLangChange: () => markDirty(),
+        onTargetLangChange: () => markDirty(),
+        onModelChange: () => markDirty()
       }
-      modelSelect.addEventListener('change', () => {
-        site.model = modelSelect.value || null;
-        markDirty();
-      });
-
-      subRow.appendChild(langIcon);
-      subRow.appendChild(srcSelect);
-      subRow.appendChild(arrowSpan);
-      subRow.appendChild(tgtSelect);
-      subRow.appendChild(modelSelect);
-
-      card.appendChild(mainRow);
-      card.appendChild(subRow);
-
-      autoSitesList.appendChild(card);
     });
-
-    refreshSiteDots();
   }
 
   // Tab 2: no save button — every row control autosaves via markDirty();

@@ -1,4 +1,12 @@
 /* ==========================================================================
+   WebMCP Translator — Taste-Skill Frontend Theme (Modular Bundle)
+   NOTE: This file is automatically compiled from extension/src/popup/styles/
+   Edit individual style modules in extension/src/popup/styles/ for maintenance.
+   ========================================================================== */
+
+
+/* --- Module: tokens.css --- */
+/* ==========================================================================
    WebMCP Translator — Taste-Skill Frontend Theme
    Design Read: Dark-Tech Minimal / Precision Devtool (Linear & Raycast Vibe)
    Dials: DESIGN_VARIANCE: 5 | MOTION_INTENSITY: 3 | VISUAL_DENSITY: 5
@@ -89,6 +97,9 @@ html[data-fontscale="lg"] {
 }
 
 /* Base Reset & Typography */
+
+
+/* --- Module: layout.css --- */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -630,6 +641,8 @@ body.modal-open .container {
   justify-content: space-between;
 }
 
+
+/* --- Module: controls.css --- */
 /* ==========================================================================
    Form Controls & Inputs
    ========================================================================== */
@@ -1020,6 +1033,8 @@ select optgroup {
   border-color: rgba(59, 130, 246, 0.4);
 }
 
+
+/* --- Module: features.css --- */
 /* ==========================================================================
    Auto-Translate Sites Chips
    ========================================================================== */
@@ -1506,6 +1521,8 @@ select optgroup {
   }
 }
 
+
+/* --- Module: subtabs.css --- */
 /* ==========================================================================
    UX-G: autosave indicator, icon-first connect fields, auto-site status
    ========================================================================== */
@@ -1833,6 +1850,8 @@ select optgroup {
   line-height: 1.4;
 }
 
+
+/* --- Module: modal.css --- */
 /* ==========================================================================
    WI-25 F2: Light Mode Comprehensive Overrides (Subtabs, Favorites, Config, Log)
    ========================================================================== */
@@ -2485,6 +2504,8 @@ select optgroup {
   color: #475569;
 }
 
+
+/* --- Module: mascot.css --- */
 /* ==========================================================================
    WI-52: Mascot Selector Grid & Size Reset Button
    ========================================================================== */
@@ -2623,5 +2644,4 @@ select optgroup {
   color: #0f172a;
   background: #f1f5f9;
 }
-
 

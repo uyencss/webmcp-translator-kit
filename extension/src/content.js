@@ -1,5 +1,6 @@
-// WebMCP Translator Kit — Content Script (DOM Scanner, Scroll-Follow Engine, Floating Widget)
-// Top Frame only, ISOLATED World
+// WebMCP Translator Kit — Content Script Module: Constants & Scope Bootstrap
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
 
 (function () {
   if (window !== window.top) return;
@@ -159,6 +160,10 @@
     fallbackIndex: 0,
     elapsedMs: 0
   };
+
+// WebMCP Translator Kit — Content Script Module: DOM Walker & Visibility Filters
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
 
   function isHidden(el) {
     let cur = el;
@@ -341,6 +346,10 @@
   }
 
   // Restore DOM nodes: epoch++ + CANCEL_PENDING + stop active sessions + clear pending
+// WebMCP Translator Kit — Content Script Module: Chunker & Text Batches
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
+
   function restore() {
     userRestored = true;
     if (autoStartTimer) {
@@ -448,6 +457,10 @@
   }
 
   // Send chunk wrapper (stale-context safe: resolves ABORTED, never throws)
+// WebMCP Translator Kit — Content Script Module: Translation Dispatch Engine
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
+
   function sendChunk(items, settings = {}, chunkEpoch = epoch, runConfig = null) {
     if (__wmtHalted || !__wmtValidContext()) {
       __wmtHaltStale();
@@ -1291,6 +1304,10 @@
     runConfig: null,
     fallbackConsumedIds: new Set()
   };
+
+// WebMCP Translator Kit — Content Script Module: Scroll-Follow Observer
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
 
   function scheduleSweepYield(fn) {
     if (typeof setTimeout === 'function') {
@@ -2553,6 +2570,10 @@
   // ============================================================================
   // Floating Widget (Shadow DOM in content.js)
   // ============================================================================
+// WebMCP Translator Kit — Content Script Module: Floating Mascot Widget DOM
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
+
   function initFloatingWidget() {
     // Only inject on HTTP(S) pages
     if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
@@ -3873,6 +3894,10 @@
 
     // Listen for push notifications (re-evaluate auto-start when consent /
     // permission arrives after load; queryState bounds retries internally)
+// WebMCP Translator Kit — Content Script Module: Message Bus & Event Listeners
+// Architecture Contract: Compiled into extension/src/content.js via scripts/sync-content.mjs
+// Content scripts run in an isolated world; modules share file-level closure scope.
+
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.action === 'WIDGET_STATE_CHANGED') {
         // Presentation-only pushes (mascot, size) apply visually without
