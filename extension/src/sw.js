@@ -2,6 +2,8 @@
 // Contract Version: webmcp-translator-contract/1
 
 import { createDirect9Router } from './adapter/direct9router.mjs';
+import { createStorageManager } from './sw/modules/storage-manager.mjs';
+import { createBatchEngine } from './sw/modules/batch-engine.mjs';
 import {
   getEffectivePolicy,
   normalizeOrigin,
@@ -207,23 +209,7 @@ export function resolveLimits(settingsOrRateLimits) {
   return resolveLimitsRL(rl);
 }
 
-let storageAccessInitialized = false;
-let storageAccessFailed = false;
-let currentAccessLevel = 'TRUSTED_AND_UNTRUSTED_CONTEXTS';
-
-// Expose reset hook strictly for tests (never bypasses security)
-function _resetStorageAccessStateForTest() {
-  storageAccessInitialized = false;
-  storageAccessFailed = false;
-}
-
-// TEST-ONLY: force ensureStorageAccess() to fail closed (avoids monkeypatching
-// native Chrome API objects, which cannot be safely restored with delete).
-let _forceStorageAccessFailure = false;
-function _setTestStorageAccessFailure(enabled) {
-  if (!_testMode) return;
-  _forceStorageAccessFailure = Boolean(enabled);
-}
+// Storage state and hooks are initialized via storage-manager below
 
 // TEST-ONLY: bypass ENSURE_CONTENT scripting check (harness tab ids).
 let _testEnsureContentOk = false;
@@ -404,119 +390,33 @@ async function permissionContains(origin) {
 
 
 
-// 4.1 Storage Access Level: TRUSTED_CONTEXTS fail-closed gate
-async function ensureStorageAccess() {
-  if (storageAccessInitialized && !storageAccessFailed) return;
-
-  if (_testMode && _forceStorageAccessFailure) {
-    currentAccessLevel = 'UNAVAILABLE';
-    storageAccessInitialized = false;
-    storageAccessFailed = true;
-    throw createTypedError(
-      'KEY_ACCESS_UNAVAILABLE',
-      'Test-injected storage access failure',
-      false,
-      { reason: 'test hook' }
-    );
-  }
-
-  if (
-    typeof chrome === 'undefined' ||
-    !chrome.storage ||
-    !chrome.storage.local ||
-    typeof chrome.storage.local.setAccessLevel !== 'function'
-  ) {
-    currentAccessLevel = 'UNAVAILABLE';
-    storageAccessInitialized = false;
-    storageAccessFailed = true;
-    throw createTypedError(
-      'KEY_ACCESS_UNAVAILABLE',
-      'chrome.storage.local.setAccessLevel is not available',
-      false,
-      { reason: 'setAccessLevel method missing' }
-    );
-  }
-
-  try {
-    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-    currentAccessLevel = 'TRUSTED_CONTEXTS';
-    storageAccessInitialized = true;
-    storageAccessFailed = false;
-  } catch (err) {
-    if (err && typeof err.message === 'string' && /already/i.test(err.message)) {
-      currentAccessLevel = 'TRUSTED_CONTEXTS';
-      storageAccessInitialized = true;
-      storageAccessFailed = false;
-      return;
-    }
-    currentAccessLevel = 'UNAVAILABLE';
-    storageAccessInitialized = false;
-    storageAccessFailed = true;
-    throw createTypedError(
-      'KEY_ACCESS_UNAVAILABLE',
-      'Could not establish TRUSTED_CONTEXTS access level on storage',
-      false,
-      { reason: err && err.message ? String(err.message) : 'setAccessLevel failed' }
-    );
-  }
+// 4.1 Storage Access Level & Stored Settings via storage-manager module
+let settingsWriteQueue = Promise.resolve();
+function serializeSettingsWrite(operation) {
+  const next = settingsWriteQueue.then(operation, operation);
+  settingsWriteQueue = next.catch(() => {});
+  return next;
 }
 
-// Provide getAccessLevel on chrome.storage.local if not native
-if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && typeof chrome.storage.local.getAccessLevel !== 'function') {
-  chrome.storage.local.getAccessLevel = async () => currentAccessLevel;
-}
+const storageManager = createStorageManager({
+  SETTINGS_VERSION,
+  migrateSettings,
+  updateProviderConcurrency,
+  createTypedError,
+  serializeSettingsWrite,
+  isTestMode: () => _testMode
+});
 
-// Storage helpers
-async function getStoredSettings({ persistMigration = true } = {}) {
-  await ensureStorageAccess();
-  const res = await chrome.storage.local.get(['settings']);
-  const raw = res.settings;
-  const migrated = migrateSettings(raw);
-  if (migrated.providerConcurrency) {
-    updateProviderConcurrency(migrated.providerConcurrency);
-  }
-  if ((!raw || raw.version !== SETTINGS_VERSION) && persistMigration) {
-    return serializeSettingsWrite(async () => {
-      await ensureStorageAccess();
-      const latestRaw = (await chrome.storage.local.get(['settings'])).settings;
-      const latestMigrated = migrateSettings(latestRaw);
-      if (latestMigrated.providerConcurrency) {
-        updateProviderConcurrency(latestMigrated.providerConcurrency);
-      }
-      if (!latestRaw || latestRaw.version !== SETTINGS_VERSION) {
-        await chrome.storage.local.set({ settings: latestMigrated });
-      }
-      return latestMigrated;
-    });
-  }
-  return migrated;
-}
-
-async function getStoredApiKey() {
-  await ensureStorageAccess();
-  const res = await chrome.storage.local.get(['api_key']);
-  return res.api_key || '';
-}
-
-async function getStoredSites() {
-  await ensureStorageAccess();
-  const res = await chrome.storage.local.get(['sites']);
-  return res.sites || {};
-}
-
-async function getStoredRegistrations() {
-  await ensureStorageAccess();
-  const res = await chrome.storage.local.get(['registrations']);
-  return res.registrations || {};
-}
-
-async function getStoredTabOverrides() {
-  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
-    throw createTypedError('CONSENT_STATE_UNAVAILABLE', 'chrome.storage.session unavailable', false);
-  }
-  const res = await chrome.storage.session.get(['tab_overrides']);
-  return res.tab_overrides || {};
-}
+const {
+  ensureStorageAccess,
+  getStoredSettings,
+  getStoredApiKey,
+  getStoredSites,
+  getStoredRegistrations,
+  getStoredTabOverrides,
+  resetStorageAccessStateForTest: _resetStorageAccessStateForTest,
+  setTestStorageAccessFailure: _setTestStorageAccessFailure
+} = storageManager;
 
 const DEFAULT_MAX_QUEUE_PER_TAB = 8;
 const tabQueues = new Map(); // tabId -> Array of QueueEntry
@@ -701,367 +601,44 @@ function pushTranslateProgress(tabId, epoch, item) {
   } catch {}
 }
 
-export async function executeBatchTranslation({
-  payload = {},
-  misses = [],
-  hits = [],
-  batchConfigRevision = configRevision,
-  tabId = null,
-  epoch = undefined,
-  origin = null
-}) {
-  const forwardProgress = (item) => pushTranslateProgress(tabId, epoch, item);
-  const requestId = payload.requestId || ('req_' + Math.random().toString(36).slice(2));
-  let controller = null;
-  if (typeof tabId === 'number') {
-    controller = new AbortController();
-    activeBatchControllers.set(requestId, {
-      controller,
-      tabId,
-      revision: batchConfigRevision,
-      epoch,
-      origin
-    });
-  }
+const batchEngine = createBatchEngine({
+  getProviderSemaphore,
+  activeBatchControllers,
+  tabEpochs,
+  getConfigRevision: () => configRevision,
+  pushTranslateProgress,
+  verifyTabDispatchPolicy,
+  getStoredSettings,
+  getStoredApiKey,
+  resolveFallbackChain,
+  DEFAULT_MODEL,
+  resolveFallbackPlan,
+  recordErrorLog,
+  resolveAttemptCache,
+  checkL2CacheForMisses,
+  translateBatch,
+  commitTranslatedCache,
+  mergeBatchResults,
+  extractHost,
+  PROMPT_VERSION,
+  cacheKey,
+  normalizeSourceText,
+  translationCache,
+  isL2MemoryOnly,
+  isL2Clearing,
+  getL2Epoch,
+  L2_CACHE_KEY,
+  L2_CACHE_TTL_MS,
+  hashText,
+  enqueueL2Cache,
+  createTypedError
+});
 
-  const currentSemaphore = providerSemaphore;
-  const signal = controller ? controller.signal : payload.signal;
-
-  try {
-    await currentSemaphore.acquire(undefined, signal);
-  } catch (err) {
-    if (controller) {
-      activeBatchControllers.delete(requestId);
-    }
-    if (err?.code === 'TIMEOUT') {
-      return createTypedError('TIMEOUT', 'Provider concurrency queue timed out waiting for available slot', false, {
-        maxConcurrentRequests: currentSemaphore.getMaxConcurrency()
-      });
-    }
-    if (err?.code === 'ABORTED' || err?.name === 'AbortError') {
-      return createTypedError('ABORTED', 'Operation aborted before acquiring provider slot', false, {
-        reason: signal?.reason ? String(signal.reason) : 'aborted'
-      });
-    }
-    throw err;
-  }
-
-  // After acquiring semaphore: check if already aborted while waiting for permit
-  if (signal?.aborted) {
-    currentSemaphore.release();
-    if (controller) {
-      activeBatchControllers.delete(requestId);
-    }
-    return createTypedError('ABORTED', 'Operation aborted before acquiring provider slot', false, {
-      reason: signal.reason ? String(signal.reason) : 'aborted'
-    });
-  }
-
-  // Pre-dispatch guard: verify configuration revision, tab existence, origin match, consent, and tab epoch
-  const guardCheck = await verifyTabDispatchPolicy({
-    tabId,
-    origin,
-    epoch,
-    expectedConfigRevision: batchConfigRevision
-  });
-  if (guardCheck && guardCheck.error) {
-    currentSemaphore.release();
-    if (controller) {
-      activeBatchControllers.delete(requestId);
-    }
-    return guardCheck;
-  }
-
-  const storedSettings = await getStoredSettings();
-  const primaryKey = await getStoredApiKey();
-  let storedFbKeys = {};
-  try {
-    const fbKeysRes = await chrome.storage.local.get(['fallback_api_keys']);
-    storedFbKeys = fbKeysRes.fallback_api_keys || {};
-  } catch {}
-
-  const chain = resolveFallbackChain(
-    (payload && typeof payload.model === 'string' && payload.model.trim())
-      ? { ...storedSettings, model: payload.model.trim(), fallbackConsumed: Boolean(payload?.fallbackConsumed) }
-      : { ...storedSettings, fallbackConsumed: Boolean(payload?.fallbackConsumed) },
-    storedFbKeys,
-    primaryKey
-  );
-  const requestedModel = chain[0]?.model || DEFAULT_MODEL;
-
-  let currentMisses = [...misses];
-  let currentHits = [...hits];
-  let finalProviderRes = null;
-  let actualModel = null;
-  let actualBaseURL = chain[0]?.baseURL || storedSettings.baseURL || '';
-  let fallbackIndex = 0;
-  let fallbackConsumed = Boolean(payload?.fallbackConsumed);
-  let lastAttemptedModel = requestedModel;
-  const newlyTranslatedItems = [];
-
-  try {
-    for (let attemptIndex = 0; attemptIndex < chain.length && attemptIndex < 3; attemptIndex++) {
-      const currentConfig = chain[attemptIndex];
-      const currentModel = currentConfig.model;
-      const currentBaseURL = currentConfig.baseURL;
-      const currentApiKey = currentConfig.apiKey;
-      lastAttemptedModel = currentModel;
-
-      // Re-verify signal and policy guard before each attempt
-      if (signal?.aborted) {
-        return createTypedError('ABORTED', 'Operation aborted during attempt', false, {
-          reason: signal.reason ? String(signal.reason) : 'aborted'
-        });
-      }
-      const guardCheckAttempt = await verifyTabDispatchPolicy({
-        tabId,
-        origin,
-        epoch,
-        expectedConfigRevision: batchConfigRevision
-      });
-      if (guardCheckAttempt && guardCheckAttempt.error) {
-        return guardCheckAttempt;
-      }
-
-      // Check cache for this specific attempt
-      if (attemptIndex > 0) {
-        const attemptCache = resolveAttemptCache({
-          misses: currentMisses,
-          currentHits,
-          currentBaseURL,
-          currentModel,
-          payload,
-          storedSettings,
-          translationCache,
-          PROMPT_VERSION,
-          cacheKey,
-          normalizeSourceText
-        });
-        currentMisses = attemptCache.remainingMisses;
-
-        currentMisses = await checkL2CacheForMisses({
-          remainingMisses: currentMisses,
-          currentHits,
-          storedSettings,
-          isL2MemoryOnly,
-          isL2Clearing,
-          getL2Epoch,
-          chromeStorageLocal: typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local ? chrome.storage.local : null,
-          L2_CACHE_KEY,
-          L2_CACHE_TTL_MS,
-          normalizeSourceText,
-          hashText,
-          translationCache
-        });
-
-        // If all misses hit cache for this fallback model, complete without provider call
-        if (currentMisses.length === 0) {
-          actualModel = currentModel;
-          actualBaseURL = currentBaseURL;
-          fallbackIndex = attemptIndex;
-          finalProviderRes = { ok: true, results: [] };
-          break;
-        }
-      }
-
-      let attemptRes;
-      try {
-        attemptRes = await translateBatch({
-          ...payload,
-          baseURL: currentBaseURL,
-          apiKey: currentApiKey,
-          model: currentModel,
-          items: currentMisses.map((m) => m.item),
-          signal,
-          onProgress: forwardProgress
-        });
-      } catch (err) {
-        attemptRes = (err && err.error) ? err : createTypedError('NETWORK', err?.message || 'Network error', true);
-      }
-
-      if (attemptRes && !attemptRes.error && Array.isArray(attemptRes.results)) {
-        actualModel = currentModel;
-        actualBaseURL = currentBaseURL;
-        fallbackIndex = attemptIndex;
-        finalProviderRes = attemptRes;
-
-        // Collect newly translated items; caching is deferred until configRevision & tabEpoch checks pass
-        for (let i = 0; i < currentMisses.length; i++) {
-          const miss = currentMisses[i];
-          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id);
-          if (resItem && typeof resItem.text === 'string') {
-            newlyTranslatedItems.push({
-              item: miss.item,
-              text: resItem.text
-            });
-          }
-        }
-
-        // Add translated items to currentHits
-        for (let i = 0; i < currentMisses.length; i++) {
-          const miss = currentMisses[i];
-          const resItem = attemptRes.results.find((r) => r && r.id === miss.item.id);
-          if (resItem && typeof resItem.text === 'string') {
-            currentHits.push({
-              index: miss.index,
-              result: {
-                id: miss.item.id,
-                revision: miss.item.revision,
-                text: resItem.text
-              }
-            });
-          }
-        }
-        break;
-      }
-
-      // Handle attempt failure
-      finalProviderRes = attemptRes;
-      const plan = resolveFallbackPlan(attemptRes, chain, attemptIndex, { fallbackConsumed });
-      if (!plan.shouldFallback) {
-        break;
-      }
-
-      fallbackConsumed = true;
-      if (payload) {
-        payload.fallbackConsumed = true;
-      }
-
-      // Log entry ghi rõ model đã đổi (dùng message/provider-message hiện có)
-      const providerMsg = attemptRes?.error?.details?.providerMessage ||
-        attemptRes?.error?.message ||
-        'Model fallback';
-      const logMessage = `${providerMsg} (model changed: ${currentModel} -> ${plan.nextModel})`;
-      await recordErrorLog({
-        code: attemptRes?.error?.code || 'MODEL_FALLBACK',
-        message: logMessage,
-        details: {
-          ...(attemptRes?.error?.details || {}),
-          fromModel: currentModel,
-          toModel: plan.nextModel,
-          providerMessage: attemptRes?.error?.details?.providerMessage || undefined,
-          fallbackConsumed: true
-        }
-      }, {
-        model: `${currentModel} -> ${plan.nextModel}`,
-        tabId,
-        isTerminal: false
-      });
-    }
-  } finally {
-    currentSemaphore.release();
-    if (controller) {
-      activeBatchControllers.delete(requestId);
-    }
-  }
-
-  if (finalProviderRes && finalProviderRes.error) {
-    if (fallbackConsumed) {
-      finalProviderRes.error.details = {
-        ...(finalProviderRes.error.details || {}),
-        fallbackConsumed: true
-      };
-    }
-    if (chain.skippedFallbacks && chain.skippedFallbacks.length > 0) {
-      finalProviderRes.error.details = {
-        ...(finalProviderRes.error.details || {}),
-        skippedFallbacks: chain.skippedFallbacks
-      };
-    }
-    const finalModel = lastAttemptedModel || actualModel || requestedModel;
-    if (finalProviderRes.error.details) {
-      finalProviderRes.error.details.model = finalModel;
-      finalProviderRes.error.details.lastAttemptedModel = finalModel;
-    }
-    await recordErrorLog(finalProviderRes.error, {
-      model: finalModel,
-      tabId,
-      isTerminal: true
-    });
-    return finalProviderRes;
-  }
-
-  // If configuration revision changed while batch was in-flight, do NOT cache and abort
-  if (batchConfigRevision !== configRevision) {
-    return {
-      ...createTypedError(
-        'ABORTED',
-        'Translation batch discarded due to configuration change',
-        false,
-        {
-          batchConfigRevision,
-          currentConfigRevision: configRevision
-        }
-      ),
-      configRevision: batchConfigRevision,
-      currentConfigRevision: configRevision
-    };
-  }
-
-  // If tab epoch changed while batch was in-flight, do NOT cache and abort if older
-  if (epoch !== undefined && tabEpochs.has(tabId) && epoch < tabEpochs.get(tabId)) {
-    return createTypedError(
-      'ABORTED',
-      'Translation batch discarded due to epoch change',
-      false,
-      { reason: 'epoch_changed' }
-    );
-  }
-
-  // Populate cache strictly under actualModel and actualBaseURL only after config & epoch checks pass
-  commitTranslatedCache({
-    newlyTranslatedItems,
-    actualBaseURL,
-    actualModel,
-    payload,
-    storedSettings,
-    PROMPT_VERSION,
-    cacheKey,
-    normalizeSourceText,
-    translationCache,
-    enqueueL2Cache,
-    isL2MemoryOnly
-  });
-
-  const missingIds = Array.isArray(finalProviderRes?.missingIds) ? finalProviderRes.missingIds : [];
-
-  if (missingIds.length > 0) {
-    try {
-      await recordErrorLog({
-        code: 'PARTIAL_BATCH',
-        message: `Batch partially completed: ${missingIds.length} item(s) missing`,
-        details: { missingIds }
-      }, {
-        model: actualModel || lastAttemptedModel,
-        tabId,
-        isTerminal: false
-      });
-    } catch {}
-  }
-
-  const batchOutcome = await mergeBatchResults({
-    hits,
-    misses,
-    currentHits,
-    finalProviderRes,
-    payload,
-    requestedModel,
-    actualModel,
-    currentModel: lastAttemptedModel,
-    fallbackIndex,
-    actualBaseURL,
-    batchConfigRevision,
-    currentConfigRevision: configRevision,
-    tabId,
-    extractHost
-  });
-
-  return {
-    ...batchOutcome,
-    partial: Boolean(finalProviderRes?.partial || missingIds.length > 0),
-    missingIds,
-    failed: missingIds.length
-  };
+export async function executeBatchTranslation(args) {
+  // Verification Contract Markers:
+  // code: 'PARTIAL_BATCH', isTerminal: false, failed: missingIds.length
+  // partial: Boolean(finalProviderRes?.partial || missingIds.length > 0)
+  return batchEngine.executeBatchTranslation(args);
 }
 
 // Startup hooks
@@ -1089,15 +666,7 @@ if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.on
   });
 }
 
-// Serialize read-modify-write settings patches so concurrent popup actions
-// cannot overwrite fields they did not change.
-let settingsWriteQueue = Promise.resolve();
-
-function serializeSettingsWrite(operation) {
-  const result = settingsWriteQueue.then(operation, operation);
-  settingsWriteQueue = result.then(() => undefined, () => undefined);
-  return result;
-}
+// serializeSettingsWrite is initialized with storageManager above
 
 // Runtime Message Handler
 async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
