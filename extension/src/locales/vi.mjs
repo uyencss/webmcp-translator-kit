@@ -164,6 +164,7 @@ export default Object.freeze({
   "config_version_label": "Phiên bản",
   "widget_title": "WebMCP Translator",
   "widget_close_label": "Đóng panel",
+  "widget_hide_label": "Ẩn biểu tượng nổi",
   "widget_status_label": "Trạng thái:",
   "widget_status_on": "Đang bật",
   "widget_status_off": "Đang tắt",

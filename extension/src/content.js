@@ -80,6 +80,7 @@
   const WIDGET_FALLBACK_LABELS = {
     widget_title: 'WebMCP Translator',
     widget_close_label: 'Đóng panel',
+    widget_hide_label: 'Ẩn biểu tượng nổi',
     widget_status_label: 'Trạng thái:',
     widget_status_on: 'Đang bật',
     widget_status_off: 'Đang tắt',
@@ -2976,11 +2977,82 @@
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
+      .wmt-fab-anchor {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .wmt-fab-hide {
+        position: absolute;
+        top: calc(-3px * var(--wmt-fab-scale, 1));
+        right: calc(-3px * var(--wmt-fab-scale, 1));
+        width: calc(18px * var(--wmt-fab-scale, 1));
+        height: calc(18px * var(--wmt-fab-scale, 1));
+        border-radius: 50%;
+        background: #1e293b;
+        color: #94a3b8;
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        z-index: 20;
+        outline: none;
+        box-sizing: border-box;
+        opacity: 0;
+        pointer-events: none;
+        transform: scale(0.8);
+        transition: opacity 0.2s ease, transform 0.15s ease, background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      .wmt-fab-anchor:hover .wmt-fab-hide,
+      .wmt-fab-hide:focus-visible {
+        opacity: 1;
+        pointer-events: auto;
+        transform: scale(1);
+      }
+      .wmt-fab-hide svg {
+        width: calc(9px * var(--wmt-fab-scale, 1));
+        height: calc(9px * var(--wmt-fab-scale, 1));
+        pointer-events: none;
+      }
+      .wmt-fab-hide:hover {
+        background: #ef4444;
+        color: #ffffff;
+        border-color: #f87171;
+        transform: scale(1.18);
+        box-shadow: 0 3px 8px rgba(239, 68, 68, 0.5);
+      }
+      .wmt-fab-hide:focus-visible {
+        outline: 2px solid #38bdf8;
+        outline-offset: 1px;
+      }
+      .wmt-fab-hide:active {
+        transform: scale(0.92);
+      }
+      :host([data-theme="light"]) .wmt-fab-hide {
+        background: #ffffff;
+        color: #64748b;
+        border: 1.5px solid rgba(0, 0, 0, 0.15);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      }
+      :host([data-theme="light"]) .wmt-fab-hide:hover {
+        background: #ef4444;
+        color: #ffffff;
+        border-color: #dc2626;
+        box-shadow: 0 3px 8px rgba(239, 68, 68, 0.4);
+      }
       .wmt-panel {
         position: absolute;
-        bottom: calc(44px * var(--wmt-fab-scale, 1) + 10px);
+        bottom: calc(100% + 10px);
         right: 0;
         width: 280px;
+        max-width: calc(100vw - 20px);
+        max-height: calc(100vh - 80px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         transform: scale(var(--wmt-fs-scale, 1));
         transform-origin: bottom right;
         background: var(--wmt-panel-bg);
@@ -2993,10 +3065,41 @@
         flex-direction: column;
         gap: 10px;
         animation: wmtFadeIn 0.15s ease-out;
+        box-sizing: border-box;
+      }
+      .wmt-panel.placement-below {
+        bottom: auto;
+        top: calc(100% + 10px);
+        transform-origin: top right;
+      }
+      .wmt-panel.placement-align-left {
+        right: auto;
+        left: 0;
+        transform-origin: bottom left;
+      }
+      .wmt-panel.placement-below.placement-align-left {
+        bottom: auto;
+        top: calc(100% + 10px);
+        right: auto;
+        left: 0;
+        transform-origin: top left;
+      }
+      .wmt-panel::-webkit-scrollbar {
+        width: 4px;
+      }
+      .wmt-panel::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .wmt-panel::-webkit-scrollbar-thumb {
+        background: var(--wmt-border);
+        border-radius: 2px;
+      }
+      .wmt-panel::-webkit-scrollbar-thumb:hover {
+        background: var(--wmt-text-muted);
       }
       @keyframes wmtFadeIn {
-        from { opacity: 0; transform: translateY(6px); }
-        to { opacity: 1; transform: translateY(0); }
+        from { opacity: 0; }
+        to { opacity: 1; }
       }
       .wmt-header {
         display: flex;
@@ -3205,27 +3308,34 @@
 
     const container = document.createElement('div');
     container.innerHTML = `
-      <button class="wmt-btn" id="wmt-fab" aria-label="WebMCP Translator" title="WebMCP Translator" tabindex="0">
-        <div class="wmt-halo" id="wmt-halo" aria-hidden="true">
-          <div class="wmt-halo-ring"></div>
-          <div class="wmt-halo-orbit">
-            <div class="wmt-halo-dot"></div>
+      <div class="wmt-fab-anchor" id="wmt-fab-anchor">
+        <button class="wmt-btn" id="wmt-fab" aria-label="WebMCP Translator" title="WebMCP Translator" tabindex="0">
+          <div class="wmt-halo" id="wmt-halo" aria-hidden="true">
+            <div class="wmt-halo-ring"></div>
+            <div class="wmt-halo-orbit">
+              <div class="wmt-halo-dot"></div>
+            </div>
           </div>
-        </div>
-        <div class="wmt-mascot-zzz" id="wmt-mascot-zzz" aria-hidden="true">
-          <span>z</span><span>z</span><span>Z</span>
-        </div>
-        <img class="wmt-mascot-img" id="wmt-mascot-img" alt="Mascot" style="display: none;" />
-        <svg class="wmt-default-svg" id="wmt-default-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m5 8 6 6"/>
-          <path d="m4 14 6-6 2-3"/>
-          <path d="M2 5h12"/>
-          <path d="M7 2h1"/>
-          <path d="m22 22-5-10-5 10"/>
-          <path d="M14 18h6"/>
-        </svg>
-        <span class="wmt-badge" id="wmt-badge"></span>
-      </button>
+          <div class="wmt-mascot-zzz" id="wmt-mascot-zzz" aria-hidden="true">
+            <span>z</span><span>z</span><span>Z</span>
+          </div>
+          <img class="wmt-mascot-img" id="wmt-mascot-img" alt="Mascot" style="display: none;" />
+          <svg class="wmt-default-svg" id="wmt-default-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m5 8 6 6"/>
+            <path d="m4 14 6-6 2-3"/>
+            <path d="M2 5h12"/>
+            <path d="M7 2h1"/>
+            <path d="m22 22-5-10-5 10"/>
+            <path d="M14 18h6"/>
+          </svg>
+          <span class="wmt-badge" id="wmt-badge"></span>
+        </button>
+        <button class="wmt-fab-hide" id="wmt-fab-hide" type="button" aria-label="Hide floating icon" title="Hide floating icon">
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"/>
+          </svg>
+        </button>
+      </div>
       <div class="wmt-panel" id="wmt-panel" style="display: none;">
         <div class="wmt-header">
           <span class="wmt-title">WebMCP Translator</span>
@@ -3369,6 +3479,7 @@
     updateFabBusy();
 
     const fab = container.querySelector('#wmt-fab');
+    const fabHideBtn = container.querySelector('#wmt-fab-hide');
     const panel = container.querySelector('#wmt-panel');
     const badge = container.querySelector('#wmt-badge');
     const statusTag = container.querySelector('#wmt-status-tag');
@@ -3414,6 +3525,10 @@
 
     function renderWidgetI18n() {
       if (closeBtn) closeBtn.setAttribute('aria-label', wmtT('widget_close_label'));
+      if (fabHideBtn) {
+        fabHideBtn.setAttribute('aria-label', wmtT('widget_hide_label'));
+        fabHideBtn.setAttribute('title', wmtT('widget_hide_label'));
+      }
       if (statusLbl) statusLbl.textContent = wmtT('widget_status_label');
       if (modelLbl) modelLbl.textContent = wmtT('widget_model_label');
       if (modelSelect) modelSelect.setAttribute('aria-label', wmtT('widget_model_label'));
@@ -3449,11 +3564,34 @@
     }
     widgetProgressIntervalId = setInterval(refreshWidgetProgress, 800);
 
+    function updatePanelPosition() {
+      if (!isPanelOpen || !panel || !fab) return;
+      const fabRect = fab.getBoundingClientRect();
+      const fsScale = parseFloat(getComputedStyle(host).getPropertyValue('--wmt-fs-scale')) || 1;
+      const panelWidth = (panel.offsetWidth || 280) * fsScale;
+      const panelHeight = (panel.offsetHeight || 300) * fsScale;
+
+      const spaceAbove = fabRect.top;
+      const spaceBelow = window.innerHeight - fabRect.bottom;
+
+      // Drop down if not enough room above and more room below
+      const placeDown = (spaceAbove < panelHeight + 15) && (spaceBelow >= spaceAbove);
+      panel.classList.toggle('placement-below', placeDown);
+
+      // Align left if placing to the left would overflow the left viewport edge
+      const wouldOverflowLeft = (fabRect.right - panelWidth) < 10;
+      const canFitRight = (window.innerWidth - fabRect.left) >= panelWidth;
+      const alignLeft = wouldOverflowLeft && canFitRight;
+      panel.classList.toggle('placement-align-left', alignLeft);
+    }
+
     function setPanelVisibility(open) {
       isPanelOpen = open;
       panel.style.display = isPanelOpen ? 'flex' : 'none';
       if (isPanelOpen) {
         renderWidgetI18n();
+        updatePanelPosition();
+        requestAnimationFrame(updatePanelPosition);
       }
     }
 
@@ -3580,6 +3718,9 @@
         host.style.top = y + 'px';
         host.style.right = 'auto';
         host.style.bottom = 'auto';
+      }
+      if (isPanelOpen) {
+        updatePanelPosition();
       }
 
       // Warnings
@@ -3759,6 +3900,9 @@
           host.style.top = clampedY + 'px';
           host.style.right = 'auto';
           host.style.bottom = 'auto';
+          if (isPanelOpen) {
+            updatePanelPosition();
+          }
         });
       }
     });
@@ -3779,6 +3923,9 @@
           x: clampedX,
           y: clampedY
         });
+        if (isPanelOpen) {
+          updatePanelPosition();
+        }
       } else {
         setPanelVisibility(!isPanelOpen);
       }
@@ -3820,6 +3967,9 @@
         host.style.top = clampedY + 'px';
         host.style.right = 'auto';
         host.style.bottom = 'auto';
+        if (isPanelOpen) {
+          updatePanelPosition();
+        }
       }
     });
 
@@ -3835,6 +3985,33 @@
     });
 
     closeBtn.addEventListener('click', () => setPanelVisibility(false));
+
+    // Floating icon hide button ('X') — immediately hides from page and persists preference
+    if (fabHideBtn) {
+      fabHideBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setPanelVisibility(false);
+        host.style.display = 'none';
+        widgetState.widgetVisible = false;
+        try {
+          __wmtFire({
+            action: 'WIDGET_SET_VISIBLE',
+            visible: false
+          });
+        } catch {}
+      });
+      fabHideBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+      });
+    }
+
+    // Keep panel properly dropped down or aligned if window resizes while open
+    window.addEventListener('resize', () => {
+      if (isPanelOpen) {
+        updatePanelPosition();
+      }
+    });
 
     // Tab ON/OFF toggle: sends WIDGET_SET_ENABLED (stale-safe)
     toggleTabBtn.addEventListener('click', () => {

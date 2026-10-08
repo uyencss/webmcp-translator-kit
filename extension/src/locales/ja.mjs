@@ -164,6 +164,7 @@ export default Object.freeze({
   "config_version_label": "バージョン",
   "widget_title": "WebMCP Translator",
   "widget_close_label": "パネルを閉じる",
+  "widget_hide_label": "フローティングアイコンを非表示",
   "widget_status_label": "状態:",
   "widget_status_on": "有効",
   "widget_status_off": "無効",

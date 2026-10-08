@@ -175,7 +175,8 @@ import {
   handleWidgetGetStateAction,
   handleWidgetSetEnabledAction,
   handleWidgetSetModeAction,
-  handleWidgetSetPositionAction
+  handleWidgetSetPositionAction,
+  handleWidgetSetVisibleAction
 } from './sw/modules/widget-controller.mjs';
 
 // Provider concurrency semaphore = 2 (default, updated dynamically from settings)
@@ -1386,6 +1387,18 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
 
       case 'WIDGET_SET_POSITION': {
         return await handleWidgetSetPositionAction({ sender, message, ensureStorageAccess });
+      }
+
+      case 'WIDGET_SET_VISIBLE': {
+        return await handleWidgetSetVisibleAction({
+          sender,
+          message,
+          serializeSettingsWrite,
+          ensureStorageAccess,
+          getStoredSettings,
+          migrateSettings,
+          notifyAllWidgetStateChanged
+        });
       }
 
       case 'GET_ERROR_LOG': {

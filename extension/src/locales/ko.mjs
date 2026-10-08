@@ -164,6 +164,7 @@ export default Object.freeze({
   "config_version_label": "버전",
   "widget_title": "WebMCP Translator",
   "widget_close_label": "패널 닫기",
+  "widget_hide_label": "플로팅 아이콘 숨기기",
   "widget_status_label": "상태:",
   "widget_status_on": "활성",
   "widget_status_off": "비활성",

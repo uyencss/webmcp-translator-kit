@@ -164,6 +164,7 @@ export default Object.freeze({
   "config_version_label": "Version",
   "widget_title": "WebMCP Translator",
   "widget_close_label": "Close panel",
+  "widget_hide_label": "Hide floating icon",
   "widget_status_label": "Status:",
   "widget_status_on": "Active",
   "widget_status_off": "Disabled",

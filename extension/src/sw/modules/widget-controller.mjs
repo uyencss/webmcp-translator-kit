@@ -341,3 +341,30 @@ export async function handleWidgetSetPositionAction({
 
   return { ok: true, position: { x, y } };
 }
+
+export async function handleWidgetSetVisibleAction({
+  sender,
+  message,
+  serializeSettingsWrite,
+  ensureStorageAccess,
+  getStoredSettings,
+  migrateSettings,
+  notifyAllWidgetStateChanged
+}) {
+  const gate = verifyWidgetSender(sender);
+  if (!gate.ok) return gate.error;
+
+  const visible = Boolean(message.visible);
+
+  return await serializeSettingsWrite(async () => {
+    await ensureStorageAccess();
+    const oldSettings = await getStoredSettings({ persistMigration: false });
+    if (oldSettings.widgetVisible !== visible) {
+      const nextSettings = { ...oldSettings, widgetVisible: visible };
+      const merged = migrateSettings(nextSettings);
+      await chrome.storage.local.set({ settings: merged });
+      notifyAllWidgetStateChanged({ widgetVisible: visible });
+    }
+    return { ok: true, widgetVisible: visible };
+  });
+}

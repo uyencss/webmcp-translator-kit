@@ -164,6 +164,7 @@ export default Object.freeze({
   "config_version_label": "版本",
   "widget_title": "WebMCP Translator",
   "widget_close_label": "关闭面板",
+  "widget_hide_label": "隐藏浮动图标",
   "widget_status_label": "状态：",
   "widget_status_on": "已开启",
   "widget_status_off": "已关闭",
