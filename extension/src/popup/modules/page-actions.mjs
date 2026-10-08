@@ -130,11 +130,35 @@ export async function handleTranslatePage({
       (resp) => {
         if (typeof stopPolling === 'function') stopPolling();
         if (chrome.runtime.lastError) {
-          updateStatus('error', chrome.runtime.lastError.message || t(currentUiLocale, 'err_cannot_connect_content'));
+          const errMsg = chrome.runtime.lastError.message || t(currentUiLocale, 'err_cannot_connect_content');
+          try {
+            chrome.runtime.sendMessage({
+              action: 'RECORD_ERROR_LOG',
+              error: { code: 'CONTENT_UNREACHABLE', message: errMsg },
+              model: currentSettings.model,
+              tabId: activeTab.id,
+              isTerminal: true
+            }).catch(() => {});
+          } catch {}
+          updateStatus('error', errMsg);
           if (typeof evaluateActionReadiness === 'function') evaluateActionReadiness();
           return;
         }
         if (resp && resp.error) {
+          if (!resp.error.logged) {
+            try {
+              chrome.runtime.sendMessage({
+                action: 'RECORD_ERROR_LOG',
+                error: resp.error,
+                model: resp.model || currentSettings.model,
+                tabId: activeTab.id,
+                isTerminal: true
+              }).catch(() => {});
+            } catch {}
+            if (typeof resp.error === 'object' && resp.error) {
+              resp.error.logged = true;
+            }
+          }
           updateStatus('error', typeof formatDetail === 'function' ? formatDetail('error', {
             error: resp.error,
             elapsedMs: resp.elapsedMs,

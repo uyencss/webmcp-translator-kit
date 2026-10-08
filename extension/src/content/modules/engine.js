@@ -765,7 +765,7 @@
       if ((finalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'All chunks failed' };
-        if (!lastError) {
+        if (!lastTranslateStatus.error?.logged) {
           try {
             if (chrome?.runtime?.sendMessage) {
               chrome.runtime.sendMessage({
@@ -776,6 +776,9 @@
               }).catch(() => {});
             }
           } catch {}
+          if (typeof lastTranslateStatus.error === 'object' && lastTranslateStatus.error) {
+            lastTranslateStatus.error.logged = true;
+          }
         }
         finishRun();
         return {

@@ -1227,7 +1227,7 @@
       if ((finalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'All chunks failed' };
-        if (!lastError) {
+        if (!lastTranslateStatus.error?.logged) {
           try {
             if (chrome?.runtime?.sendMessage) {
               chrome.runtime.sendMessage({
@@ -1238,6 +1238,9 @@
               }).catch(() => {});
             }
           } catch {}
+          if (typeof lastTranslateStatus.error === 'object' && lastTranslateStatus.error) {
+            lastTranslateStatus.error.logged = true;
+          }
         }
         finishRun();
         return {
@@ -2089,6 +2092,21 @@
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
+        if (!res.error.logged) {
+          try {
+            if (chrome?.runtime?.sendMessage) {
+              chrome.runtime.sendMessage({
+                action: 'RECORD_ERROR_LOG',
+                error: res.error,
+                model: scrollModel,
+                isTerminal: Boolean(res.fatal)
+              }).catch(() => {});
+            }
+          } catch {}
+          if (typeof res.error === 'object' && res.error) {
+            res.error.logged = true;
+          }
+        }
       }
 
       // WI-20 / WI-23: Missing or failed items in this batch are recorded in blockedIds and failedIds for the current run

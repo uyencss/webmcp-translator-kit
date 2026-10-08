@@ -178,6 +178,41 @@ test('WI-14: GET_ERROR_LOG ring-buffer stores <=50 entries, drops oldest, and su
   assert.equal(cleared.length, 0);
 });
 
+test('WI-14: recordErrorLog marks err.logged, deduplicates, logs DROPPED_ON_RESTART once, and caps message at 300 chars', async () => {
+  await clearErrorLog();
+
+  const droppedErr = {
+    code: 'DROPPED_ON_RESTART',
+    message: 'Pending queued or in-flight request was dropped because the service worker restarted'
+  };
+
+  // First call logs it
+  const entry1 = await recordErrorLog(droppedErr, { model: 'ag/gemini-3.1-pro-low', tabId: 101, isTerminal: true });
+  assert.ok(entry1, 'Must record entry on first call');
+  assert.equal(droppedErr.logged, true, 'Must mark err.logged = true');
+
+  // Second call with same error object must deduplicate and return null
+  const entry2 = await recordErrorLog(droppedErr, { model: 'ag/gemini-3.1-pro-low', tabId: 101, isTerminal: true });
+  assert.equal(entry2, null, 'Must deduplicate if err.logged is already true');
+
+  const logs = await getErrorLog();
+  assert.equal(logs.length, 1, 'Must contain exactly 1 entry for droppedErr');
+  assert.equal(logs[0].code, 'DROPPED_ON_RESTART');
+
+  // Test message cap at 300 characters
+  const longErr = {
+    code: 'LONG_ERR',
+    message: 'A'.repeat(500)
+  };
+  await recordErrorLog(longErr);
+  const logsAfterLong = await getErrorLog();
+  assert.ok(logsAfterLong[0].message.length <= 300, `Message length ${logsAfterLong[0].message.length} must be <= 300`);
+  assert.ok(logsAfterLong[0].message.endsWith('...'), 'Must end with ellipsis when truncated');
+
+  await clearErrorLog();
+});
+
+
 // ============================================================================
 // 4. WI-15: L2 cap/evict bằng mock storage
 // ============================================================================

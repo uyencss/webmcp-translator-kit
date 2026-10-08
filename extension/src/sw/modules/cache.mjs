@@ -56,11 +56,18 @@ export async function clearErrorLog() {
 
 export async function recordErrorLog(err, { model = '', tabId = null, isTerminal = false } = {}) {
   if (!err) return null;
+  if (err.logged) return null;
+  if (typeof err === 'object') {
+    err.logged = true;
+  }
   const rawProviderMsg = typeof err.details?.providerMessage === 'string' ? err.details.providerMessage.trim() : '';
   const providerMsg = rawProviderMsg ? rawProviderMsg.slice(0, 200) : '';
   let msg = err.message || (typeof err === 'string' ? err : 'Unknown error');
   if (providerMsg && !msg.includes(providerMsg)) {
     msg = `${msg} (${providerMsg})`;
+  }
+  if (msg.length > 300) {
+    msg = msg.slice(0, 297) + '...';
   }
   const entry = {
     time: new Date().toISOString(),
