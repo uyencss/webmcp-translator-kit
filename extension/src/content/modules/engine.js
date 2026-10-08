@@ -820,6 +820,9 @@
             }).catch(() => {});
           }
         } catch {}
+        if (typeof lastTranslateStatus.error === 'object' && lastTranslateStatus.error) {
+          lastTranslateStatus.error.logged = true;
+        }
         lastTranslateStatus.model = targetModel;
         lastTranslateStatus.elapsedMs = elapsedMs;
         return { ok: false, error: lastTranslateStatus.error, applied: 0, failed: 0, model: targetModel, elapsedMs };

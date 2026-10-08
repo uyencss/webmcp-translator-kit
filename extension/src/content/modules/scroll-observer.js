@@ -757,7 +757,7 @@
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
-        if (!res.error.logged) {
+        if (!res.error.logged && res.error.code !== 'ABORTED') {
           try {
             if (chrome?.runtime?.sendMessage) {
               chrome.runtime.sendMessage({

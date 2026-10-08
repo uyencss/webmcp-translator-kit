@@ -1282,6 +1282,9 @@
             }).catch(() => {});
           }
         } catch {}
+        if (typeof lastTranslateStatus.error === 'object' && lastTranslateStatus.error) {
+          lastTranslateStatus.error.logged = true;
+        }
         lastTranslateStatus.model = targetModel;
         lastTranslateStatus.elapsedMs = elapsedMs;
         return { ok: false, error: lastTranslateStatus.error, applied: 0, failed: 0, model: targetModel, elapsedMs };
@@ -2092,7 +2095,7 @@
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
-        if (!res.error.logged) {
+        if (!res.error.logged && res.error.code !== 'ABORTED') {
           try {
             if (chrome?.runtime?.sendMessage) {
               chrome.runtime.sendMessage({
