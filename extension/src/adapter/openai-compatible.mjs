@@ -1374,6 +1374,5 @@ export function createOpenAICompatibleAdapter(config = {}) {
   };
 }
 
-// Backward-compatible aliases
-export const createDirectOpenAI = createOpenAICompatibleAdapter;
+// Backward-compatible alias
 export const createDirect9Router = createOpenAICompatibleAdapter;

@@ -757,16 +757,6 @@
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
-        try {
-          if (chrome?.runtime?.sendMessage) {
-            chrome.runtime.sendMessage({
-              action: 'RECORD_ERROR_LOG',
-              error: res.error,
-              model: scrollModel,
-              isTerminal: Boolean(res.fatal)
-            }).catch(() => {});
-          }
-        } catch {}
       }
 
       // WI-20 / WI-23: Missing or failed items in this batch are recorded in blockedIds and failedIds for the current run

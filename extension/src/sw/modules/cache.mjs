@@ -56,7 +56,8 @@ export async function clearErrorLog() {
 
 export async function recordErrorLog(err, { model = '', tabId = null, isTerminal = false } = {}) {
   if (!err) return null;
-  const providerMsg = err.details?.providerMessage || err.details?.body || '';
+  const rawProviderMsg = typeof err.details?.providerMessage === 'string' ? err.details.providerMessage.trim() : '';
+  const providerMsg = rawProviderMsg ? rawProviderMsg.slice(0, 200) : '';
   let msg = err.message || (typeof err === 'string' ? err : 'Unknown error');
   if (providerMsg && !msg.includes(providerMsg)) {
     msg = `${msg} (${providerMsg})`;

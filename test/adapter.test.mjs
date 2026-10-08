@@ -1,7 +1,8 @@
-// WebMCP Translator Kit — Direct 9router Adapter Unit Tests
+// WebMCP Translator Kit — OpenAI-Compatible Adapter Unit Tests
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDirect9Router } from '../extension/src/adapter/direct9router.mjs';
+import { createOpenAICompatibleAdapter, createDirect9Router } from '../extension/src/adapter/openai-compatible.mjs';
+import { createDirect9Router as createFromLegacyStub } from '../extension/src/adapter/direct9router.mjs';
 import { createFakeProvider } from './helpers/fake-provider.mjs';
 
 const fastOptions = {
@@ -922,3 +923,9 @@ test('WI-20: abort giữa retry trả về lỗi ABORTED', async () => {
   assert.ok(res.error, 'Must return error on abort');
   assert.equal(res.error.code, 'ABORTED');
 });
+
+test('adapter: legacy direct9router.mjs re-exports createOpenAICompatibleAdapter identically', () => {
+  assert.equal(createFromLegacyStub, createOpenAICompatibleAdapter, 'Legacy stub must export canonical adapter');
+  assert.equal(createDirect9Router, createOpenAICompatibleAdapter, 'openai-compatible alias must equal canonical adapter');
+});
+
