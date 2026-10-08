@@ -765,8 +765,33 @@ if (typeof document !== 'undefined') {
   async function loadErrorLog({ highlightFirst = false } = {}) {
     if (!logList) return;
     try {
-      const resp = await sendMsg({ action: 'GET_ERROR_LOG' });
-      const entries = (resp && resp.ok && Array.isArray(resp.entries)) ? resp.entries : [];
+      let entries = [];
+      try {
+        const resp = await sendMsg({ action: 'GET_ERROR_LOG' });
+        if (resp && resp.ok && Array.isArray(resp.entries) && resp.entries.length > 0) {
+          entries = resp.entries;
+        }
+      } catch {}
+
+      if (entries.length === 0 && typeof chrome !== 'undefined' && chrome.storage) {
+        if (chrome.storage.local) {
+          try {
+            const stored = await chrome.storage.local.get(['errorLog']);
+            if (Array.isArray(stored?.errorLog) && stored.errorLog.length > 0) {
+              entries = stored.errorLog;
+            }
+          } catch {}
+        }
+        if (entries.length === 0 && chrome.storage.session) {
+          try {
+            const stored = await chrome.storage.session.get(['errorLog']);
+            if (Array.isArray(stored?.errorLog) && stored.errorLog.length > 0) {
+              entries = stored.errorLog;
+            }
+          } catch {}
+        }
+      }
+
       logList.innerHTML = '';
       if (entries.length === 0) {
         const emptyDiv = document.createElement('div');

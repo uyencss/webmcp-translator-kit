@@ -55,6 +55,9 @@ html:has(body.modal-open) {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 .sr-only {
   position: absolute;

@@ -135,6 +135,16 @@ export async function handleTranslatePage({
           return;
         }
         if (resp && resp.error) {
+          const errObj = typeof resp.error === 'object' ? resp.error : { code: 'TRANSLATION_ERROR', message: String(resp.error) };
+          try {
+            chrome.runtime.sendMessage({
+              action: 'RECORD_ERROR_LOG',
+              error: errObj,
+              model: resp.model || currentSettings.model,
+              tabId: activeTab.id,
+              isTerminal: true
+            });
+          } catch {}
           updateStatus('error', typeof formatDetail === 'function' ? formatDetail('error', {
             error: resp.error,
             elapsedMs: resp.elapsedMs,

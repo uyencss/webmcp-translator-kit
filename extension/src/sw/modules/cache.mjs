@@ -14,24 +14,41 @@ let errorLog = [];
 
 export async function initErrorLog() {
   try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      const res = await chrome.storage.session.get(['errorLog']);
-      if (Array.isArray(res?.errorLog)) {
-        errorLog = res.errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.local) {
+        const resLocal = await chrome.storage.local.get(['errorLog']);
+        if (Array.isArray(resLocal?.errorLog) && resLocal.errorLog.length > 0) {
+          errorLog = resLocal.errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
+          return;
+        }
+      }
+      if (chrome.storage.session) {
+        const res = await chrome.storage.session.get(['errorLog']);
+        if (Array.isArray(res?.errorLog)) {
+          errorLog = res.errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
+        }
       }
     }
   } catch {}
 }
 
 export async function getErrorLog() {
+  if (errorLog.length === 0) {
+    await initErrorLog();
+  }
   return [...errorLog];
 }
 
 export async function clearErrorLog() {
   errorLog = [];
   try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      await chrome.storage.session.remove(['errorLog']);
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.session) {
+        await chrome.storage.session.remove(['errorLog']);
+      }
+      if (chrome.storage.local) {
+        await chrome.storage.local.remove(['errorLog']);
+      }
     }
   } catch {}
   return { ok: true };
@@ -39,10 +56,15 @@ export async function clearErrorLog() {
 
 export async function recordErrorLog(err, { model = '', tabId = null, isTerminal = false } = {}) {
   if (!err) return null;
+  const providerMsg = err.details?.providerMessage || err.details?.body || '';
+  let msg = err.message || (typeof err === 'string' ? err : 'Unknown error');
+  if (providerMsg && !msg.includes(providerMsg)) {
+    msg = `${msg} (${providerMsg})`;
+  }
   const entry = {
     time: new Date().toISOString(),
     code: err.code || err.name || 'ERROR',
-    message: err.message || (typeof err === 'string' ? err : 'Unknown error'),
+    message: msg,
     model: model || err.model || '',
     tabId: tabId ?? null
   };
@@ -51,8 +73,13 @@ export async function recordErrorLog(err, { model = '', tabId = null, isTerminal
     errorLog = errorLog.slice(0, MAX_ERROR_LOG_ENTRIES);
   }
   try {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-      await chrome.storage.session.set({ errorLog });
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.session) {
+        await chrome.storage.session.set({ errorLog });
+      }
+      if (chrome.storage.local) {
+        await chrome.storage.local.set({ errorLog });
+      }
     }
   } catch {}
 

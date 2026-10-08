@@ -8,7 +8,7 @@
 
 ## 1. DirectTranslatorProvider Interface
 
-The Direct Mode adapter runs inside the background service worker of the WebMCP Translator extension. It encapsulates communication with an OpenAI-compatible 9router endpoint via HTTP.
+The Direct Mode adapter runs inside the background service worker of the WebMCP Translator extension. It encapsulates communication with an OpenAI-compatible endpoint via HTTP.
 
 ```typescript
 export type TranslationItem = {
@@ -81,7 +81,7 @@ export interface ListModelsResponse {
 
 ## 2. Batch Validator Contract
 
-Every translation response received from the 9router provider MUST be validated by the background service worker before passing results to the DOM patcher:
+Every translation response received from the OpenAI-compatible provider MUST be validated by the background service worker before passing results to the DOM patcher:
 
 1. **Bijection Guarantee**:
    - The response `results` array MUST have the exact same length as `items`.
@@ -133,7 +133,7 @@ Every error produced by the Direct Mode pipeline MUST map to a typed error objec
 | `HTTP_401` | HTTP | Provider returned 401 Unauthorized (invalid API key). | `status: 401, statusText: string` |
 | `HTTP_403` | HTTP | Provider returned 403 Forbidden (spend cap reached, forbidden origin, or model blocked). | `status: 403, statusText: string` |
 | `HTTP_404` | HTTP | Provider returned 404 Not Found (invalid endpoint path or model name). | `status: 404, statusText: string` |
-| `HTTP_429` | HTTP | Remote 9router rate limit exceeded (remote 429). | `status: 429, retryAfterMs?: number` |
+| `HTTP_429` | HTTP | Remote rate limit exceeded (remote 429). | `status: 429, retryAfterMs?: number` |
 | `HTTP_5xx` | HTTP | Provider returned a server error (HTTP 500–599). | `status: number, statusText: string` |
 | `DATA_CONSENT_REQUIRED` | Consent | User has not accepted the current in-product data disclosure. No provider request is sent. | `dataConsentVersion: number` |
 | `INSECURE_ENDPOINT_BLOCKED` | Security | Base URL is remote HTTP; only HTTPS and loopback HTTP are allowed. | `reason?: string` |

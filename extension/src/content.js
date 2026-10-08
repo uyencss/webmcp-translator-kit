@@ -1227,6 +1227,16 @@
       if ((finalApplied === 0 && totalFailed > 0) || (lastError && (lastError.code === 'DROPPED_ON_RESTART' || lastError.code === 'ABORTED')) || (runAborted && lastError)) {
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = lastError || { code: 'CHUNK_FAILED', message: 'All chunks failed' };
+        try {
+          if (chrome?.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              action: 'RECORD_ERROR_LOG',
+              error: lastTranslateStatus.error,
+              model: targetModel,
+              isTerminal: true
+            }).catch(() => {});
+          }
+        } catch {}
         finishRun();
         return {
           ok: false,
@@ -1257,6 +1267,16 @@
         const elapsedMs = Date.now() - startTime;
         lastTranslateStatus.state = 'error';
         lastTranslateStatus.error = { code: 'INTERNAL', message: err && err.message ? String(err.message) : 'Translation failed' };
+        try {
+          if (chrome?.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              action: 'RECORD_ERROR_LOG',
+              error: lastTranslateStatus.error,
+              model: targetModel,
+              isTerminal: true
+            }).catch(() => {});
+          }
+        } catch {}
         lastTranslateStatus.model = targetModel;
         lastTranslateStatus.elapsedMs = elapsedMs;
         return { ok: false, error: lastTranslateStatus.error, applied: 0, failed: 0, model: targetModel, elapsedMs };
@@ -2067,6 +2087,16 @@
       }
       if (res.error) {
         lastTranslateStatus.lastError = res.error;
+        try {
+          if (chrome?.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              action: 'RECORD_ERROR_LOG',
+              error: res.error,
+              model: scrollModel,
+              isTerminal: Boolean(res.fatal)
+            }).catch(() => {});
+          }
+        } catch {}
       }
 
       // WI-20 / WI-23: Missing or failed items in this batch are recorded in blockedIds and failedIds for the current run

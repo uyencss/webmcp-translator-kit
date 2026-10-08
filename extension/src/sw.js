@@ -1,7 +1,7 @@
 // WebMCP Translator Kit — Background Service Worker (Direct Mode)
 // Contract Version: webmcp-translator-contract/1
 
-import { createDirect9Router } from './adapter/direct9router.mjs';
+import { createOpenAICompatibleAdapter } from './adapter/openai-compatible.mjs';
 import { createStorageManager } from './sw/modules/storage-manager.mjs';
 import { createBatchEngine } from './sw/modules/batch-engine.mjs';
 import {
@@ -529,7 +529,7 @@ const routerConfig = {
   getMaxRetries: () => (_testMode && typeof _testMaxRetries === 'number') ? _testMaxRetries : 2
 };
 
-const router = createDirect9Router(routerConfig);
+const router = createOpenAICompatibleAdapter(routerConfig);
 
 // Model Discovery (L2 storage.local cache with TTL & background revalidation)
 async function checkBaseUrlPermission(baseURL) {
@@ -642,14 +642,17 @@ export async function executeBatchTranslation(args) {
 }
 
 // Startup hooks
+initErrorLog().catch(() => {});
 if (typeof chrome !== 'undefined' && chrome.runtime) {
   chrome.runtime.onInstalled?.addListener(() => {
+    initErrorLog().catch(() => {});
     ensureStorageAccess()
       .then(() => reconcilePermissions())
       .catch(() => {});
   });
 
   chrome.runtime.onStartup?.addListener(() => {
+    initErrorLog().catch(() => {});
     ensureStorageAccess()
       .then(() => reconcilePermissions())
       .catch(() => {});
@@ -1391,7 +1394,8 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             permissionType: 'host'
           });
         }
-        return { ok: true, entries: [...errorLog] };
+        const entries = await getErrorLog();
+        return { ok: true, entries };
       }
 
       case 'CLEAR_ERROR_LOG': {
@@ -1400,12 +1404,7 @@ async function handleRuntimeMessage(message, sender = { frameId: 0 }) {
             permissionType: 'host'
           });
         }
-        errorLog = [];
-        try {
-          if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-            await chrome.storage.session.remove(['errorLog']);
-          }
-        } catch {}
+        await clearErrorLog();
         return { ok: true };
       }
 
@@ -1514,15 +1513,8 @@ globalScope.__translatorSw = {
   computeKeyFingerprint,
   activeBatchControllers,
   recordErrorLog,
-  getErrorLog: () => [...errorLog],
-  clearErrorLog: async () => {
-    errorLog = [];
-    try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) {
-        await chrome.storage.session.remove(['errorLog']);
-      }
-    } catch {}
-  },
+  getErrorLog,
+  clearErrorLog,
   enqueueL2Cache,
   flushL2Cache,
   clearL2Cache,

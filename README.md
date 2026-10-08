@@ -1,6 +1,6 @@
 # WebMCP Translator Kit (`@gyga-browser/webmcp-translator-kit`)
 
-MVP Direct-mode translator kit and browser extension (no Gateway). Provides frozen direct-mode contracts, schemas, defaults, and the unpacked Chrome extension calling 9router OpenAI-compatible endpoints directly.
+MVP Direct-mode translator kit and browser extension (no Gateway). Provides frozen direct-mode contracts, schemas, defaults, and the unpacked Chrome extension calling OpenAI-compatible endpoints directly.
 
 The extension requests streaming translations. When the configured endpoint returns SSE, it applies completed translated passages as they arrive; endpoints returning a regular JSON response continue to work. Streaming availability depends on the selected endpoint and model.
 

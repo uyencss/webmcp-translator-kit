@@ -7,7 +7,7 @@
 
 ## 1. Overview & Scope
 
-This contract defines the authoritative, frozen specification for **MVP Direct Mode** of the WebMCP Translator Kit. Under Direct Mode, the translator browser extension communicates directly from its MV3 background service worker to an OpenAI-compatible 9router endpoint via user-configured Base URL and API key.
+This contract defines the authoritative, frozen specification for **MVP Direct Mode** of the WebMCP Translator Kit. Under Direct Mode, the translator browser extension communicates directly from its MV3 background service worker to an OpenAI-compatible endpoint via user-configured Base URL and API key.
 
 The interface definitions (`TranslationItem`, `TranslationResult`, `TranslationProvider`) strictly match `context/plan.md §Contract và interface cố định cho DOM core` (interface khớp plan canonical §contract (đã đối chiếu 2026-09-30)).
 
@@ -15,7 +15,7 @@ The interface definitions (`TranslationItem`, `TranslationResult`, `TranslationP
 
 | Dimension | MVP Direct Mode (This Contract) | Gateway Mode (Deferred Milestone) |
 | --- | --- | --- |
-| **Topology** | Extension background service worker calls 9router HTTP API directly. | Extension connects to local Gateway via WebSocket/reverse RPC. |
+| **Topology** | Extension background service worker calls OpenAI-compatible HTTP API directly. | Extension connects to local Gateway via WebSocket/reverse RPC. |
 | **Credentials** | API key stored locally in extension `chrome.storage.local` (`TRUSTED_CONTEXTS`, background-only). | Ephemeral session token brokered via Vault Kit (`api_token.token`). |
 | **Role Binding** | Independent extension; no inter-extension connection or handshake. | Registry binds `(profileId, role)` for automation and translator clients. |
 | **waitForStable** | Handled via client-side patch throttling (`patchMinIntervalMs = 200`). | Coordinated via Gate C1 (`commandActive`/`commandIdle` signals). |
@@ -44,7 +44,7 @@ The numeric parameters and behavioral limits recorded in `defaults.json` and `di
    - Retry limits: maximum `2` retries (initial delay `500` ms, max delay `1000` ms, jitter ratio `0.2`).
 
 2. **Phase P1' Verification & Initial Measurements**:
-   - Implement the direct 9router adapter, in-memory queue, debounce, and sliding-window rate counters in `chrome.storage.session`.
+   - Implement the direct OpenAI-compatible adapter, in-memory queue, debounce, and sliding-window rate counters in `chrome.storage.session`.
    - Measure batch count on a reference viewport containing 20 Text nodes.
    - Target: $\le 4$ batches within a 60-second window under default tab settings (ideally 1 batch of $\le 32$ items). If fragmentation causes $> 4$ batches and triggers rate limiting, debounce/batching must be tuned or default limits adjusted with documented cost receipts before passing gate P1'.
 
