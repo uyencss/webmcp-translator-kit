@@ -375,6 +375,53 @@ body.modal-open .container {
   box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
+/* Hero CTA & Compact Icon Restore */
+.btn-translate-hero {
+  flex: 1;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.btn-icon-restore {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-icon-restore .btn-svg {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.btn-icon-restore:not(:disabled) {
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--accent-cyan);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 1px 6px rgba(56, 189, 248, 0.15);
+}
+
+.btn-icon-restore:not(:disabled):hover {
+  background: rgba(56, 189, 248, 0.16);
+  color: #ffffff;
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow: 0 2px 10px rgba(56, 189, 248, 0.25);
+  transform: scale(1.04);
+}
+
+.btn-icon-restore:disabled {
+  opacity: 0.4;
+  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--border-hairline);
+  color: #7d828c;
+}
+
 /* WI-9: Light mode overrides for primary & secondary buttons */
 [data-theme="light"] .btn-primary {
   background: var(--accent-blue);
@@ -410,6 +457,26 @@ body.modal-open .container {
   color: #94a3b8;
   box-shadow: none;
   filter: none;
+}
+
+[data-theme="light"] .btn-icon-restore:not(:disabled) {
+  background: #f0fdf4;
+  color: #0284c7;
+  border-color: rgba(2, 132, 199, 0.35);
+  box-shadow: 0 1px 4px rgba(2, 132, 199, 0.12);
+}
+
+[data-theme="light"] .btn-icon-restore:not(:disabled):hover {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: rgba(2, 132, 199, 0.6);
+}
+
+[data-theme="light"] .btn-icon-restore:disabled {
+  opacity: 0.4;
+  background: #f8fafc;
+  border-color: var(--border-hairline);
+  color: #94a3b8;
 }
 
 /* ==========================================================================

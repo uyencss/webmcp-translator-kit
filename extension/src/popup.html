@@ -137,29 +137,38 @@
       <!-- Ngôn ngữ -->
       <div class="form-row">
         <div class="form-group flex-1">
-          <label for="select-src-lang" id="label-src-lang" data-i18n="src_lang_label">Nguồn</label>
+          <label for="select-src-lang" id="label-src-lang" class="sr-only" data-i18n="src_lang_label">Nguồn</label>
           <select id="select-src-lang" aria-label="Ngôn ngữ nguồn" data-i18n-aria-label="src_lang_aria"></select>
         </div>
         <div class="form-group flex-1">
-          <label for="select-tgt-lang" id="label-tgt-lang" data-i18n="tgt_lang_label">Đích</label>
+          <label for="select-tgt-lang" id="label-tgt-lang" class="sr-only" data-i18n="tgt_lang_label">Đích</label>
           <select id="select-tgt-lang" aria-label="Ngôn ngữ đích" data-i18n-aria-label="tgt_lang_aria"></select>
         </div>
       </div>
 
-      <!-- Actions: Translate (Primary) & Restore (Ghost) -->
+      <!-- Actions: Translate (Primary Hero) & Restore (Compact Icon) -->
       <div class="actions-card" aria-label="Hành động dịch" data-i18n-aria-label="actions_aria">
-        <button id="btn-translate" class="btn btn-primary" title="Dịch trang này" aria-label="Dịch trang này" data-i18n-title="btn_translate_title" data-i18n-aria-label="btn_translate_title" disabled>
+        <button id="btn-translate" class="btn btn-primary btn-translate-hero" title="Dịch trang này" aria-label="Dịch trang này" data-i18n-title="btn_translate_title" data-i18n-aria-label="btn_translate_title" disabled>
           <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M7 4v16l13 -8z"/>
           </svg>
           <span id="btn-translate-text" data-i18n="btn_translate">Dịch trang</span>
         </button>
-        <button id="btn-restore" class="btn btn-secondary" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" data-i18n-title="btn_restore_title" data-i18n-aria-label="btn_restore_title" disabled>
+        <button id="btn-restore" class="btn btn-secondary btn-icon-restore" title="Khôi phục văn bản gốc" aria-label="Khôi phục văn bản gốc" data-i18n-title="btn_restore_title" data-i18n-aria-label="btn_restore_title" disabled>
           <svg class="icon btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>
           </svg>
-          <span id="btn-restore-text" data-i18n="btn_restore">Khôi phục</span>
+          <span id="btn-restore-text" class="sr-only" data-i18n="btn_restore">Khôi phục</span>
         </button>
+      </div>
+
+      <!-- Mascot Floating Icon Quick Toggle -->
+      <div class="main-widget-toggle-row">
+        <label class="toggle-switch-label" for="checkbox-widget-visible">
+          <input type="checkbox" id="checkbox-widget-visible" checked />
+          <span class="toggle-slider"></span>
+          <span class="toggle-text" id="label-widget-visible" data-i18n="config_widget_visible_label">Hiện icon nổi trên trang</span>
+        </label>
       </div>
     </section>
 
@@ -373,10 +382,10 @@
           </div>
 
           <div class="form-group-checkbox">
-            <label class="toggle-switch-label" for="checkbox-widget-visible">
-              <input type="checkbox" id="checkbox-widget-visible" checked />
+            <label class="toggle-switch-label" for="checkbox-widget-visible-appearance">
+              <input type="checkbox" id="checkbox-widget-visible-appearance" checked />
               <span class="toggle-slider"></span>
-              <span class="toggle-text" id="label-widget-visible" data-i18n="config_widget_visible_label">Hiện icon nổi trên trang</span>
+              <span class="toggle-text" id="label-widget-visible-appearance" data-i18n="config_widget_visible_label">Hiện icon nổi trên trang</span>
             </label>
           </div>
 

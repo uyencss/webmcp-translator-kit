@@ -92,6 +92,7 @@ export function getPopupElements(doc = (typeof document !== 'undefined' ? docume
     btnOverrideOn: byId('btn-override-on'),
     btnOverrideOff: byId('btn-override-off'),
     checkboxWidgetVisible: byId('checkbox-widget-visible'),
+    checkboxWidgetVisibleAppearance: byId('checkbox-widget-visible-appearance'),
 
     saveStateEl: byId('save-state'),
     saveDotEl: byId('save-dot'),

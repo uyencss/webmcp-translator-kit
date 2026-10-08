@@ -2986,17 +2986,67 @@
         justify-content: space-between;
         align-items: center;
       }
+      .wmt-status-row {
+        gap: 8px;
+        align-items: center;
+      }
+      .wmt-status-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
       .wmt-status-tag {
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 600;
-        padding: 2px 8px;
+        padding: 1px 7px;
         border-radius: 9999px;
         background: var(--wmt-surface);
         color: var(--wmt-text-secondary);
+        border: 1px solid var(--wmt-border);
+        white-space: nowrap;
       }
       .wmt-status-tag.on {
         background: rgba(16, 185, 129, 0.15);
         color: #34d399;
+        border-color: rgba(16, 185, 129, 0.3);
+      }
+      .wmt-switch-btn {
+        width: auto;
+        padding: 3px 9px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 550;
+        cursor: pointer;
+        border: 1px solid var(--wmt-border);
+        background: var(--wmt-surface);
+        color: var(--wmt-text-secondary);
+        transition: all 0.15s ease;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .wmt-switch-btn:hover {
+        background: var(--wmt-surface-hover);
+        color: var(--wmt-text-title);
+        border-color: rgba(56, 189, 248, 0.4);
+      }
+      .wmt-switch-btn.active {
+        background: rgba(239, 68, 68, 0.12);
+        color: #f87171;
+        border-color: rgba(239, 68, 68, 0.35);
+      }
+      .wmt-switch-btn.active:hover {
+        background: rgba(239, 68, 68, 0.22);
+        color: #ffffff;
+      }
+      :host([data-theme="light"]) .wmt-switch-btn.active {
+        background: #fef2f2;
+        color: #dc2626;
+        border-color: rgba(220, 38, 38, 0.3);
+      }
+      :host([data-theme="light"]) .wmt-switch-btn.active:hover {
+        background: #fee2e2;
+        color: #b91c1c;
       }
       .wmt-model-row {
         gap: 8px;
@@ -3025,43 +3075,26 @@
       .wmt-model-select:focus-visible {
         border-color: #3b82f6;
       }
-      .wmt-switch-btn {
-        width: 100%;
-        padding: 6px 12px;
-        border-radius: 6px;
-        font-size: 12px;
-        font-weight: 500;
-        cursor: pointer;
-        border: 1px solid var(--wmt-border);
-        background: var(--wmt-surface);
-        color: var(--wmt-text-secondary);
-        transition: background 0.15s;
-      }
-      .wmt-switch-btn:hover {
-        background: var(--wmt-surface-hover);
-        color: var(--wmt-text-title);
-      }
-      .wmt-switch-btn.active {
-        background: #ef4444;
-        color: #ffffff;
-        border-color: #ef4444;
-      }
       .wmt-mode-group {
         display: flex;
         flex-direction: column;
         gap: 6px;
         background: var(--wmt-mode-bg);
         padding: 8px 10px;
-        border-radius: 6px;
+        border-radius: 8px;
         border: 1px solid var(--wmt-mode-border);
       }
       .wmt-mode-label {
-        font-size: 12px;
+        font-size: 11.5px;
         display: flex;
         align-items: center;
         gap: 6px;
         cursor: pointer;
         user-select: none;
+      }
+      .wmt-mode-label input[type="radio"] {
+        accent-color: #3b82f6;
+        cursor: pointer;
       }
       .wmt-actions {
         display: flex;
@@ -3069,29 +3102,41 @@
       }
       .wmt-action-btn {
         flex: 1;
-        padding: 7px;
-        border-radius: 6px;
+        height: 32px;
+        padding: 0 10px;
+        border-radius: 8px;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 550;
         border: none;
         cursor: pointer;
-        transition: background 0.15s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s ease;
       }
       .wmt-btn-primary {
-        background: #3b82f6;
+        flex: 1.4;
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
         color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
       }
-      .wmt-btn-primary:hover {
-        background: #2563eb;
+      .wmt-btn-primary:hover:not(:disabled) {
+        background: linear-gradient(135deg, #60a5fa 0%, #1d4ed8 100%);
+        box-shadow: 0 3px 12px rgba(59, 130, 246, 0.45);
       }
       .wmt-btn-secondary {
         background: var(--wmt-surface);
         color: var(--wmt-text-secondary);
         border: 1px solid var(--wmt-border);
       }
-      .wmt-btn-secondary:hover {
+      .wmt-btn-secondary:hover:not(:disabled) {
         background: var(--wmt-surface-hover);
         color: var(--wmt-text-title);
+      }
+      .wmt-action-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
       }
       .wmt-progress {
         font-size: 11px;
@@ -3143,15 +3188,17 @@
           <span class="wmt-title">WebMCP Translator</span>
           <button class="wmt-close" id="wmt-close" aria-label="Close">✕</button>
         </div>
-        <div class="wmt-row">
-          <span class="wmt-status-lbl"></span>
-          <span class="wmt-status-tag" id="wmt-status-tag"></span>
+        <div class="wmt-row wmt-status-row">
+          <div class="wmt-status-left">
+            <span class="wmt-status-lbl"></span>
+            <span class="wmt-status-tag" id="wmt-status-tag"></span>
+          </div>
+          <button class="wmt-switch-btn" id="wmt-toggle-tab"></button>
         </div>
         <div class="wmt-row wmt-model-row">
           <span class="wmt-model-lbl"></span>
           <select class="wmt-model-select" id="wmt-model-select" aria-label="Model"></select>
         </div>
-        <button class="wmt-switch-btn" id="wmt-toggle-tab"></button>
         <div class="wmt-mode-group">
           <label class="wmt-mode-label">
             <input type="radio" name="wmt-mode" value="scroll-follow" checked />

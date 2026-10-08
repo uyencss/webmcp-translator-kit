@@ -324,6 +324,33 @@ select optgroup {
   box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
+/* Main interface mascot/widget quick toggle */
+.main-widget-toggle-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 4px 2px;
+  border-top: 1px solid var(--border-hairline);
+  margin-top: 2px;
+}
+
+.main-widget-toggle-row .toggle-switch-label {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+[data-theme="light"] .toggle-slider {
+  background-color: #e2e8f0;
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .toggle-slider::before {
+  background-color: #94a3b8;
+}
+
 /* Site Consent Badges & Overrides */
 .site-origin-badge {
   font-family: var(--font-mono);

@@ -72,7 +72,7 @@ if (typeof document !== 'undefined') {
     inputImportConfigConnect, inputImportConfig, checkboxExportKeys, inputFabSize, fabSizeValue,
     btnResetFabSize, mascotSelectorGrid, selectFabMascot, selectSrcLang, selectTgtLang,
     siteOriginBadge, toggleSiteConsent, btnOverrideInherit, btnOverrideOn, btnOverrideOff,
-    checkboxWidgetVisible, saveStateEl, saveDotEl, btnAddCurrentSite, autoSiteError, autoSitesList,
+    checkboxWidgetVisible, checkboxWidgetVisibleAppearance, saveStateEl, saveDotEl, btnAddCurrentSite, autoSiteError, autoSitesList,
     inputBaseUrl, btnBasePerm, inputApiKey, btnToggleKey, btnDeleteKey, keyStatusIndicator, selectModel,
     btnToggleFavorite, btnRefreshModels, btnAddFallback, fallbackListEl, configMessageConnect,
     inputRateTab, inputRateSite, inputRateConcurrency, rateLimitsHint, subtabNav, subtabButtons,
@@ -291,7 +291,7 @@ if (typeof document !== 'undefined') {
     const patch = {
       sourceLanguage: selectSrcLang ? selectSrcLang.value : 'auto',
       targetLanguage: selectTgtLang ? selectTgtLang.value : 'vi',
-      widgetVisible: checkboxWidgetVisible ? Boolean(checkboxWidgetVisible.checked) : true,
+      widgetVisible: checkboxWidgetVisible ? Boolean(checkboxWidgetVisible.checked) : (checkboxWidgetVisibleAppearance ? Boolean(checkboxWidgetVisibleAppearance.checked) : true),
       uiLocale: selectUiLocale ? selectUiLocale.value : (savedSettings.uiLocale || 'vi'),
       theme: selectTheme ? selectTheme.value : (savedSettings.theme || 'dark'),
       uiFontScale: selectUiFontScale ? selectUiFontScale.value : (savedSettings.uiFontScale || 'md'),
@@ -1402,7 +1402,10 @@ if (typeof document !== 'undefined') {
           }
 
           if (resp.settings.translationMode) currentMode = resp.settings.translationMode;
-          if (checkboxWidgetVisible && typeof resp.settings.widgetVisible === 'boolean') checkboxWidgetVisible.checked = resp.settings.widgetVisible;
+          if (typeof resp.settings.widgetVisible === 'boolean') {
+            if (checkboxWidgetVisible) checkboxWidgetVisible.checked = resp.settings.widgetVisible;
+            if (checkboxWidgetVisibleAppearance) checkboxWidgetVisibleAppearance.checked = resp.settings.widgetVisible;
+          }
           if (checkboxFavoritesOnly && typeof resp.settings.showFavoritesOnly === 'boolean') checkboxFavoritesOnly.checked = resp.settings.showFavoritesOnly;
           if (checkboxExportKeys) {
             checkboxExportKeys.checked = typeof resp.settings.exportIncludeKeys === 'boolean'
@@ -1646,7 +1649,22 @@ if (typeof document !== 'undefined') {
   // immediately; failures revert to last saved values.
   if (selectSrcLang) selectSrcLang.addEventListener('change', () => markDirty());
   if (selectTgtLang) selectTgtLang.addEventListener('change', () => markDirty());
-  if (checkboxWidgetVisible) checkboxWidgetVisible.addEventListener('change', () => markDirty());
+  if (checkboxWidgetVisible) {
+    checkboxWidgetVisible.addEventListener('change', () => {
+      if (checkboxWidgetVisibleAppearance) {
+        checkboxWidgetVisibleAppearance.checked = checkboxWidgetVisible.checked;
+      }
+      markDirty();
+    });
+  }
+  if (checkboxWidgetVisibleAppearance) {
+    checkboxWidgetVisibleAppearance.addEventListener('change', () => {
+      if (checkboxWidgetVisible) {
+        checkboxWidgetVisible.checked = checkboxWidgetVisibleAppearance.checked;
+      }
+      markDirty();
+    });
+  }
   if (checkboxExportKeys) {
     checkboxExportKeys.addEventListener('change', () => {
       savedSettings.exportIncludeKeys = Boolean(checkboxExportKeys.checked);
