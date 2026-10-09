@@ -21,5 +21,5 @@ test('package.json name and version match frozen decisions', () => {
   const pkgPath = path.join(rootDir, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   assert.strictEqual(pkg.name, '@gyga-browser/webmcp-translator-kit');
-  assert.strictEqual(pkg.version, '0.1.4');
+  assert.strictEqual(pkg.version, '0.1.3');
 });

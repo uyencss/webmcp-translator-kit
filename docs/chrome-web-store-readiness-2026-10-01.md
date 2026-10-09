@@ -8,7 +8,7 @@ Ngày đối chiếu: 2026-10-01. Audit ban đầu tại HEAD `f98c61bedcbf3d165
 
 **Tiến độ Store Readiness (cập nhật 2026-10-05):** Bản v0.1.1 đã gửi vào review; Chrome cảnh báo quyền host rộng có thể khiến review sâu hơn và lâu hơn:
 1. **F01 (Data Consent v2)**: Onboarding nêu rõ dữ liệu trang, endpoint/upstream, API key trong header `Authorization`, content script được inject trên HTTP(S), cache cục bộ và HTTP loopback không có TLS. Lưu `settings.dataConsent = { version: 2, acceptedAt }`; mọi luồng dịch bị chặn nếu chưa đồng ý hoặc đang thu hồi consent.
-2. **F04 (HTTPS Enforcement)**: Đã khóa cứng yêu cầu HTTPS cho mọi endpoint AI từ xa, chặn đứng nguy cơ rò rỉ văn bản trang và API key qua HTTP không mã hóa; chỉ cho phép ngoại lệ HTTP đối với loopback cục bộ (`localhost`, `127.0.0.1`, `[::1]`) phục vụ 9router/AI local; tooltip/chỉ báo bảo mật tại popup cập nhật động.
+2. **F04 (HTTPS Enforcement)**: Đã khóa cứng yêu cầu HTTPS cho mọi endpoint AI từ xa, chặn đứng nguy cơ rò rỉ văn bản trang và API key qua HTTP không mã hóa; chỉ cho phép ngoại lệ HTTP đối với loopback cục bộ (`localhost`, `127.0.0.1`, `[::1]`) phục vụ AI local tự host; tooltip/chỉ báo bảo mật tại popup cập nhật động.
 3. **F05 (Test Instructions)**: Dashboard hiện có Additional instructions về setup endpoint/key thử, dịch/khôi phục, Auto/widget và SSE. Username/Password để trống vì chưa có endpoint/key reviewer công khai.
 4. **F06 (Host Permissions)**: Manifest hiện yêu cầu `http://*/*` và `https://*/*` và khai báo content script tĩnh trên toàn bộ hai scheme. Chỉ xử lý văn bản khi người dùng yêu cầu dịch hoặc bật auto-translate cho site. Quyền này cần giải trình trung thực trên Dashboard; nếu reviewer yêu cầu giảm quyền, chuyển sang optional host permissions là việc riêng cần thiết kế/test.
 5. **Bộ test**: Source release v0.1.1 đạt **385/385 tests**, contract/closure pass và layout 38/38.
@@ -43,12 +43,12 @@ Ngày đối chiếu: 2026-10-01. Audit ban đầu tại HEAD `f98c61bedcbf3d165
 
 ### P0 — Chốt contract dữ liệu và consent (writer: extension; reviewer: privacy/security)
 
-- [ ] Ghi data map 1 trang: văn bản DOM được chọn, origin site, model/endpoint, API key, cache, local storage, error/log; ai nhận dữ liệu (9router và các provider downstream), khi nào gửi, bao lâu giữ, cách xóa. Phân biệt dữ liệu tại máy người dùng, tại 9router và tại provider; xác minh các cam kết retention trước khi viết policy.
+- [ ] Ghi data map 1 trang: văn bản DOM được chọn, origin site, model/endpoint, API key, cache, local storage, error/log; ai nhận dữ liệu (endpoint cấu hình và các provider downstream), khi nào gửi, bao lâu giữ, cách xóa. Phân biệt dữ liệu tại máy người dùng và tại provider; xác minh các cam kết retention trước khi viết policy.
 - [ ] Chọn một mục đích duy nhất: “dịch nội dung văn bản của trang web mà người dùng chọn sang ngôn ngữ đích”. Bỏ marketing về khả năng ngoài mục đích này. Không dùng extension để né safety guardrails hay giới hạn của dịch vụ AI [S3].
 - [x] Thêm disclosure dễ thấy **trước lần dịch đầu**: loại dữ liệu trang được gửi, endpoint/upstream, truyền API key qua `Authorization`, auto mode, phạm vi static injection, cache, transport và liên kết privacy policy. Người dùng chủ động chấp nhận; lưu version/timestamp (`settings.dataConsent = { version: 2, acceptedAt }`) [S3, S4].
 - [ ] Tách hành động “Dịch trang này” khỏi “Bật dịch tự động cho site”; chỉ auto-start sau lựa chọn riêng có mô tả rõ. Thao tác OFF và revoke permission phải dừng request đang chạy; xác nhận bằng test âm tính.
 - [ ] Loại bỏ việc chọn ngầm tab HTTP khác; nếu tab hiện tại không hỗ trợ thì chỉ báo trạng thái. Thử khi popup mở từ `chrome://extensions`, New Tab và cửa sổ nhiều tab.
-- [x] Validate endpoint tại một điểm chung trước `models` và `chat/completions`: HTTPS cho remote; HTTP chỉ dành cho loopback thật sự (`localhost`, `127.0.0.1`, `[::1]`) nếu sản phẩm giữ tích hợp native local 9router. Chặn HTTP từ xa với mã `INSECURE_ENDPOINT_BLOCKED`. Sửa tooltip “gửi an toàn” thành hiển thị động theo scheme (WI-51).
+- [x] Validate endpoint tại một điểm chung trước `models` và `chat/completions`: HTTPS cho remote; HTTP chỉ dành cho loopback thật sự (`localhost`, `127.0.0.1`, `[::1]`) nếu sản phẩm giữ tích hợp native local loopback. Chặn HTTP từ xa với mã `INSECURE_ENDPOINT_BLOCKED`. Sửa tooltip “gửi an toàn” thành hiển thị động theo scheme (WI-51).
 - [ ] Chốt cách lưu API key: giữ `storage.local` với mô tả rủi ro chính xác hoặc chuyển sang session-only nếu không thể chứng minh xử lý at rest phù hợp. Test key không thể đọc từ content script và bị xóa khi người dùng chọn Xóa key/gỡ extension; không thêm lớp mã hóa bằng khóa hardcode trong extension.
 - [ ] Thử bằng fixture chứa tên/email và trang có form/`contenteditable`: chỉ text node cần dịch được gửi sau consent; không gửi input/password/form fields; OFF/deny/revoke làm 0 network requests. Test cả fallback khác origin để tránh chuyển dữ liệu/key bất ngờ.
 
@@ -115,10 +115,10 @@ shasum -a 256 dist-artifacts/webmcp-translator-kit-STORE.zip
 
 Đã hoàn thành đợt cập nhật tuân thủ chính sách Chrome Web Store (WI-50 & WI-51):
 1. **Data Consent v2**: Triển khai `settings.dataConsent = { version: 2, acceptedAt }` kèm migration. Popup hiển thị onboarding trước network và mô tả endpoint/upstream, Authorization key, cache, static injection, loopback HTTP. Khi owner từ chối, cổng fail-closed được bật đồng bộ trước mọi thao tác cleanup; requests mới nhận `DATA_CONSENT_REQUIRED`.
-2. **HTTPS Enforcement**: Khóa cứng bảo vệ kênh truyền. Validation settings, adapter `direct9router.mjs`, và SW chặn mọi endpoint HTTP từ xa với mã `INSECURE_ENDPOINT_BLOCKED`. Cho phép loopback HTTP (`localhost`, `127.0.0.1`, `[::1]`) phục vụ 9router nội bộ theo quy định ngoại lệ native local của Google. Tooltip bảo mật tại popup cập nhật động theo scheme.
+2. **HTTPS Enforcement**: Khóa cứng bảo vệ kênh truyền. Validation settings, adapter `direct9router.mjs`, và SW chặn mọi endpoint HTTP từ xa với mã `INSECURE_ENDPOINT_BLOCKED`. Cho phép loopback HTTP (`localhost`, `127.0.0.1`, `[::1]`) phục vụ AI local nội bộ theo quy định ngoại lệ native local của Google. Tooltip bảo mật tại popup cập nhật động theo scheme.
 3. **Cảnh báo lệch trạng thái Auto (WI-50)**: Bổ sung warning banner trên Tab Dịch khi site có cấu hình tự dịch (`autoStart !== false`) nhưng đang ở trạng thái TẮT (`site_off` hoặc `tabOverride: off`). Manifest vẫn khai báo host permissions rộng; đừng mô tả đây là xin quyền optional theo từng origin.
 4. **Hỗ trợ Đa ngôn ngữ**: Toàn bộ chuỗi UI của WI-50 và WI-51 được bản địa hóa đầy đủ qua 7 ngôn ngữ (vi, en, ja, ko, zh, es, ru), không có văn bản hardcoded.
-5. **Test Instructions Reviewer**: Hỗ trợ reviewer kiểm thử trực tiếp qua local loopback fixture / 9router và khóa `test-key`, không yêu cầu cung cấp khóa thương mại thật.
+5. **Test Instructions Reviewer**: Hỗ trợ reviewer kiểm thử trực tiếp qua local loopback fixture / local AI endpoint và khóa `test-key`, không yêu cầu cung cấp khóa thương mại thật.
 
 ## Nguồn chính thức (đọc ngày 2026-10-01)
 

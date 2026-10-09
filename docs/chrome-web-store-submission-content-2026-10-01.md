@@ -24,21 +24,37 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Đề xuất manifest name:** `WebMCP Translator` — thay cho `WebMCP Translator Kit` khi sẵn sàng release. **Đề xuất manifest description (dưới 132 ký tự):**
 
-> Dịch trang web bằng endpoint AI tương thích OpenAI do bạn cấu hình; có chế độ thủ công, tự động và khôi phục.
+> Dịch trang web bằng endpoint AI tương thích do bạn cấu hình; có chế độ thủ công, tự động và khôi phục.
 
 Đây là đề xuất sửa manifest, **chưa phải giá trị đã có trong ZIP**. Trước khi thay, kiểm tra tên/ID đã được tích hợp khác dùng và version release.
 
-**English description for the current English (United States) listing:**
+**English description for the current English (United States) listing (Đã cập nhật sau rejection Yellow Argon):**
 
-> Translate eligible text on web pages you choose into a selected language with an OpenAI-compatible endpoint you configure. Restore the original page text, translate as you scroll, or enable automatic translation for selected sites.
+> WebMCP Translator is a direct-mode webpage translator that connects directly to compatible AI endpoints you configure. Translate web pages on demand, translate as you scroll, or enable automatic translation for specific sites—all using your own AI models, API keys, and privacy preferences.
 >
-> Configure a Base URL, API key, and model in Settings. Then open a page and choose **Translate page**, or enable auto-translation for that site. Use **Restore** to return the original page text. When your endpoint supports Server-Sent Events (SSE), completed passages can appear progressively; standard JSON responses are also supported.
+> Key Features:
+> • Direct AI Endpoint Connection: Connect directly to your preferred AI service using standard chat completion API formats, including cloud-hosted providers and self-hosted local server setups. No proprietary proxy or middleman server is used.
+> • Progressive Streaming (SSE): When supported by your endpoint, completed passages appear smoothly and progressively as they are translated. Standard JSON response formats are also fully supported.
+> • Interactive Floating Mascot Widget: Quick access right on the webpage with real-time status animations (idle, thinking, completed), responsive placement, and customizable mascot themes.
+> • Auto-Translate & Follow Scroll: Enable automatic translation for favorite websites and translate dynamically loaded content as you scroll down the page.
+> • Instant One-Click Restore: Effortlessly revert translated content back to the original source text at any time.
+> • Multi-Endpoint & Automatic Fallback: Configure primary and fallback endpoints with custom model selections to ensure high translation availability.
+> • Local Privacy & Security First: Enforced HTTPS for all remote endpoints; local HTTP loopback is supported for self-hosted servers. Strict protection filters out passwords, form fields, and editable elements.
 >
-> **Data and permissions:** The packaged content script is injected on HTTP and HTTPS pages so the extension can support translation on websites you choose. It reads eligible text only when you start translation or have enabled auto-translation for that site. It skips form controls, password fields, editable content, hidden elements, and its own widget. Page text may still contain personal or sensitive information.
+> How to Get Started:
+> 1. Open the extension popup, review and accept the first-run data disclosure.
+> 2. In Settings, configure your compatible Base URL, API key, and select your preferred model name.
+> 3. Browse to any website and click "Translate page" in the popup or use the floating widget.
+> 4. Optionally customize the mascot appearance, enable auto-translation for the domain, or set up fallback endpoints.
 >
-> Eligible page text and language/model instructions are sent to the Base URL you configure. A configured fallback may receive text when it is used. Endpoint operators may pass requests to upstream AI providers under their own terms. Your API keys and settings are stored in Chrome extension storage on your device; the active key is sent in an Authorization header to the configured endpoint for model discovery and translation. The extension publisher does not receive page text or API keys through an extension-owned server.
+> Privacy, Permissions & Data Flow:
+> • Zero Publisher Tracking: The extension publisher operates no analytics, tracking, or proxy servers. Your page text and API credentials are never sent to the developer.
+> • Direct Transmission: When you initiate translation or enable auto-translate, eligible page text and language instructions are transmitted directly from your browser to your configured endpoint via encrypted HTTPS (or local loopback HTTP).
+> • Safe Extraction: Form inputs, password fields, hidden tags, and editable areas are strictly excluded from translation.
+> • Secure Storage: All API keys, settings, and site preferences are stored exclusively on your device using Chrome extension storage. Optional local caching (up to 7 days, 2.5 MiB cap) can be cleared or disabled anytime in Settings.
 >
-> Remote endpoints must use HTTPS. HTTP is allowed only for loopback services on your device and is not protected by TLS. If enabled, the local cache can retain source and translated text for up to 7 days, capped at 2.5 MiB. You can disable caching in Config. You need Chrome and your own compatible endpoint and API key; the extension does not provide an AI service or credentials.
+> Requirements:
+> Requires Google Chrome and an accessible AI API endpoint with credentials. The extension functions as a client interface and does not provide AI services or hosted credentials.
 
 **Kiểm tra trước submit:** description này mô tả quyền host rộng và static injection đúng theo manifest; đối chiếu lại với ZIP upload. Chỉ dùng câu về SSE khi endpoint reviewer có thể thử hoặc test instructions giải thích rõ điều kiện hỗ trợ.
 
@@ -58,12 +74,12 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Quy định HTTPS và Bảo vệ Endpoint (WI-51):**
 - Toàn bộ kết nối gửi văn bản trang và API key tới AI provider bắt buộc phải sử dụng giao thức bảo mật `https://`.
-- Cho phép ngoại lệ `http://` duy nhất đối với loopback cục bộ (`localhost`, `127.0.0.1`, `[::1]`, `127.0.0.0/8`) nhằm phục vụ mô hình 9router/AI local do người dùng tự chạy trên cùng thiết bị.
+- Cho phép ngoại lệ `http://` duy nhất đối với loopback cục bộ (`localhost`, `127.0.0.1`, `[::1]`, `127.0.0.0/8`) nhằm phục vụ mô hình AI local tự host do người dùng tự chạy trên cùng thiết bị.
 - Mọi endpoint HTTP từ xa (non-loopback) đều bị chặn ở tầng validation cài đặt, UI cảnh báo và adapter network (`INSECURE_ENDPOINT_BLOCKED`), ngăn chặn rò rỉ văn bản trang và API key qua kênh truyền không mã hóa.
 - Tooltip và chỉ báo bảo mật tại giao diện popup hiển thị động: thông báo bảo mật với HTTPS/loopback và cảnh báo rõ ràng khi endpoint không an toàn.
 
 **Cơ chế Minh bạch và Đồng thuận Dữ liệu — Data Consent v2 (WI-51):**
-- Cấu trúc đồng thuận: `settings.dataConsent = { version: 2, acceptedAt: ISO_TIMESTAMP }`. Bumping version làm người dùng cũ xác nhận lại sau khi disclosure được cập nhật.
+- Cấu trúc đồng thuận: `settings.dataConsent = { version: 2, acceptedAt }`. Bumping version làm người dùng cũ xác nhận lại sau khi disclosure được cập nhật.
 - Onboarding modal tự động xuất hiện ngay lần đầu mở extension nếu người dùng chưa xác nhận:
   1. *Nội dung được xử lý và bên nhận*: Khi dịch, text đủ điều kiện cùng ngôn ngữ/model được gửi tới Base URL đã cấu hình; nhà vận hành endpoint có thể chuyển tiếp đến AI provider. Không gửi input/password/contenteditable theo luồng trích xuất đã xác định trong mã.
   2. *Mục đích duy nhất*: Dữ liệu gửi đi chỉ nhằm mục đích duy nhất là tạo bản dịch sang ngôn ngữ đích đã chọn.
@@ -77,7 +93,7 @@ Tab **Privacy** có: Single purpose description (1.000 ký tự), giải trình 
 
 **Data usage:** chắc chắn cần đánh giá `Website content`; API key người dùng nhập cần đánh giá `Authentication information`, kể cả khi chỉ lưu cục bộ. Vì extension có thể đọc văn bản trang bất kỳ được cấp quyền, trang đó có thể chứa PII, liên lạc cá nhân, sức khỏe hoặc tài chính. Chốt chính xác checkbox với phạm vi tính năng/data map và hướng dẫn của Dashboard; **không** tích mặc định “không thu thập dữ liệu”. Chỉ chứng nhận ba mục Limited Use khi hành vi, policy và bên nhận đã được xác minh. Privacy policy URL công khai là gate bắt buộc.
 
-**Test instructions đã lưu trong Dashboard (477/500 ký tự):** Username và Password để trống vì chưa provision test endpoint/key công khai. Additional instructions: “Accept the first-run data-use notice. Configure an OpenAI-compatible endpoint, model, and API key in Settings > Connection; no credentials ship with the extension. To test, use a test HTTPS endpoint/key, open a non-sensitive page, choose Translate page, then Restore. The floating widget supports Follow scroll and Translate entire page; Auto enables per-site translation. SSE endpoints show completed passages progressively; JSON also works. HTTP is allowed only for loopback.”
+**Test instructions đã lưu trong Dashboard (477/500 ký tự):** Username và Password để trống vì chưa provision test endpoint/key công khai. Additional instructions: “Accept the first-run data-use notice. Configure a compatible AI endpoint, model, and API key in Settings > Connection; no credentials ship with the extension. To test, use a test HTTPS endpoint/key, open a non-sensitive page, choose Translate page, then Restore. The floating widget supports Follow scroll and Translate entire page; Auto enables per-site translation. SSE endpoints show completed passages progressively; JSON also works. HTTP is allowed only for loopback.”
 
 ## 4. Store assets đang sử dụng
 
